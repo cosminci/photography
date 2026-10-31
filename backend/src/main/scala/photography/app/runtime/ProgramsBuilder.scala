@@ -21,13 +21,11 @@ import java.util.UUID
 import photography.ports.photo.{PhotoRepository, ThumbnailStorage}
 import photography.usecases.album.{AlbumManager, AlbumPageSize}
 import photography.usecases.photo.ChapterPhotoInventory
-import photography.ports.album.{AlbumResources, CountryRepository}
-import photography.adapters.sqlite.album.SqliteAlbumResources
+import photography.ports.album.{AlbumRepository, AlbumCompositionRepository, CountryRepository}
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.usecases.photo.ChapterPhotoImport
 import photography.usecases.photo.{AlbumPhotoEvents, PhotoInventory}
 import photography.usecases.chapter.ChapterPlanning
-import photography.usecases.chapter.ChapterComposition
 import photography.ports.spread.SpreadTemplateRepository
 import photography.usecases.spread.SpreadManager
 import photography.usecases.cover.CoverManager
@@ -38,9 +36,10 @@ final case class Programs[F[_]](
     chapters: ChapterMetadataManager[F],
     templates: SpreadTemplateRepository[F],
     inventories: ChapterPhotoInventory[F],
-    resources: AlbumResources[F],
+    metadata: AlbumRepository.MetadataRead[F],
+    chapterMetadata: AlbumRepository.ChapterRead[F],
+    membership: AlbumCompositionRepository.MembershipRead[F],
     countries: CountryRepository[F],
-    composition: ChapterComposition[F],
     photoEvents: AlbumPhotoEvents[F],
     spreads: SpreadManager[F],
     coverPlacements: CoverManager[F]
@@ -65,46 +64,45 @@ object ProgramsBuilder:
       thumbnails: ThumbnailStorage[F],
       quality: ThumbnailQuality
   ) extends ProgramsBuilder[F]:
-    override def build: Resource[F, Programs[F]] =
-      Resource.eval(Mutex[F]).flatMap: mutex =>
-        given Mutex[F]             = mutex
-        given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
-        given Transaction[ConnectionIO, F] with
-          override def run[A](program: ConnectionIO[A]): F[A]     = program.transact(sqlite)
-          override def resolve[A](program: ConnectionIO[A]): F[A] = program.transact(sqlite)
-        val templates         = SqliteSpreadTemplateRepository.make[F](sqlite)
-        val albumComposition  = SqliteAlbumCompositionRepository.make
-        val chapterRepository = SqliteChapterRepository.make
-        val albumRepository   = SqliteAlbumRepository.make[F](sqlite, albumComposition, chapterRepository)
-        val countries         = SqliteCountryRepository.make[F](sqlite)
-        val resources         = SqliteAlbumResources.make[F](sqlite)
-        val albums            = AlbumManager.make(albumRepository, templates, pageSize)
-        val placements        = SqlitePhotoPlacementRepository.make
-        val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
-        val storage           = FilePhotoStorage.make(thumbnails)
-        val generator         = ImageIoPhotoThumbnailGenerator.make[F](quality)
+    private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
+    private given Transaction[ConnectionIO, F] with
+      override def run[A](program: ConnectionIO[A]): F[A]     = program.transact(sqlite)
+      override def resolve[A](program: ConnectionIO[A]): F[A] = program.transact(sqlite)
 
-        val planning = ChapterPlanning.make(templates)
-        Resource.eval(AlbumPhotoEvents.make(resources)).flatMap: events =>
-          ChapterPhotoImport.make(storage, photoRepository, generator, events).map: imports =>
-            val chapters         = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository)
-            val inventories      = ChapterPhotoInventory.make(inventory, imports)
-            val composition      = SqliteAlbumCompositionRepository.make
-            val spreadRepository = SqliteSpreadRepository.make
-            val spreads          = SpreadManager.make(templates, composition, spreadRepository, placements, defaultPhotoLayout)
-            val coverRepository  = SqliteCoverRepository.make
-            val coverPlacements  = CoverManager.make(coverRepository, placements)
-            Programs(
-              albums,
-              chapters,
-              templates,
-              inventories,
-              resources,
-              countries,
-              ChapterComposition.make[F, ConnectionIO](composition, spreadRepository),
-              events,
-              spreads,
-              coverPlacements
-            )
+    private val templates         = SqliteSpreadTemplateRepository.make[F](sqlite)
+    private val albumComposition  = SqliteAlbumCompositionRepository.make
+    private val chapterRepository = SqliteChapterRepository.make
+    private val albumRepository   = SqliteAlbumRepository.make[F](sqlite, albumComposition, chapterRepository)
+    private val placements        = SqlitePhotoPlacementRepository.make
+    private val spreadRepository  = SqliteSpreadRepository.make
+    private val coverRepository   = SqliteCoverRepository.make
+    private val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
+    private val planning          = ChapterPlanning.make(templates)
+
+    override def build: Resource[F, Programs[F]] =
+      for
+        mutex   <- Resource.eval(Mutex[F])
+        events  <- Resource.eval(AlbumPhotoEvents.make(albumRepository))
+        imports <- buildImports(events)(using mutex)
+      yield
+        given Mutex[F] = mutex
+        Programs(
+          albums = AlbumManager.make(albumRepository, templates, pageSize),
+          chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
+          templates = templates,
+          inventories = ChapterPhotoInventory.make(inventory, imports),
+          metadata = albumRepository,
+          chapterMetadata = albumRepository,
+          membership = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite),
+          countries = SqliteCountryRepository.make[F](sqlite),
+          photoEvents = events,
+          spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
+          coverPlacements = CoverManager.make(coverRepository, placements)
+        )
+
+    private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =
+      val storage   = FilePhotoStorage.make(thumbnails)
+      val generator = ImageIoPhotoThumbnailGenerator.make[F](quality)
+      ChapterPhotoImport.make(storage, photoRepository, generator, events)
 
   private val defaultPhotoLayout = SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000113"))

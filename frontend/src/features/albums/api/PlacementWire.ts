@@ -11,6 +11,20 @@ import type {
   SpreadSnapshot,
 } from "../model/Placement";
 import { readArray, readNumber, readRecord, readText } from "./Wire";
+import { readSlot } from "./WorkspaceWire";
+import type { Spread } from "../model/Workspace";
+import type { SpreadLayout } from "../model/Layout";
+
+export function readSpread(value: unknown): Spread {
+  const fields = readRecord(value);
+  const id = readText(fields["id"]);
+  const saved = readPlacementSnapshot(value, { kind: "spread", id });
+  const kind = saved.layout.kind;
+  const geometry = { id, templateId: saved.layout.templateId, slots: saved.layout.slots, placements: saved.placements };
+  if (kind !== "album_start") return { ...geometry, kind, chapter: readText(fields["chapter"]) };
+  if (fields["chapter"] !== null) throw new Error("An album opening cannot belong to a chapter");
+  return { ...geometry, kind, chapter: null };
+}
 
 export function readPlacementSnapshot(value: unknown, context: CoverContext): CoverSnapshot;
 export function readPlacementSnapshot(value: unknown, context: SpreadContext): SpreadSnapshot;
@@ -22,7 +36,17 @@ export function readPlacementSnapshot(value: unknown, context: PlacementContext)
     if (readText(fields["id"]) !== context.id) throw new Error("Unexpected spread identity");
     const placements = rows.map(readSpreadPlacement);
     requireUniquePlacements(placements);
-    return { kind: "spread", id: context.id, placements };
+    const kind = fields["kind"];
+    if (kind !== "album_start" && kind !== "chapter_start" && kind !== "photos_only") throw new Error("Unknown spread kind");
+    const layout: SpreadLayout = {
+      kind,
+      templateId: readText(fields["templateId"]),
+      slots: readArray(fields["slots"]).map(readSlot),
+    };
+    const photoSlots = new Set(layout.slots.filter((slot) => slot.kind === "photo").map((slot) => slot.id));
+    if (new Set(layout.slots.map((slot) => slot.id)).size !== layout.slots.length || placements.some((row) => !photoSlots.has(row.slotId)))
+      throw new Error("Invalid spread placement slot");
+    return { kind: "spread", id: context.id, placements, layout };
   }
   const placements = rows.map(readCoverPlacement);
   requireUniquePlacements(placements);

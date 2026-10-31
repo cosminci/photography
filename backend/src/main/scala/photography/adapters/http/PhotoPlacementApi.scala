@@ -22,47 +22,55 @@ object PhotoPlacementApi:
   final private class LivePhotoPlacementApi[F[_]: Async](spreads: SpreadManager[F], covers: CoverManager[F]) extends Http4sDsl[F]:
     def routes: HttpRoutes[F] = HttpRoutes.of[F] {
       case GET -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) =>
-        spreads.readPlacements(AlbumId(album), SpreadId(spread)).flatMap:
-          case SpreadManager.PlacementReadResult.Found(value) => Ok(encodeSpread(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-          case SpreadManager.PlacementReadResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
-          case SpreadManager.PlacementReadResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
-          case SpreadManager.PlacementReadResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+        readSpread(AlbumId(album), SpreadId(spread))
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" =>
-        decode(request, spreadPlaceDecoder).flatMap:
-          case Left(message) => BadRequest(Map("message" -> message))
-          case Right(edit)   => spreads.editPlacements(AlbumId(album), SpreadId(spread), edit).flatMap(encodeSpreadResult)
+        editSpread(AlbumId(album), SpreadId(spread), request, spreadPlaceDecoder)
       case DELETE -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
-        spreads.editPlacements(AlbumId(album), SpreadId(spread), SpreadManager.Edit.Remove(SpreadPlacementId(placement))).flatMap(encodeSpreadResult)
+        spreads.editPlacements(AlbumId(album), SpreadId(spread), SpreadManager.Edit.Remove(SpreadPlacementId(placement))).flatMap(respondToSpreadEdit)
       case request @ PATCH ->
           Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
-        decode(request, spreadUpdateDecoder(placement)).flatMap:
-          case Left(message) => BadRequest(Map("message" -> message))
-          case Right(edit)   => spreads.editPlacements(AlbumId(album), SpreadId(spread), edit).flatMap(encodeSpreadResult)
+        editSpread(AlbumId(album), SpreadId(spread), request, spreadUpdateDecoder(placement))
       case GET -> Root / "api" / "albums" / CanonicalId(album) / "cover" =>
-        covers.read(AlbumId(album)).flatMap:
-          case CoverManager.ReadResult.Found(value)  => Ok(encodeCover(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-          case CoverManager.ReadResult.CoverNotFound => NotFound(Map("code" -> "cover_not_found"))
-          case CoverManager.ReadResult.Failed        => InternalServerError(Map("code" -> "service_failure"))
+        readCover(AlbumId(album))
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" =>
-        decode(request, coverPlaceDecoder).flatMap:
-          case Left(message) => BadRequest(Map("message" -> message))
-          case Right(edit)   => covers.edit(AlbumId(album), edit).flatMap(encodeCoverResult)
+        editCover(AlbumId(album), request, coverPlaceDecoder)
       case DELETE -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" / CanonicalId(placement) =>
-        covers.edit(AlbumId(album), CoverManager.Edit.Remove(CoverPlacementId(placement))).flatMap(encodeCoverResult)
+        covers.edit(AlbumId(album), CoverManager.Edit.Remove(CoverPlacementId(placement))).flatMap(respondToCoverEdit)
       case request @ PATCH -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" / CanonicalId(placement) =>
-        decode(request, coverUpdateDecoder(placement)).flatMap:
-          case Left(message) => BadRequest(Map("message" -> message))
-          case Right(edit)   => covers.edit(AlbumId(album), edit).flatMap(encodeCoverResult)
+        editCover(AlbumId(album), request, coverUpdateDecoder(placement))
     }
 
-    private def encodeSpreadResult(result: SpreadManager.PlacementResult) = result match
+    private def readSpread(album: AlbumId, spread: SpreadId) =
+      spreads.readPlacements(album, spread).flatMap:
+        case SpreadManager.PlacementReadResult.Found(value)   => Ok(encodeSpread(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case SpreadManager.PlacementReadResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
+        case SpreadManager.PlacementReadResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
+        case SpreadManager.PlacementReadResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+
+    private def readCover(album: AlbumId) =
+      covers.read(album).flatMap:
+        case CoverManager.ReadResult.Found(value)  => Ok(encodeCover(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case CoverManager.ReadResult.CoverNotFound => NotFound(Map("code" -> "cover_not_found"))
+        case CoverManager.ReadResult.Failed        => InternalServerError(Map("code" -> "service_failure"))
+
+    private def editSpread(album: AlbumId, spread: SpreadId, request: Request[F], decoder: Decoder[SpreadManager.Edit]) =
+      decode(request, decoder).flatMap:
+        case Left(message) => BadRequest(Map("message" -> message))
+        case Right(edit)   => spreads.editPlacements(album, spread, edit).flatMap(respondToSpreadEdit)
+
+    private def editCover(album: AlbumId, request: Request[F], decoder: Decoder[CoverManager.Edit]) =
+      decode(request, decoder).flatMap:
+        case Left(message) => BadRequest(Map("message" -> message))
+        case Right(edit)   => covers.edit(album, edit).flatMap(respondToCoverEdit)
+
+    private def respondToSpreadEdit(result: SpreadManager.PlacementResult) = result match
       case SpreadManager.PlacementResult.Saved(value)     => Ok(encodeSpread(value))
       case SpreadManager.PlacementResult.Rejected(reason) => Conflict(Map("code" -> explainSpreadFailure(reason)))
       case SpreadManager.PlacementResult.AlbumNotFound    => NotFound(Map("code" -> "album_not_found"))
       case SpreadManager.PlacementResult.SpreadNotFound   => NotFound(Map("code" -> "spread_not_found"))
       case SpreadManager.PlacementResult.Failed           => InternalServerError(Map("code" -> "service_failure"))
 
-    private def encodeCoverResult(result: CoverManager.Result) = result match
+    private def respondToCoverEdit(result: CoverManager.Result) = result match
       case CoverManager.Result.Saved(value)     => Ok(encodeCover(value))
       case CoverManager.Result.Rejected(reason) => Conflict(Map("code" -> explainCoverFailure(reason)))
       case CoverManager.Result.CoverNotFound    => NotFound(Map("code" -> "cover_not_found"))
@@ -134,26 +142,28 @@ object PhotoPlacementApi:
       val placements = spread.placements.map: value =>
         encodePlacement(id = value.id.value, slot = value.slot.value, value.photo, value.transform)
           .deepMerge(Json.obj("captionCorner" -> Json.fromString(encodeCorner(value.captionCorner))))
-      val (kind, photos, text) = spread match
+      val (kind, photos, maybeText) = spread match
         case value: Spread.AlbumStart   => ("album_start", value.photoSlots, Some(value.textSlot))
         case value: Spread.ChapterStart => ("chapter_start", value.photoSlots, Some(value.textSlot))
         case value: Spread.PhotosOnly   => ("photos_only", value.photoSlots.toList.toVector, None)
-      def slot(id: UUID, kind: String, box: SlotBox) = Json.obj(
-        "id"     -> Json.fromString(id.toString),
-        "kind"   -> Json.fromString(kind),
-        "x"      -> Json.fromDoubleOrNull(box.x),
-        "y"      -> Json.fromDoubleOrNull(box.y),
-        "width"  -> Json.fromDoubleOrNull(box.width),
-        "height" -> Json.fromDoubleOrNull(box.height)
-      )
-      val slots = photos.map(value => slot(value.id.value, "photo", value.box)) ++
-        text.toList.toVector.map(value => slot(value.id.value, "text", value.box))
+      val slots = photos.map(value => encodeSlot(value.id.value, kind = "photo", value.box)) ++
+        maybeText.toList.toVector.map(value => encodeSlot(value.id.value, kind = "text", value.box))
       Json.obj(
         "id"         -> Json.fromString(spread.id.value.toString),
         "kind"       -> Json.fromString(kind),
         "templateId" -> Json.fromString(spread.template.value.toString),
         "slots"      -> Json.arr(slots*),
         "placements" -> Json.arr(placements*)
+      )
+
+    private def encodeSlot(id: UUID, kind: String, box: SlotBox) =
+      Json.obj(
+        "id"     -> Json.fromString(id.toString),
+        "kind"   -> Json.fromString(kind),
+        "x"      -> Json.fromDoubleOrNull(box.x),
+        "y"      -> Json.fromDoubleOrNull(box.y),
+        "width"  -> Json.fromDoubleOrNull(box.width),
+        "height" -> Json.fromDoubleOrNull(box.height)
       )
 
     private def encodeCorner(corner: CaptionCorner) = corner match

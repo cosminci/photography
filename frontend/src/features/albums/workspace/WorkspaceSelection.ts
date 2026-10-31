@@ -36,9 +36,10 @@ export function findSpreadNavigation(spreads: readonly Spread[], selection: Sele
   };
 }
 
-export function findDeletionSelection(spreads: readonly Pick<Spread, "id" | "kind" | "chapter">[], index: number): string | null | undefined {
+export function findDeletionSelection(spreads: readonly Pick<Spread, "id" | "kind" | "chapter">[], index: number): string | null {
   const spread = spreads[Math.min(index, spreads.length - 1)];
-  return spread === undefined ? undefined : getSpreadPart(spread);
+  if (spread === undefined) throw new Error("Saved composition has no selectable spread");
+  return getSpreadPart(spread);
 }
 
 export function findSpreadPosition(spreads: readonly Spread[], selected: Spread) {

@@ -1,4 +1,4 @@
-import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTemplate } from "./Workspace";
+import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTemplate, SpreadMembership } from "./Workspace";
 import type { ChapterSave, PhotoInventory } from "./Photo";
 import type { PlacementClient } from "./Placement";
 
@@ -28,10 +28,10 @@ export interface AlbumClient extends PlacementClient {
   readonly list: (page: number) => Promise<AlbumPage>;
   readonly create: (year: number) => Promise<AlbumSummary>;
   readonly rename: (id: string, title: string) => Promise<AlbumSummary>;
-  readonly open: (id: string) => Promise<Album>;
+  readonly open: (id: string, signal?: AbortSignal) => Promise<Album>;
   readonly remove: (id: string) => Promise<void>;
   readonly chapters: (id: string, signal: AbortSignal) => Promise<readonly Chapter[]>;
-  readonly composition: (id: string, signal: AbortSignal) => Promise<readonly { id: string; chapter: string | null }[]>;
+  readonly composition: (id: string, signal: AbortSignal) => Promise<readonly SpreadMembership[]>;
   readonly spread: (id: string, spreadId: string, chapter: string | null, signal: AbortSignal) => Promise<Spread>;
   readonly countries: (signal: AbortSignal) => Promise<readonly Country[]>;
   readonly photoSource: (signal: AbortSignal) => Promise<string>;

@@ -93,13 +93,12 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       .map(assertEquals(_, CreateAlbumResult.Failed))
 
   test("should reject creation without writing when the AlbumStart template listing fails"):
-    val refs = Refs()
+    val refs            = Refs()
+    val failedTemplates = ListAlbumStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure)
+    val manager         = buildManager(refs, listResult = failedTemplates)
 
     for
-      result <- buildManager(
-        refs,
-        listResult = ListAlbumStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure)
-      ).create(year = selectedYear, title = "Asian capitals")
+      result  <- manager.create(year = selectedYear, title = "Asian capitals")
       created <- refs.maybeCreated.get
     yield
       assertEquals(result, CreateAlbumResult.Failed)

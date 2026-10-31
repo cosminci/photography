@@ -21,7 +21,6 @@ import photography.app.config.SqliteConfig
 import photography.domain.album.*
 import photography.domain.layout.*
 import photography.ports.album.AlbumRepository.*
-import photography.ports.album.AlbumResources
 
 import java.time.{Instant, LocalDate}
 import java.nio.file.Files
@@ -38,104 +37,84 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
                                       (SELECT count(*) FROM spread_photo_slot_bleed) +
                                       (SELECT count(*) FROM cover) + (SELECT count(*) FROM cover_slot)""".query[Long].unique
 
-  test("should read authoritative metadata and membership without acquiring unrelated Cover or spread geometry"):
+  test("should read metadata and ordered chapters without acquiring unrelated Cover or spread geometry"):
     buildTransactor.use: xa =>
       val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val resources  = SqliteAlbumResources.make[IO](xa)
       val album      = buildAlbum(index = 1)
-      val expected   = AlbumResources.Metadata(album.id, album.year, album.title, album.synopsis, album.createdAt)
+      val expected   = Metadata(album.id, album.year, album.title, album.synopsis, album.createdAt)
 
       for
-        _           <- repository.create(album, buildCover(album))
-        _           <- sql"DELETE FROM cover_slot".update.run.transact(xa)
-        metadata    <- resources.metadata(album.id)
-        chapters    <- resources.chapters(album.id)
-        composition <- resources.composition(album.id)
-        _           <- sql"DELETE FROM spread".update.run.transact(xa)
-        incomplete  <- resources.composition(album.id)
-        retained    <- resources.metadata(album.id)
+        _        <- repository.create(album, buildCover(album))
+        _        <- sql"DELETE FROM cover_slot".update.run.transact(xa)
+        metadata <- repository.metadata(album.id)
+        chapters <- repository.chapters(album.id)
+        _        <- sql"DELETE FROM spread".update.run.transact(xa)
+        retained <- repository.metadata(album.id)
       yield
-        assertEquals(metadata, expected.some.asRight[AlbumResources.Failure])
-        assertEquals(chapters, Vector.empty[AlbumResources.ChapterMetadata].some.asRight[AlbumResources.Failure])
-        assertEquals(composition, Vector(AlbumResources.Member(album.opening.id, None)).some.asRight[AlbumResources.Failure])
-        assertEquals(incomplete, AlbumResources.Failure.Unavailable.asLeft[Option[Vector[AlbumResources.Member]]])
+        assertEquals(metadata, MetadataResult.Found(expected))
+        assertEquals(chapters, ChaptersResult.Found(Vector.empty[ChapterMetadata]))
         assertEquals(retained, metadata)
 
-  test("should reject invalid chapter periods and missing countries while keeping composition validity resource-local"):
+  test("should validate lightweight chapter periods and countries without acquiring their spread composition"):
     buildTransactor.use: xa =>
       val repository  = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val resources   = SqliteAlbumResources.make[IO](xa)
       val album       = buildAlbum(index = 1)
       val chapter     = buildUuid(index = 902)
       val destination = buildUuid(index = 901)
-      val opening     = buildUuid(index = 903)
-      val setup       =
-        for
-          country  <- sql"SELECT id FROM country ORDER BY code LIMIT 1".query[UUID].unique
-          template <- sql"SELECT id FROM spread_template WHERE kind = 'chapter_start' ORDER BY id LIMIT 1".query[UUID].unique
-          _        <- sql"INSERT INTO destination (id, name) VALUES ($destination, 'Coast')".update.run
-          _        <- sql"""INSERT INTO chapter (id, album_id, destination_id, description, start_ms, end_ms, position, source_folder)
+      val readCountry = sql"SELECT id, code, name, flag FROM country ORDER BY code LIMIT 1"
+        .query[(UUID, CountryCode, CountryName, AbsoluteLocation)].unique
+        .map { case (id, code, name, flag) => Country(CountryId(id), code, name, flag) }
+      val insertChapter = sql"""INSERT INTO chapter (id, album_id, destination_id, description, start_ms, end_ms, position, source_folder)
                    VALUES ($chapter, ${album.id.value}, $destination, 'Coast text', 0, 86400000, 0, '/photos/coast')""".update.run
-          _ <- sql"INSERT INTO destination_country (destination_id, country_id, position) VALUES ($destination, $country, 0)".update.run
-        yield (country, template)
-
-      for
-        _    <- repository.create(album, buildCover(album))
-        data <- setup.transact(xa)
-        (country, template) = data
-        valid      <- resources.chapters(album.id)
-        incomplete <- resources.composition(album.id)
-        _          <-
-          sql"INSERT INTO spread (id, template_id, kind, chapter_id, position) VALUES ($opening, $template, 'chapter_start', $chapter, 0)".update.run.transact(
-            xa
-          )
-        complete <- resources.composition(album.id)
-        periods  <- Vector((0L, 0L), (1L, 86400000L), (86400000L, 0L)).traverse { case (start, end) =>
-          sql"UPDATE chapter SET start_ms = $start, end_ms = $end WHERE id = $chapter".update.run.transact(xa) *> resources.chapters(album.id)
-        }
-        _ <-
+      val saveMetadata =
+        for
+          country <- readCountry
+          _       <- sql"INSERT INTO destination (id, name) VALUES ($destination, 'Coast')".update.run
+          _       <- insertChapter
+          _ <- sql"INSERT INTO destination_country (destination_id, country_id, position) VALUES ($destination, ${country.id.value}, 0)".update.run
+        yield country
+      val invalidBounds      = Vector((start = 0L, end = 0L), (start = 1L, end = 86400000L), (start = 86400000L, end = 0L))
+      val readInvalidPeriods = invalidBounds.traverse { case (start, end) =>
+        sql"UPDATE chapter SET start_ms = $start, end_ms = $end WHERE id = $chapter".update.run.transact(xa) *> repository.chapters(album.id)
+      }
+      val removeCountries =
         (sql"UPDATE chapter SET start_ms = 0, end_ms = 86400000 WHERE id = $chapter".update.run >>
           sql"DELETE FROM destination_country WHERE destination_id = $destination".update.run).transact(xa)
-        emptyCountries <- resources.chapters(album.id)
+
+      for
+        _              <- repository.create(album, buildCover(album))
+        country        <- saveMetadata.transact(xa)
+        valid          <- repository.chapters(album.id)
+        periods        <- readInvalidPeriods
+        _              <- removeCountries
+        emptyCountries <- repository.chapters(album.id)
       yield
-        val expected = AlbumResources.ChapterMetadata(
+        val expected = ChapterMetadata(
           ChapterId(chapter),
-          "Coast",
-          Vector(CountryId(country)),
-          LocalDate.of(1970, 1, 1),
-          LocalDate.of(1970, 1, 1),
+          Destination(DestinationId(destination), "Coast", NonEmptyList.one(country)),
+          VisitPeriod(LocalDate.of(1970, 1, 1), days = 1L),
           "/photos/coast",
           "Coast text"
         )
-        val failed = AlbumResources.Failure.Unavailable.asLeft[Option[Vector[AlbumResources.ChapterMetadata]]]
-        assertEquals(valid, Vector(expected).some.asRight[AlbumResources.Failure])
-        assertEquals(incomplete, AlbumResources.Failure.Unavailable.asLeft[Option[Vector[AlbumResources.Member]]])
-        assertEquals(
-          complete,
-          Vector(
-            AlbumResources.Member(album.opening.id, None),
-            AlbumResources.Member(SpreadId(opening), ChapterId(chapter).some)
-          ).some.asRight[AlbumResources.Failure]
-        )
+        val failed = ChaptersResult.Failed(Failure.DatabaseFailure)
+        assertEquals(valid, ChaptersResult.Found(Vector(expected)))
         assertEquals(periods, Vector.fill(3)(failed))
         assertEquals(emptyCountries, failed)
 
   test("should retain absent resource outcomes and explicit storage failures"):
     buildTransactor.use: xa =>
-      val resources = SqliteAlbumResources.make[IO](xa)
-      val album     = buildAlbum(index = 1).id
+      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val album      = buildAlbum(index = 1).id
 
       for
-        metadata    <- resources.metadata(album)
-        chapters    <- resources.chapters(album)
-        composition <- resources.composition(album)
-        _           <- sql"DROP TABLE album".update.run.transact(xa)
-        failed      <- resources.metadata(album)
+        metadata <- repository.metadata(album)
+        chapters <- repository.chapters(album)
+        _        <- sql"DROP TABLE album".update.run.transact(xa)
+        failed   <- repository.metadata(album)
       yield
-        assertEquals(metadata, none[AlbumResources.Metadata].asRight[AlbumResources.Failure])
-        assertEquals(chapters, none[Vector[AlbumResources.ChapterMetadata]].asRight[AlbumResources.Failure])
-        assertEquals(composition, none[Vector[AlbumResources.Member]].asRight[AlbumResources.Failure])
-        assertEquals(failed, AlbumResources.Failure.Unavailable.asLeft[Option[AlbumResources.Metadata]])
+        assertEquals(metadata, MetadataResult.NotFound)
+        assertEquals(chapters, ChaptersResult.AlbumNotFound)
+        assertEquals(failed, MetadataResult.Failed(Failure.DatabaseFailure))
 
   test("should persist the complete initial album and preserve year and composition when renamed"):
     Vector(SpineOwner.Front -> "front", SpineOwner.Back -> "back").traverse_ { case (spineOwner, expectedSpine) =>

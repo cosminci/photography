@@ -10,8 +10,9 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId}
-import photography.domain.layout.SpreadId
-import photography.usecases.chapter.ChapterComposition
+import photography.domain.layout.{SpreadId, SpreadTemplateId}
+import photography.usecases.spread.SpreadManager
+import photography.usecases.spread.SpreadManager.*
 import cats.data.NonEmptyList
 import java.util.UUID
 
@@ -25,40 +26,52 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
     "spreadIds"         -> Json.arr(Json.fromString(opening.value.toString))
   )
 
-  test("should replace a composition resource and preserve every rejection and uncertain-write outcome"):
-    val cases = Vector(
-      (ChapterComposition.Result.Saved, Status.NoContent, none[Json]),
-      (
-        ChapterComposition.Result.Invalid,
-        Status.BadRequest,
-        Json.obj("message" -> Json.fromString("Retain the opening and every spread exactly once")).some
-      ),
-      (ChapterComposition.Result.NotFound, Status.NotFound, Json.obj("code" -> Json.fromString("chapter_not_found")).some),
-      (ChapterComposition.Result.Stale, Status.Conflict, Json.obj("code" -> Json.fromString("composition_changed")).some),
-      (ChapterComposition.Result.Uncertain, Status.InternalServerError, Json.obj("code" -> Json.fromString("write_uncertain")).some)
+  private val scenarios = Vector(
+    Scenario("save the observed order", ReplacementResult.Saved, Status.NoContent, none[Json]),
+    Scenario(
+      "reject invalid membership",
+      ReplacementResult.Invalid,
+      Status.BadRequest,
+      Json.obj("message" -> Json.fromString("Retain the opening and every spread exactly once")).some
+    ),
+    Scenario(
+      "report missing scoped composition",
+      ReplacementResult.NotFound,
+      Status.NotFound,
+      Json.obj("code" -> Json.fromString("chapter_not_found")).some
+    ),
+    Scenario(
+      "reject stale observed order",
+      ReplacementResult.Stale,
+      Status.Conflict,
+      Json.obj("code" -> Json.fromString("composition_changed")).some
+    ),
+    Scenario(
+      "distinguish failed pre-write acquisition",
+      ReplacementResult.Failed,
+      Status.InternalServerError,
+      Json.obj("code" -> Json.fromString("service_failure")).some
+    ),
+    Scenario(
+      "preserve an uncertain write outcome",
+      ReplacementResult.Uncertain,
+      Status.InternalServerError,
+      Json.obj("code" -> Json.fromString("write_uncertain")).some
     )
-    cases.traverse_ { case (result, expected, expectedBody) =>
-      val program = new ChapterComposition[IO]:
-        override def replace(id: AlbumId, target: ChapterId, previous: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId])
-            : IO[ChapterComposition.Result] =
-          IO(assertEquals((id, target, previous, order), (album, chapter, NonEmptyList.one(opening), NonEmptyList.one(opening)))).as(result)
+  )
+  scenarios.foreach { scenario =>
+    test(s"should ${scenario.name}"):
+      val program = buildManager(scenario.result)
       ChapterCompositionApi.make(program).orNotFound.run(Request[IO](Method.PUT, Uri.unsafeFromString(path)).withEntity(body))
         .flatMap(response =>
           response.bodyText.compile.string.map: body =>
-            assertEquals(response.status, expected)
-            assertEquals(parse(body).toOption, expectedBody)
+            assertEquals(response.status, scenario.status)
+            assertEquals(parse(body).toOption, scenario.maybeBody)
         )
-    }
+  }
 
   test("should reject malformed JSON, empty orders and noncanonical member IDs before mutation"):
-    val program = new ChapterComposition[IO]:
-      override def replace(
-          album: AlbumId,
-          chapter: ChapterId,
-          previous: NonEmptyList[SpreadId],
-          order: NonEmptyList[SpreadId]
-      ): IO[ChapterComposition.Result] =
-        IO.raiseError[ChapterComposition.Result](new AssertionError("Unexpected write"))
+    val program = buildManager(ReplacementResult.Failed)
     val routes  = ChapterCompositionApi.make(program).orNotFound
     val invalid = Vector(
       "{}",
@@ -80,3 +93,29 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(body, Json.obj("message" -> Json.fromString("Supply a valid composition")))
     *> routes.run(Request[IO](Method.PUT, Uri.unsafeFromString("/api/albums/1-1-1-1-1/chapters/bad/composition")))
       .map(response => assertEquals(response.status, Status.NotFound))
+
+  final private case class Scenario(name: String, result: ReplacementResult, status: Status, maybeBody: Option[Json])
+
+  private def buildManager(result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
+    override def replaceChapterOrder(
+        id: AlbumId,
+        target: ChapterId,
+        previous: NonEmptyList[SpreadId],
+        order: NonEmptyList[SpreadId]
+    ): IO[ReplacementResult] =
+      IO:
+        assertEquals(id.value, album.value)
+        assertEquals(target.value, chapter.value)
+        assertEquals(previous.map(_.value), NonEmptyList.one(opening.value))
+        assertEquals(order.map(_.value), NonEmptyList.one(opening.value))
+      .as(result)
+    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
+      IO.raiseError[AddResult](new AssertionError("Unexpected add"))
+    override def changeTemplate(album: AlbumId, spread: SpreadId, template: SpreadTemplateId, confirmPlacements: Boolean): IO[ChangeTemplateResult] =
+      IO.raiseError[ChangeTemplateResult](new AssertionError("Unexpected template change"))
+    override def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): IO[DeleteResult] =
+      IO.raiseError[DeleteResult](new AssertionError("Unexpected deletion"))
+    override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
+      IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
+    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
+      IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))

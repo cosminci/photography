@@ -1,9 +1,9 @@
 import { AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
 import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readText, readNumber } from "./Wire";
-import { readChapter, readChapterIdentity, readCountry, readSpread, readTemplates } from "./WorkspaceWire";
+import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
 import { readArray } from "./Wire";
 import { readPhotoInventory, readScheduling } from "./PhotoWire";
-import { readPlacementSnapshot } from "./PlacementWire";
+import { readPlacementSnapshot, readSpread } from "./PlacementWire";
 import type {
   CoverContext,
   CoverSnapshot,
@@ -111,7 +111,7 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     list: (page) => request(`/api/albums?page=${String(page)}`, "GET", undefined, 200, readPage),
     create: (year) => request("/api/albums", "POST", { year }, 201, readSummary),
     rename: (id, title) => request(`/api/albums/${encodeURIComponent(id)}`, "PATCH", { title }, 200, readSummary),
-    open: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum),
+    open: (id, signal) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum, signal),
     remove: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
     chapters: (id, signal) =>
       request(

@@ -83,6 +83,13 @@ export function AlbumWorkspace(props: {
     const selected = selection();
     return selected.kind === "spread" ? selected.spread : undefined;
   });
+  const displayedSpread = createMemo(() => {
+    const spread = selectedSpread();
+    const confirmed = placement.snapshot();
+    if (spread === undefined || confirmed?.kind !== "spread" || confirmed.id !== spread.id) return spread;
+    const common = { ...spread, templateId: confirmed.layout.templateId, slots: confirmed.layout.slots, placements: confirmed.placements };
+    return common;
+  });
   const chapter = createMemo(() => props.workspace.chapters.find((candidate) => candidate.id === selectedSpread()?.chapter));
   const spreadPosition = createMemo(() => {
     const spread = selectedSpread();
@@ -104,15 +111,25 @@ export function AlbumWorkspace(props: {
   );
   const navigation = createMemo(() => findReaderNavigation(props.workspace.spreads, selection()));
   const spreadNavigation = createMemo(() => findSpreadNavigation(props.workspace.spreads, selection()));
-  const placementTarget = createMemo(() => (part() === "cover" ? "cover" : JSON.stringify(selectedSpread())));
+  const placementTarget = createMemo(() => (part() === "cover" ? props.workspace.spreads : selectedSpread()));
   createEffect(() => {
     placementTarget();
     untrack(() => {
       setChoice(undefined);
       const spread = selectedSpread();
-      if (part() === "cover") void placement.load(props.album.id, { kind: "cover" });
-      else if (spread !== undefined) void placement.load(props.album.id, { kind: "spread", id: spread.id });
-      else placement.clear();
+      if (part() === "cover") {
+        if (placement.navigationReason() === undefined && !placement.loading()) void placement.load(props.album.id, { kind: "cover" });
+      } else if (spread !== undefined) {
+        const savedSpread = {
+          kind: "spread",
+          id: spread.id,
+          placements: spread.placements,
+          layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
+        } as const;
+        const current = placement.snapshot();
+        if (current?.kind === "spread" && current.id === spread.id) placement.reconcile(savedSpread);
+        else placement.selectSpread(props.album.id, savedSpread);
+      } else placement.clear();
     });
   });
   const editing = createMemo<CanvasPhotos>(() => ({
@@ -232,11 +249,6 @@ export function AlbumWorkspace(props: {
     }
     const destination =
       target.destination.kind === "part" ? target.destination.part : findDeletionSelection(props.workspace.spreads, target.destination.index);
-    if (destination === undefined) {
-      setSpreadError("The saved workspace has no selectable spread. Reload the workspace.");
-      workspaceElement.focus();
-      return;
-    }
     select(destination);
     setSpreadError(undefined);
     setReloadTarget(undefined);
@@ -406,10 +418,6 @@ export function AlbumWorkspace(props: {
           <button
             type="button"
             onClick={() => {
-              if (reloadTarget() !== undefined) {
-                void reloadSpread();
-                return;
-              }
               if (spreadNeedsReload()) {
                 void refresh().then(() => {
                   if (props.workspaceError === undefined) {
@@ -425,7 +433,7 @@ export function AlbumWorkspace(props: {
               if (action !== undefined) void mutateSpread(action);
             }}
           >
-            {spreadNeedsReload() ? "Reload saved workspace" : reloadTarget() === undefined ? "Retry spread action" : "Retry workspace"}
+            {spreadNeedsReload() ? "Reload saved workspace" : "Retry spread action"}
           </button>
         </p>
       </Show>
@@ -447,7 +455,7 @@ export function AlbumWorkspace(props: {
         }}
       >
         <div class="workspace-editor">
-          <Show when={selectedSpread()}>
+          <Show when={displayedSpread()}>
             {(spread) => (
               <TemplateSelector
                 context={spread().kind}
@@ -494,7 +502,7 @@ export function AlbumWorkspace(props: {
                 <Show when={part() === "cover"}>
                   <CoverCanvas title={props.album.title} year={props.workspace.year} editing={editing()} />
                 </Show>
-                <Show when={selectedSpread()}>
+                <Show when={displayedSpread()}>
                   {(spread) => (
                     <SpreadCanvas
                       slots={spread().slots}

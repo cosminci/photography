@@ -11,7 +11,7 @@ import photography.adapters.sqlite.photo.SqlitePhotoRepository
 
 import cats.data.NonEmptyList
 import cats.effect.std.Mutex
-import cats.effect.{IO, Resource}
+import cats.effect.{Deferred, IO, Outcome, Resource}
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -27,7 +27,7 @@ import photography.domain.layout.*
 import photography.ports.album.AlbumRepository
 import photography.ports.chapter.ChapterRepository
 import photography.ports.spread.SpreadTemplateRepository
-import photography.usecases.chapter.{ChapterComposition, ChapterMetadataManager, ChapterPlanning}
+import photography.usecases.chapter.{ChapterMetadataManager, ChapterPlanning}
 import photography.usecases.photo.{ChapterPhotoImport, PhotoInventory}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -35,6 +35,7 @@ import photography.usecases.spread.SpreadManager.*
 import java.nio.file.{Files, Path}
 import java.time.{Instant, LocalDate}
 import java.util.UUID
+import scala.concurrent.duration.*
 
 final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
   private given logger: Logger[IO]   = Slf4jLogger.getLogger[IO]
@@ -117,7 +118,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildComposition(xa)
+        val manager                   = buildManager(xa)
 
         for
           opening <- seedChapter(xa)
@@ -125,12 +126,142 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
           _       <- (spreads.insert(chapterId, first) >> spreads.insert(chapterId, second)).transact(xa)
           _       <- sql"DELETE FROM cover_slot WHERE album_id = ${albumId.value} AND side = 'back'".update.run.transact(xa)
-          result  <-
-            manager.replace(albumId, chapterId, NonEmptyList.of(opening.id, first.id, second.id), NonEmptyList.of(opening.id, second.id, first.id))
+          observed = NonEmptyList.of(opening.id, first.id, second.id)
+          proposed = NonEmptyList.of(opening.id, second.id, first.id)
+          result  <- manager.replaceChapterOrder(albumId, chapterId, expected = observed, order = proposed)
           ordered <- sql"SELECT id FROM spread WHERE chapter_id = ${chapterId.value} ORDER BY position".query[UUID].to[List].transact(xa)
         yield
-          assertEquals(result, ChapterComposition.Result.Saved)
+          assertEquals(result, ReplacementResult.Saved)
           assertEquals(ordered.drop(1), List(second.id.value, first.id.value))
+
+  test("should coordinate complete order replacement with concurrent addition without losing membership"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val manager     = buildManager(xa)
+        for
+          opening <- seedChapter(xa)
+          first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
+          second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
+          _       <- (spreads.insert(chapterId, first) >> spreads.insert(chapterId, second)).transact(xa)
+          observed = NonEmptyList.of(opening.id, first.id, second.id)
+          proposed = NonEmptyList.of(opening.id, second.id, first.id)
+          results   <- (manager.replaceChapterOrder(albumId, chapterId, observed, proposed), manager.add(albumId, chapterId, opening.id)).parTupled
+          saved     <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+          positions <- chapterOrder.transact(xa)
+        yield
+          val (replacement, addition) = results
+          val added                   = addition match
+            case AddResult.Added(id) => id
+            case other               => fail(s"Expected addition, obtained $other")
+          assert(Set(ReplacementResult.Saved, ReplacementResult.Stale).contains(replacement))
+          assertEquals(saved.map(_.toList.map(_.value).toSet), Some(Set(opening.id.value, first.id.value, second.id.value, added.value)))
+          assertEquals(saved.map(_.head.value), Some(opening.id.value))
+          assertEquals(positions, List(0, 1, 2, 3))
+
+  test("should commit exactly one concurrent replacement of the same observed order"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val manager     = buildManager(xa)
+
+        for
+          opening <- seedChapter(xa)
+          first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
+          second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
+          _       <- (spreads.insert(chapterId, first) >> spreads.insert(chapterId, second)).transact(xa)
+          observed = NonEmptyList.of(opening.id, first.id, second.id)
+          proposed = NonEmptyList.of(opening.id, second.id, first.id)
+          replacements <- List.fill(2)(()).parTraverse(_ => manager.replaceChapterOrder(albumId, chapterId, observed, proposed))
+          saved        <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+        yield
+          assertEquals(replacements.collect { case ReplacementResult.Saved => () }.size, 1)
+          assertEquals(replacements.collect { case ReplacementResult.Stale => () }.size, 1)
+          assertEquals(saved.map(_.toList.map(_.value)), Some(proposed.toList.map(_.value)))
+
+  test("should cancel an order replacement while coordination is held without applying a write"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val manager     = buildManager(xa)
+
+        (seedChapter(xa), Deferred[IO, Unit]).tupled.flatMap { case (opening, started) =>
+          val order             = NonEmptyList.one(opening.id)
+          val replacement       = started.complete(()).void >> manager.replaceChapterOrder(albumId, chapterId, order, order)
+          val cancelWhileLocked = mutex.lock.surround:
+            for
+              fiber  <- replacement.start
+              _      <- started.get
+              _      <- IO.cede
+              _      <- fiber.cancel.timeout(5.seconds)
+              result <- fiber.join
+            yield result
+
+          for
+            outcome <- cancelWhileLocked
+            saved   <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+          yield outcome match
+            case Outcome.Canceled() => assertEquals(saved.map(_.toList.map(_.value)), Some(List(opening.id.value)))
+            case other              => fail(s"Expected canceled replacement, obtained $other")
+        }
+
+  test("should coordinate complete order replacement with concurrent deletion without resurrecting a removed spread"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val manager     = buildManager(xa)
+        for
+          opening <- seedChapter(xa)
+          first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
+          second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
+          _       <- (spreads.insert(chapterId, first) >> spreads.insert(chapterId, second)).transact(xa)
+          observed    = NonEmptyList.of(opening.id, first.id, second.id)
+          proposed    = NonEmptyList.of(opening.id, second.id, first.id)
+          replacement = manager.replaceChapterOrder(albumId, chapterId, observed, proposed)
+          deletion    = manager.delete(albumId, first.id, confirmPlacements = true)
+          results   <- (replacement, deletion).parTupled
+          saved     <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+          positions <- chapterOrder.transact(xa)
+        yield
+          val (replacement, deletion) = results
+          assert(Set(ReplacementResult.Saved, ReplacementResult.Stale).contains(replacement))
+          assertEquals(deletion, DeleteResult.Deleted)
+          assertEquals(saved.map(_.toList.map(_.value)), Some(List(opening.id.value, second.id.value)))
+          assertEquals(positions, List(0, 1))
+
+  test("should recover the committed SQLite order after acknowledgement loss without replaying replacement"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO]         = mutex
+        given IdGenerator[IO]   = IdGenerator.make[IO]
+        val lostAcknowledgement = xa.strategy.after >> new IllegalStateException("Committed but acknowledgement lost").raiseError[ConnectionIO, Unit]
+        val mutationXa          = Transactor.after.set(xa, lostAcknowledgement)
+        given Transaction[ConnectionIO, IO] with
+          override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(mutationXa)
+          override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
+        val manager = SpreadManager.make[IO, ConnectionIO](
+          SqliteSpreadTemplateRepository.make[IO](xa),
+          composition,
+          spreads,
+          SqlitePhotoPlacementRepository.make,
+          defaultLayout
+        )
+        for
+          opening <- seedChapter(xa)
+          first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
+          second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
+          _       <- (spreads.insert(chapterId, first) >> spreads.insert(chapterId, second)).transact(xa)
+          observed = NonEmptyList.of(opening.id, first.id, second.id)
+          proposed = NonEmptyList.of(opening.id, second.id, first.id)
+          uncertain <- manager.replaceChapterOrder(albumId, chapterId, observed, proposed)
+          recovered <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+          stale     <- manager.replaceChapterOrder(albumId, chapterId, observed, proposed)
+          retained  <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+        yield
+          assertEquals(uncertain, ReplacementResult.Uncertain)
+          assertEquals(recovered.map(_.toList.map(_.value)), Some(proposed.toList.map(_.value)))
+          assertEquals(stale, ReplacementResult.Stale)
+          assertEquals(retained, recovered)
 
   test("should decide concurrent occupied confirmations from the state committed by the preceding mutation"):
     buildTransactor.use: xa =>
@@ -195,28 +326,28 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         val insertOther = sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES (${otherAlbum.value}, 2025, 'Other', '', 0)"
 
         for
-          opening     <- seedChapter(xa)
-          _           <- insertOther.update.run.transact(xa)
-          photo       <- buildPhotoSpread(xa, index = 22L, layout = defaultLayout)
-          _           <- spreads.insert(chapterId, photo).transact(xa)
-          foreignMove <-
-            buildComposition(xa).replace(otherAlbum, chapterId, NonEmptyList.of(opening.id, photo.id), NonEmptyList.of(opening.id, photo.id))
+          opening <- seedChapter(xa)
+          _       <- insertOther.update.run.transact(xa)
+          photo   <- buildPhotoSpread(xa, index = 22L, layout = defaultLayout)
+          _       <- spreads.insert(chapterId, photo).transact(xa)
+          observed = NonEmptyList.of(opening.id, photo.id)
+          foreignMove     <- manager.replaceChapterOrder(otherAlbum, chapterId, expected = observed, order = observed)
           foreignTemplate <- manager.changeTemplate(otherAlbum, photo.id, singleLayout, confirmPlacements = true)
           foreignDelete   <- manager.delete(otherAlbum, photo.id, confirmPlacements = true)
           foreignAdd      <- manager.add(otherAlbum, chapterId, opening.id)
           removed         <- manager.delete(albumId, photo.id, confirmPlacements = true)
-          staleMove <- buildComposition(xa).replace(albumId, chapterId, NonEmptyList.of(opening.id, photo.id), NonEmptyList.of(opening.id, photo.id))
-          staleTemplate <- manager.changeTemplate(albumId, photo.id, singleLayout, confirmPlacements = true)
-          staleDelete   <- manager.delete(albumId, photo.id, confirmPlacements = true)
-          staleAdd      <- manager.add(albumId, chapterId, photo.id)
-          rows          <- spreadRows.transact(xa)
+          staleMove       <- manager.replaceChapterOrder(albumId, chapterId, expected = observed, order = observed)
+          staleTemplate   <- manager.changeTemplate(albumId, photo.id, singleLayout, confirmPlacements = true)
+          staleDelete     <- manager.delete(albumId, photo.id, confirmPlacements = true)
+          staleAdd        <- manager.add(albumId, chapterId, photo.id)
+          rows            <- spreadRows.transact(xa)
         yield
-          assertEquals(foreignMove, ChapterComposition.Result.NotFound)
+          assertEquals(foreignMove, ReplacementResult.NotFound)
           assertEquals(foreignTemplate, ChangeTemplateResult.SpreadNotFound)
           assertEquals(foreignDelete, DeleteResult.SpreadNotFound)
           assertEquals(foreignAdd, AddResult.ChapterNotFound)
           assertEquals(removed, DeleteResult.Deleted)
-          assertEquals(staleMove, ChapterComposition.Result.Stale)
+          assertEquals(staleMove, ReplacementResult.Stale)
           assertEquals(staleTemplate, ChangeTemplateResult.SpreadNotFound)
           assertEquals(staleDelete, DeleteResult.SpreadNotFound)
           assertEquals(staleAdd, AddResult.SpreadNotFound)
@@ -440,12 +571,6 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     val templates  = SqliteSpreadTemplateRepository.make[IO](xa)
     val placements = SqlitePhotoPlacementRepository.make
     SpreadManager.make(templates, composition, spreads, placements, defaultLayout)
-
-  private def buildComposition(xa: Transactor[IO])(using Mutex[IO]) =
-    given Transaction[ConnectionIO, IO] with
-      override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
-      override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
-    ChapterComposition.make[IO, ConnectionIO](composition, spreads)
 
   private def buildInventory(xa: Transactor[IO]) =
     given transaction: Transaction[ConnectionIO, IO] with

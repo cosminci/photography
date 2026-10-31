@@ -11,6 +11,19 @@ trait AlbumCompositionRepository[Db[_]]:
   def findChapterOrder(album: AlbumId, chapter: ChapterId): Db[Option[NonEmptyList[SpreadId]]]
 
 object AlbumCompositionRepository:
+  trait MembershipRead[Db[_]]:
+    def composition(album: AlbumId): Db[CompositionResult]
+
+  enum CompositionResult:
+    case Found(members: NonEmptyList[Member])
+    case AlbumNotFound
+    case Failed(reason: Failure)
+
+  enum Failure:
+    case Unavailable
+
+  final case class Member(id: SpreadId, maybeChapter: Option[ChapterId])
+
   enum Located:
     case AlbumOpening(value: Spread.AlbumStart)
     case ChapterOpening(chapter: ChapterId, value: Spread.ChapterStart)

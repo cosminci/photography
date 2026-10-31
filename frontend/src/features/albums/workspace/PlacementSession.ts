@@ -1,5 +1,5 @@
 import { createMemo, createSignal } from "solid-js";
-import type { PlacementClient, PlacementContext, PlacementEdit, PlacementSnapshot, PhotoTransform } from "../model/Placement";
+import type { PlacementClient, PlacementContext, PlacementEdit, PlacementSnapshot, PhotoTransform, SpreadSnapshot } from "../model/Placement";
 import { AlbumRequestError } from "../model/Album";
 
 type Recovery = "read" | "uncertain" | "refresh";
@@ -37,13 +37,24 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
             : undefined,
   );
 
-  async function load(album: string, context: PlacementContext) {
+  function beginSelection(album: string, context: PlacementContext) {
     setTarget({ album, context });
     const request = ++generation;
-    setLoading(true);
     setSnapshot(undefined);
     setError(undefined);
     setRecovery(undefined);
+    return request;
+  }
+
+  function selectSpread(album: string, saved: SpreadSnapshot) {
+    beginSelection(album, { kind: "spread", id: saved.id });
+    setSnapshot(saved);
+    setLoading(false);
+  }
+
+  async function load(album: string, context: PlacementContext) {
+    const request = beginSelection(album, context);
+    setLoading(true);
     try {
       const saved = await client.readPlacements(album, context);
       if (request === generation) setSnapshot(saved);
@@ -55,6 +66,10 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     } finally {
       if (request === generation) setLoading(false);
     }
+  }
+
+  function reconcile(saved: SpreadSnapshot) {
+    setSnapshot(saved);
   }
 
   function clear() {
@@ -169,7 +184,24 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     if (recovery() === undefined) await drain();
   }
 
-  return { snapshot, placements, saving, loading, error, navigationReason, unavailable, load, clear, preview, restore, complete, edit, retry };
+  return {
+    snapshot,
+    placements,
+    saving,
+    loading,
+    error,
+    navigationReason,
+    unavailable,
+    load,
+    selectSpread,
+    reconcile,
+    clear,
+    preview,
+    restore,
+    complete,
+    edit,
+    retry,
+  };
 }
 
 export function sameTransform(left: PhotoTransform, right: PhotoTransform): boolean {

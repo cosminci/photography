@@ -26,22 +26,17 @@ export type ChapterDetails =
     }
   | { readonly kind: "home"; readonly countries: readonly string[]; readonly sourceFolder: string };
 
-export interface Slot {
+export type Spread = SpreadLayout & {
   readonly id: string;
-  readonly kind: "photo" | "text";
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-}
-
-export type Spread = {
-  readonly id: string;
-  readonly templateId: string;
-  readonly slots: readonly Slot[];
+  readonly placements: readonly SpreadPlacement[];
 } & ({ readonly kind: "album_start"; readonly chapter: null } | { readonly kind: "chapter_start" | "photos_only"; readonly chapter: string });
 
 export type SpreadContext = Spread["kind"];
+
+export interface SpreadMembership {
+  readonly id: string;
+  readonly chapter: string | null;
+}
 
 export interface SpreadTemplate {
   readonly id: string;
@@ -58,3 +53,6 @@ export interface Workspace {
   readonly countries: readonly Country[];
 }
 import type { PhotoInventory } from "./Photo";
+import type { SpreadPlacement } from "./Placement";
+import type { Slot, SpreadLayout } from "./Layout";
+export type { Slot } from "./Layout";

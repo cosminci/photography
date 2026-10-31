@@ -1,33 +1,74 @@
 package photography.adapters.sqlite.album
 
 import cats.data.NonEmptyList
+import cats.MonadThrow
+import cats.arrow.FunctionK
+import cats.effect.Async
 import cats.syntax.all.*
 import org.typelevel.doobie.implicits.*
-import org.typelevel.doobie.{ConnectionIO, Fragment}
+import org.typelevel.doobie.{ConnectionIO, Fragment, Transactor}
+import org.typelevel.log4cats.Logger
 import photography.adapters.sqlite.SqliteCodecs.given
 import photography.domain.album.*
 import photography.domain.layout.*
 import photography.ports.album.AlbumCompositionRepository
-import photography.ports.album.AlbumCompositionRepository.Located
+import photography.ports.album.AlbumCompositionRepository.{CompositionResult, Failure, Located, Member}
 import java.util.UUID
 
 object SqliteAlbumCompositionRepository:
-  def make: AlbumCompositionRepository[ConnectionIO] = new LiveSqliteAlbumCompositionRepository
+  def make(using Logger[ConnectionIO]): AlbumCompositionRepository[ConnectionIO] =
+    new LiveSqliteAlbumCompositionRepository(FunctionK.id[ConnectionIO])
 
-  final private class LiveSqliteAlbumCompositionRepository extends AlbumCompositionRepository[ConnectionIO]:
-    override def hasAlbum(album: AlbumId): ConnectionIO[Boolean] =
+  def makeMembershipRead[F[_]: Async: Logger](transactor: Transactor[F]): AlbumCompositionRepository.MembershipRead[F] =
+    val resolve = new FunctionK[ConnectionIO, F]:
+      override def apply[A](query: ConnectionIO[A]): F[A] =
+        query.transact(transactor)
+    new LiveSqliteAlbumCompositionRepository(resolve)
+
+  final private class LiveSqliteAlbumCompositionRepository[F[_]: MonadThrow: Logger](resolve: FunctionK[ConnectionIO, F])
+      extends AlbumCompositionRepository[F] with AlbumCompositionRepository.MembershipRead[F]:
+    override def composition(album: AlbumId): F[CompositionResult] =
+      val read = hasSavedAlbum(album).flatMap:
+        case false => (CompositionResult.AlbumNotFound: CompositionResult).pure[ConnectionIO]
+        case true  => loadMembership(album).map[CompositionResult](CompositionResult.Found(_))
+      resolve(read).handleErrorWith: error =>
+        Logger[F].error(error)("SQLite composition read failed").as(CompositionResult.Failed(Failure.Unavailable))
+
+    private def loadMembership(album: AlbumId) =
+      for
+        opening  <- loadOpeningMember(album)
+        chapters <- sql"SELECT id FROM chapter WHERE album_id = ${album.value} ORDER BY position".query[UUID].to[Vector]
+        members  <- chapters.traverse(id => loadChapterMembers(album, ChapterId(id)))
+      yield NonEmptyList(opening, tail = members.flatten.toList)
+
+    private def loadOpeningMember(album: AlbumId) =
+      sql"SELECT id, kind, position FROM spread WHERE album_id = ${album.value}".query[(UUID, String, Int)].to[List].flatMap:
+        case (id, "album_start", 0) :: Nil => Member(SpreadId(id), maybeChapter = None).pure[ConnectionIO]
+        case _                             => new IllegalArgumentException("Album must have exactly one opening").raiseError[ConnectionIO, Member]
+
+    private def loadChapterMembers(album: AlbumId, chapter: ChapterId) =
+      loadChapterOrder(album, chapter).flatMap:
+        case Some(order) => order.toList.toVector.map(id => Member(id, maybeChapter = chapter.some)).pure[ConnectionIO]
+        case None        => new IllegalArgumentException("Missing chapter composition").raiseError[ConnectionIO, Vector[Member]]
+
+    override def hasAlbum(album: AlbumId): F[Boolean] = resolve(hasSavedAlbum(album))
+
+    private def hasSavedAlbum(album: AlbumId) =
       sql"SELECT EXISTS(SELECT 1 FROM album WHERE id = ${album.value})".query[Boolean].unique
 
-    override def countInteriorSpreads(album: AlbumId): ConnectionIO[Int] =
-      sql"""SELECT count(*) FROM spread s LEFT JOIN chapter c ON c.id = s.chapter_id
-            WHERE s.album_id = ${album.value} OR c.album_id = ${album.value}""".query[Int].unique
+    override def countInteriorSpreads(album: AlbumId): F[Int] =
+      resolve(sql"""SELECT count(*) FROM spread s LEFT JOIN chapter c ON c.id = s.chapter_id
+            WHERE s.album_id = ${album.value} OR c.album_id = ${album.value}""".query[Int].unique)
 
-    override def findSpread(album: AlbumId, spread: SpreadId): ConnectionIO[Option[Located]] =
+    override def findSpread(album: AlbumId, spread: SpreadId): F[Option[Located]] =
       val scope =
         sql"s.id = ${spread.value} AND (s.album_id = ${album.value} OR s.chapter_id IN (SELECT id FROM chapter WHERE album_id = ${album.value}))"
-      loadRows(scope).flatMap(_.traverse(locateSpread)).map(_.headOption)
+      resolve(loadRows(scope).flatMap(_.traverse(locateSpread)).map(_.headOption))
 
-    override def findChapterOrder(album: AlbumId, chapter: ChapterId): ConnectionIO[Option[NonEmptyList[SpreadId]]] =
+    override def findChapterOrder(album: AlbumId, chapter: ChapterId): F[Option[NonEmptyList[SpreadId]]] =
+      resolve(loadChapterOrder(album, chapter))
+
+    private def loadChapterOrder(album: AlbumId, chapter: ChapterId) =
       val select = sql"""SELECT s.id, s.kind, s.position FROM chapter c LEFT JOIN spread s ON c.id = s.chapter_id
                         WHERE c.album_id = ${album.value} AND c.id = ${chapter.value} ORDER BY s.position"""
       select.query[(Option[UUID], Option[String], Option[Int])].to[List].flatMap(rows => decodeOrder(rows = rows).liftTo[ConnectionIO])
@@ -35,8 +76,8 @@ object SqliteAlbumCompositionRepository:
     private def decodeOrder(rows: List[(Option[UUID], Option[String], Option[Int])]) = rows match
       case Nil                                                       => none[NonEmptyList[SpreadId]].asRight[IllegalArgumentException]
       case (Some(opening), Some("chapter_start"), Some(0)) :: photos =>
-        photos.traverse:
-          case (Some(id), Some("photos_only"), Some(position)) if position > 0 => SpreadId(id).asRight[IllegalArgumentException]
+        photos.zipWithIndex.traverse:
+          case ((Some(id), Some("photos_only"), Some(position)), index) if position === index + 1 => SpreadId(id).asRight[IllegalArgumentException]
           case _ => new IllegalArgumentException("Invalid chapter order").asLeft[SpreadId]
         .map(ids => NonEmptyList(SpreadId(opening), tail = ids).some)
       case _ => new IllegalArgumentException("Chapter must begin with its opening").asLeft[Option[NonEmptyList[SpreadId]]]

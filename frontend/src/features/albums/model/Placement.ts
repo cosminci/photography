@@ -32,7 +32,9 @@ export interface SpreadSnapshot {
   readonly kind: "spread";
   readonly id: string;
   readonly placements: readonly SpreadPlacement[];
+  readonly layout: SpreadLayout;
 }
+import type { SpreadLayout } from "./Layout";
 export interface CoverSnapshot {
   readonly kind: "cover";
   readonly placements: readonly CoverPlacement[];

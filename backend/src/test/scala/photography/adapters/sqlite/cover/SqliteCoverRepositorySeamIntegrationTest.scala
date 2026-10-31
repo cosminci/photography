@@ -26,8 +26,9 @@ import java.nio.file.{Files, Path}
 import java.util.UUID
 
 class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
-  private val album = AlbumId(new UUID(0L, 1L))
-  private val cover = Cover(
+  private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
+  private val album                  = AlbumId(new UUID(0L, 1L))
+  private val cover                  = Cover(
     album,
     SpineOwner.Back,
     CoverSlot(CoverSlotId(new UUID(0L, 2L))),

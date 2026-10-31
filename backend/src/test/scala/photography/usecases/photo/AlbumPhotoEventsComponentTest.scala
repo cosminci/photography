@@ -1,6 +1,6 @@
 package photography.usecases.photo
 
-import photography.ports.album.AlbumResources
+import photography.ports.album.AlbumRepository.{MetadataRead, Metadata, MetadataResult, Failure}
 
 import cats.effect.{Deferred, IO, Ref}
 import cats.effect.std.Queue
@@ -24,37 +24,32 @@ final class AlbumPhotoEventsComponentTest extends CatsEffectSuite:
   private val album   = AlbumId(new UUID(0L, 1L))
   private val chapter = ChapterId(new UUID(0L, 2L))
   private val other   = ChapterId(new UUID(0L, 3L))
-  private val saved   = AlbumResources.Metadata(album, year = 2026, title = "Delivery", synopsis = "", Instant.EPOCH)
+  private val saved   = Metadata(album, year = 2026, title = "Delivery", synopsis = "", Instant.EPOCH)
 
-  test("should validate albums before creating streams and expose lookup failures"):
-    Vector(
-      none[AlbumResources.Metadata].asRight[AlbumResources.Failure]              -> SubscribeResult.AlbumNotFound[IO](),
-      AlbumResources.Failure.Unavailable.asLeft[Option[AlbumResources.Metadata]] -> SubscribeResult.Failed[IO]()
-    ).traverse_ {
-      case (result, expected) =>
-        for
-          events     <- AlbumPhotoEvents.make(buildAlbums(result.pure[IO]))
-          subscribed <- events.subscribe(album)
-        yield assertEquals(subscribed, expected)
-    } >> AlbumPhotoEvents.make(buildAlbums(IO.raiseError[Either[
-      AlbumResources.Failure,
-      Option[AlbumResources.Metadata]
-    ]](new IllegalStateException("lookup")))).flatMap(_.subscribe(album))
+  Vector(
+    (metadata = MetadataResult.NotFound, expected = SubscribeResult.AlbumNotFound[IO]()),
+    (metadata = MetadataResult.Failed(Failure.DatabaseFailure), expected = SubscribeResult.Failed[IO]())
+  ).foreach { case (metadata, expected) =>
+    test(s"should return $expected for $metadata before allocating a subscription"):
+      for
+        events     <- AlbumPhotoEvents.make(buildAlbums(metadata.pure[IO]))
+        subscribed <- events.subscribe(album)
+      yield assertEquals(subscribed, expected)
+  }
+
+  test("should expose unexpected metadata acquisition failure before allocating a subscription"):
+    AlbumPhotoEvents.make(buildAlbums(IO.raiseError[MetadataResult](new IllegalStateException("lookup")))).flatMap(_.subscribe(album))
       .map(result => assertEquals(result, SubscribeResult.Failed[IO]()))
 
   test("should register before acknowledgement, coalesce chapter changes, isolate albums and release canceled subscribers"):
     for
-      events       <- AlbumPhotoEvents.make(buildAlbums(saved.some.asRight[AlbumResources.Failure].pure[IO]))
+      events       <- AlbumPhotoEvents.make(buildAlbums(MetadataResult.Found(saved).pure[IO]))
       stream       <- events.subscribe(album)
       received     <- Queue.unbounded[IO, Event]
       acknowledged <- Deferred[IO, Unit]
       release      <- Deferred[IO, Unit]
-      worker       <- readEvents(stream).evalMap { event =>
-        received.offer(event) >>
-          (event match
-            case Event.Subscribed => acknowledged.complete(()).void >> release.get
-            case _                => IO.unit)
-      }.compile.drain.start
+      pausedSubscriber = readEvents(stream).evalMap(event => received.offer(event) >> acknowledge(event, acknowledged, release))
+      worker  <- pausedSubscriber.compile.drain.start
       _       <- acknowledged.get
       _       <- (1 to 100).toVector.traverse_(_ => events.invalidate(album, chapter))
       _       <- events.invalidate(album, other)
@@ -72,7 +67,7 @@ final class AlbumPhotoEventsComponentTest extends CatsEffectSuite:
 
   test("should keep a fast subscriber responsive while another is blocked and after it disconnects"):
     for
-      events          <- AlbumPhotoEvents.make(buildAlbums(saved.some.asRight[AlbumResources.Failure].pure[IO]))
+      events          <- AlbumPhotoEvents.make(buildAlbums(MetadataResult.Found(saved).pure[IO]))
       slow            <- events.subscribe(album)
       fast            <- events.subscribe(album)
       blocked         <- Deferred[IO, Unit]
@@ -98,10 +93,10 @@ final class AlbumPhotoEventsComponentTest extends CatsEffectSuite:
     case SubscribeResult.Opened(events) => events
     case _                              => Stream.raiseError[IO](new AssertionError("Expected subscription"))
 
-  private def buildAlbums(response: IO[Either[AlbumResources.Failure, Option[AlbumResources.Metadata]]]) =
-    new AlbumResources[IO]:
-      override def metadata(id: AlbumId): IO[Either[AlbumResources.Failure, Option[AlbumResources.Metadata]]]                = response
-      override def chapters(id: AlbumId): IO[Either[AlbumResources.Failure, Option[Vector[AlbumResources.ChapterMetadata]]]] =
-        IO.raiseError[Either[AlbumResources.Failure, Option[Vector[AlbumResources.ChapterMetadata]]]](new AssertionError("Unexpected chapter read"))
-      override def composition(id: AlbumId): IO[Either[AlbumResources.Failure, Option[Vector[AlbumResources.Member]]]] =
-        IO.raiseError[Either[AlbumResources.Failure, Option[Vector[AlbumResources.Member]]]](new AssertionError("Unexpected composition read"))
+  private def acknowledge(event: Event, acknowledged: Deferred[IO, Unit], release: Deferred[IO, Unit]) = event match
+    case Event.Subscribed => acknowledged.complete(()).void >> release.get
+    case _                => IO.unit
+
+  private def buildAlbums(response: IO[MetadataResult]) =
+    new MetadataRead[IO]:
+      override def metadata(id: AlbumId): IO[MetadataResult] = response

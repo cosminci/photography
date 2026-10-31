@@ -9,11 +9,12 @@ import org.typelevel.log4cats.StructuredLogger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import org.typelevel.doobie.ConnectionIO
 import org.typelevel.doobie.implicits.*
-import photography.adapters.http.{AlbumApi, AlbumSpreadApi, AlbumResourcesApi, ChapterApi, HealthRoutes, SpreadTemplateApi, StaticSite}
+import photography.adapters.http.{AlbumApi, AlbumSpreadApi, AlbumCompositionApi, CountryApi, ChapterApi, HealthRoutes, SpreadTemplateApi, StaticSite}
 import photography.adapters.filesystem.FileThumbnailStorage
 import photography.adapters.http.{AlbumPhotoEventsApi, ThumbnailApi}
 import photography.adapters.http.PhotoPlacementApi
 import photography.adapters.http.ChapterCompositionApi
+import photography.adapters.http.PhotoSourceApi
 import photography.adapters.sqlite.photo.SqlitePhotoRepository
 import photography.app.config.{AppConfig, HttpServerConfig}
 import photography.capabilities.{Clock, IdGenerator, Transaction}
@@ -55,15 +56,15 @@ object Main extends IOApp.Simple:
         yield ()
 
   private def buildHttpApp(managers: Programs[IO], thumbnails: ThumbnailStorage[IO], photoRoot: photography.domain.album.PhotoSource) =
-    val metadata     = AlbumApi.make(managers.albums).routes
-    val resources    = AlbumResourcesApi.make(managers.resources, managers.countries, photoRoot)
-    val chapters     = ChapterApi.make(managers.inventories, managers.chapters).routes
+    val albums       = AlbumApi.make(managers.albums, managers.metadata).routes
+    val chapters     = ChapterApi.make(managers.inventories, managers.chapters, managers.chapterMetadata).routes
     val thumbnailApi = ThumbnailApi.make(thumbnails).routes
     val events       = AlbumPhotoEventsApi.make(managers.photoEvents).routes
     val placements   = PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
-    val api          = HealthRoutes.routes[IO] <+> resources <+> metadata <+> chapters <+> events <+> thumbnailApi <+>
+    val api          = HealthRoutes.routes[IO] <+> albums <+> chapters <+> events <+> thumbnailApi <+>
+      AlbumCompositionApi.make(managers.membership) <+> CountryApi.make(managers.countries) <+> PhotoSourceApi.make(photoRoot) <+>
       SpreadTemplateApi.make(managers.templates).routes <+>
-      ChapterCompositionApi.make(managers.composition) <+> AlbumSpreadApi.make(managers.spreads).routes <+> placements
+      ChapterCompositionApi.make(managers.spreads) <+> AlbumSpreadApi.make(managers.spreads).routes <+> placements
     StaticSite.make(api, assetRoot = "frontend").map(_.app)
 
   private def buildHttpServer(config: HttpServerConfig, app: HttpApp[IO]) =

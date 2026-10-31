@@ -4,7 +4,6 @@ import { App } from "../../src/app/App";
 import { AlbumRequestError, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
 import type { PlacementContext, PlacementSnapshot } from "../../src/features/albums/model/Placement";
 import type { AlbumPhotoEvents, PhotoEvent } from "../../src/features/albums/model/Photo";
-import { resourceFixture, type SnapshotClient } from "../features/albums/WorkspaceResources";
 
 const events: AlbumPhotoEvents = {
   subscribe: (_id, receive) => {
@@ -169,7 +168,7 @@ describe("album dashboard and open", () => {
     expect(screen.queryByText(firstAlbum.createdAt)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to album catalog" })).toHaveAttribute("href", "/");
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(client.open).toHaveBeenCalledWith(firstAlbum.id);
+    expect(client.open).toHaveBeenCalledWith(firstAlbum.id, expect.any(AbortSignal));
   });
 
   it("should distinguish initial loading, retryable list failure and successful empty albums", async () => {
@@ -354,26 +353,15 @@ describe("album dashboard and open", () => {
   it.each([
     [404, "open"],
     [500, "open"],
-    [404, "workspace"],
-    [500, "workspace"],
+    [404, "chapters"],
+    [500, "chapters"],
   ] as const)("should distinguish missing album from retryable HTTP %i at %s and never show partial metadata", async (status, operation) => {
     window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
     const client = buildClient({
       [operation]: vi
         .fn()
         .mockRejectedValueOnce(new AlbumRequestError(status, "Request failed"))
-        .mockResolvedValueOnce(
-          operation === "open"
-            ? { ...firstAlbum, synopsis: "After retry." }
-            : {
-                year: firstAlbum.year,
-                photoRoot: "/photos",
-                photoInventories: {},
-                chapters: [],
-                countries: [],
-                spreads: [{ id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [] }],
-              },
-        ),
+        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry." } : []),
     });
 
     render(() => <App client={client} events={events} />);
@@ -410,25 +398,25 @@ describe("album dashboard and open", () => {
       expect(screen.getByRole("link", { name: "Reopen album" })).toHaveAttribute("href", window.location.href);
       expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
     }
-    expect(client.workspace).not.toHaveBeenCalled();
+    expect(client.chapters).not.toHaveBeenCalled();
     receive({ kind: "subscribed" });
     await screen.findByRole("heading", { level: 1, name: firstAlbum.title });
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(client.workspace).toHaveBeenCalledOnce();
+    expect(client.chapters).toHaveBeenCalledOnce();
     expect(client.refreshPhotos).not.toHaveBeenCalled();
   });
 });
 
-function buildClient(overrides: Partial<SnapshotClient> = {}): SnapshotClient & AlbumClient {
-  const client: SnapshotClient = {
+function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
+  return {
     readPlacements: vi
       .fn()
       .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
         Promise.resolve(
           context.kind === "cover"
             ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [] },
+            : { kind: "spread", id: context.id, placements: [], layout: { kind: "album_start", templateId: "layout", slots: [] } },
         ),
       ),
     editPlacements: vi
@@ -437,7 +425,7 @@ function buildClient(overrides: Partial<SnapshotClient> = {}): SnapshotClient & 
         Promise.resolve(
           context.kind === "cover"
             ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [] },
+            : { kind: "spread", id: context.id, placements: [], layout: { kind: "album_start", templateId: "layout", slots: [] } },
         ),
       ),
     list: vi.fn().mockResolvedValue(firstPage),
@@ -445,14 +433,11 @@ function buildClient(overrides: Partial<SnapshotClient> = {}): SnapshotClient & 
     rename: vi.fn().mockResolvedValue(firstAlbum),
     open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn." }),
     remove: vi.fn().mockResolvedValue(undefined),
-    workspace: vi.fn().mockResolvedValue({
-      photoInventories: {},
-      year: firstAlbum.year,
-      photoRoot: "/photos",
-      chapters: [],
-      countries: [],
-      spreads: [{ id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [] }],
-    }),
+    chapters: vi.fn().mockResolvedValue([]),
+    composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),
+    spread: vi.fn().mockResolvedValue({ id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [], placements: [] }),
+    countries: vi.fn().mockResolvedValue([]),
+    photoSource: vi.fn().mockResolvedValue("/photos"),
     createChapter: vi.fn(),
     updateChapter: vi.fn(),
     chapterPhotos: vi.fn(),
@@ -464,5 +449,4 @@ function buildClient(overrides: Partial<SnapshotClient> = {}): SnapshotClient & 
     deleteSpread: vi.fn(),
     ...overrides,
   };
-  return { ...client, ...resourceFixture(client) };
 }

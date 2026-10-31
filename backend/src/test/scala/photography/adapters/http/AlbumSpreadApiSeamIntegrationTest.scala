@@ -1,6 +1,7 @@
 package photography.adapters.http
 
 import cats.effect.{IO, Ref}
+import cats.data.NonEmptyList
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Json
@@ -171,6 +172,13 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
     val changeOutcome = change
     val deleteOutcome = delete
     val spreads       = new SpreadManager[IO]:
+      override def replaceChapterOrder(
+          album: AlbumId,
+          chapter: ChapterId,
+          expected: NonEmptyList[SpreadId],
+          order: NonEmptyList[SpreadId]
+      ): IO[ReplacementResult] =
+        IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
         IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
       override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =

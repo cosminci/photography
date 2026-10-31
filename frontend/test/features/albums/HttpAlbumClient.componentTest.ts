@@ -17,7 +17,7 @@ describe("same-origin album HTTP client", () => {
       sourceFolder: "/photos/Home",
       description: "",
     };
-    const spread = { id: "spread", kind: "chapter_start", templateId: "layout", slots: [] };
+    const spread = { id: "spread", kind: "chapter_start", templateId: "layout", slots: [], placements: [] };
     const composition = [
       { id: "opening", chapter: null },
       { id: "spread", chapter: "chapter" },
@@ -42,7 +42,9 @@ describe("same-origin album HTTP client", () => {
   it.each(["cover", "spread"] as const)("should create and update individual %s placement resources without operation envelopes", async (kind) => {
     const context: PlacementContext = kind === "cover" ? { kind } : { kind, id: "spread" };
     const snapshot =
-      kind === "cover" ? { frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] } : { id: "spread", placements: [] };
+      kind === "cover"
+        ? { frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] }
+        : { id: "spread", kind: "photos_only", templateId: "layout", slots: [], placements: [] };
     const transform = { x: 0, y: 0, zoom: 1, mirrored: false };
     const edits: PlacementEdit[] = [
       { operation: "place", slotId: "slot", photoId: "photo" },
@@ -95,8 +97,8 @@ describe("same-origin album HTTP client", () => {
   ] as const)("should reject invalid displayed composition movement", (spreads, target, direction, message) => {
     const displayed = spreads.map<Spread>((member) =>
       member.chapter === null
-        ? { ...member, kind: "album_start", chapter: null, templateId: "layout", slots: [] }
-        : { ...member, kind: "photos_only", chapter: member.chapter, templateId: "layout", slots: [] },
+        ? { ...member, kind: "album_start", chapter: null, templateId: "layout", slots: [], placements: [] }
+        : { ...member, kind: "photos_only", chapter: member.chapter, templateId: "layout", slots: [], placements: [] },
     );
     expect(() => buildChapterReorder(displayed, target, direction)).toThrow(message);
   });
@@ -108,6 +110,7 @@ describe("same-origin album HTTP client", () => {
       chapter: "c",
       templateId: "layout",
       slots: [],
+      placements: [],
     }));
     const replacement = buildChapterReorder(displayed, "first", "later");
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 204 }));

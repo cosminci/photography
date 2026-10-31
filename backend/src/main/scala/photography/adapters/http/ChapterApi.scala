@@ -17,6 +17,7 @@ import photography.usecases.photo.{ChapterPhotoImport, PhotoManager, PhotoWriteR
 import photography.usecases.photo.ChapterPhotoInventory
 import photography.usecases.photo.ChapterPhotoInventory.{Snapshot as ChapterPhotos, Result as ChapterResult}
 import photography.usecases.photo.ChapterPhotoImport.Scheduling
+import photography.ports.album.AlbumRepository
 
 import java.time.{DateTimeException, LocalDate}
 import java.time.temporal.ChronoUnit
@@ -28,16 +29,20 @@ trait ChapterApi[F[_]]:
 object ChapterApi:
   def make[F[_]: Async](
       inventories: ChapterPhotoInventory[F],
-      chapters: ChapterMetadataManager[F]
+      chapters: ChapterMetadataManager[F],
+      metadata: AlbumRepository.ChapterRead[F]
   ): ChapterApi[F] =
-    new LiveChapterApi(inventories, chapters)
+    new LiveChapterApi(inventories, chapters, metadata)
 
   final private class LiveChapterApi[F[_]: Async](
       inventories: ChapterPhotoInventory[F],
-      chapters: ChapterMetadataManager[F]
+      chapters: ChapterMetadataManager[F],
+      metadata: AlbumRepository.ChapterRead[F]
   ) extends ChapterApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
+        case GET -> Root / "api" / "albums" / CanonicalId(id) / "chapters"            => read(AlbumId(id))
+        case GET -> Root / "api" / "albums" / _ / "chapters"                          => albumNotFound
         case request @ POST -> Root / "api" / "albums" / CanonicalId(id) / "chapters" =>
           create(AlbumId(id), request)
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "chapters" / CanonicalId(chapter) =>
@@ -52,6 +57,27 @@ object ChapterApi:
         case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => chapterNotFound
         case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => albumNotFound
       }
+
+    private def read(id: AlbumId) =
+      metadata.chapters(id).flatMap:
+        case AlbumRepository.ChaptersResult.Found(values) => Ok(Json.obj("chapters" -> Json.arr(values.map(encodeChapter)*)))
+            .map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case AlbumRepository.ChaptersResult.AlbumNotFound => albumNotFound
+        case AlbumRepository.ChaptersResult.Failed(_)     => serviceFailure
+
+    private def encodeChapter(value: AlbumRepository.ChapterMetadata) =
+      val destination = value.destination
+      val period      = value.period
+      Json.obj(
+        "id"           -> Json.fromString(value.id.value.toString),
+        "kind"         -> Json.fromString(if (destination.name: String) === "Home" then "home" else "vacation"),
+        "name"         -> Json.fromString(destination.name),
+        "countries"    -> Json.arr(destination.countries.toList.map(country => Json.fromString(country.id.value.toString))*),
+        "start"        -> Json.fromString(period.firstDay.toString),
+        "end"          -> Json.fromString(period.firstDay.plusDays((period.days: Long) - 1).toString),
+        "sourceFolder" -> Json.fromString(value.sourceFolder),
+        "description"  -> Json.fromString(value.description)
+      )
 
     private def create(id: AlbumId, request: Request[F]) =
       decode(request, creationDecoder).flatMap {

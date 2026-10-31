@@ -509,11 +509,75 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(failedInspection, PlacementResult.Failed)
       assertEquals(failedWrite, PlacementResult.Failed)
 
+  test("should replace the observed chapter order and reject stale intent without replaying it"):
+    val refs     = Refs()
+    val observed = NonEmptyList.of(chapterOpening.id, first.id, second.id)
+    val proposed = NonEmptyList.of(chapterOpening.id, second.id, first.id)
+
+    for
+      manager <- buildManager(refs)
+      saved   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
+      stale   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
+      orders  <- refs.orders.get
+    yield
+      assertEquals(saved, ReplacementResult.Saved)
+      assertEquals(stale, ReplacementResult.Stale)
+      assertEquals(orders, Vector((chapter.id, proposed)))
+
+  test("should preserve the opening and every observed spread exactly once before reading or writing"):
+    val refs     = Refs()
+    val observed = NonEmptyList.of(chapterOpening.id, first.id, second.id)
+    val invalid  = Vector(
+      NonEmptyList.of(first.id, chapterOpening.id, second.id),
+      NonEmptyList.of(chapterOpening.id, first.id, first.id),
+      NonEmptyList.of(chapterOpening.id, first.id),
+      NonEmptyList.of(chapterOpening.id, first.id, foreign.id)
+    )
+
+    for
+      manager <- buildManager(refs, maybeReadError = new AssertionError("Unexpected read").some)
+      results <- invalid.traverse(order => manager.replaceChapterOrder(album.id, chapter.id, observed, order))
+      orders  <- refs.orders.get
+    yield
+      assertEquals(results, Vector.fill(invalid.size)(ReplacementResult.Invalid))
+      assertEquals(orders, Vector.empty[(ChapterId, NonEmptyList[SpreadId])])
+
+  test("should report missing scoped chapter composition without writing"):
+    val refs     = Refs()
+    val observed = NonEmptyList.of(chapterOpening.id, first.id, second.id)
+
+    for
+      manager <- buildManager(refs, maybeAlbum = none[Album])
+      result  <- manager.replaceChapterOrder(album.id, chapter.id, observed, observed)
+      orders  <- refs.orders.get
+    yield
+      assertEquals(result, ReplacementResult.NotFound)
+      assertEquals(orders, Vector.empty[(ChapterId, NonEmptyList[SpreadId])])
+
+  test("should distinguish a failed pre-write read from an unconfirmed order write"):
+    val refs        = Refs()
+    val observed    = NonEmptyList.of(chapterOpening.id, first.id, second.id)
+    val proposed    = NonEmptyList.of(chapterOpening.id, second.id, first.id)
+    val unavailable = new IllegalStateException("Database unavailable")
+
+    for
+      unreadable <- buildManager(refs, maybeReadError = unavailable.some)
+      failed     <- unreadable.replaceChapterOrder(album.id, chapter.id, observed, proposed)
+      before     <- refs.orders.get
+      unwritable <- buildManager(refs, maybeWriteError = unavailable.some)
+      uncertain  <- unwritable.replaceChapterOrder(album.id, chapter.id, observed, proposed)
+      after      <- refs.orders.get
+    yield
+      assertEquals(failed, ReplacementResult.Failed)
+      assertEquals(before, Vector.empty[(ChapterId, NonEmptyList[SpreadId])])
+      assertEquals(uncertain, ReplacementResult.Uncertain)
+      assertEquals(after, Vector((chapter.id, proposed)))
+
   final private case class Refs():
-    val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]] = Ref.unsafe(Vector.empty)
-    val replacements: Ref[IO, Vector[Spread]]                                     = Ref.unsafe(Vector.empty)
-    val orders: Ref[IO, Vector[(ChapterId, NonEmptyList[SpreadId])]]              = Ref.unsafe(Vector.empty)
-    val removals: Ref[IO, Vector[SpreadId]]                                       = Ref.unsafe(Vector.empty)
+    val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]]    = Ref.unsafe(Vector.empty)
+    val replacements: Ref[IO, Vector[Spread]]                                        = Ref.unsafe(Vector.empty)
+    val orders: Ref[IO, Vector[(chapter: ChapterId, order: NonEmptyList[SpreadId])]] = Ref.unsafe(Vector.empty)
+    val removals: Ref[IO, Vector[SpreadId]]                                          = Ref.unsafe(Vector.empty)
 
   private def describeInserts(values: Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]) =
     values.map { case (chapterId, spread) => (chapterId, spread.id, spread.template, spread.photoSlots.map(_.box).toList, spread.placements) }
@@ -574,8 +638,12 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def countInteriorSpreads(value: AlbumId): IO[Int] =
         maybeAlbum.filter(_.id.value === value.value).fold(0)(_.collectSpreads.length).pure[IO]
       override def findChapterOrder(value: AlbumId, chapterId: ChapterId): IO[Option[NonEmptyList[SpreadId]]] =
-        maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value))
-          .map(chapter => NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)).pure[IO]
+        maybeReadError match
+          case Some(error) => IO.raiseError[Option[NonEmptyList[SpreadId]]](error)
+          case None        => refs.orders.get.map: orders =>
+              maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value)).map: chapter =>
+                orders.findLast { case (id, _) => id.value === chapterId.value }
+                  .fold(NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)) { case (_, order) => order }
       override def findSpread(value: AlbumId, id: SpreadId): IO[Option[Located]] =
         refs.replacements.get.map: replacements =>
           maybeAlbum.filter(_.id.value === value.value).flatMap: album =>

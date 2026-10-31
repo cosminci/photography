@@ -400,7 +400,7 @@
       "put": {
         "operationId": "replaceChapterComposition",
         "summary": "Replace a chapter's complete spread order",
-        "description": "Retains the opening first and every existing spread exactly once. expectedSpreadIds is the order the browser observed. A concurrent change returns 409 without writing. Comparison and replacement share mutation coordination and a database transaction. Uncertain acknowledgement returns write_uncertain; reread before retrying.",
+        "description": "Retains the opening first and every existing spread exactly once. expectedSpreadIds is the order the browser observed. A concurrent change returns 409 without writing. Comparison and replacement share backend mutation coordination; replacement commits in a database transaction. Failed pre-write acquisition returns service_failure. Uncertain acknowledgement returns write_uncertain; reread before retrying.",
         "requestBody": {
           "required": true,
           "content": {
@@ -421,7 +421,7 @@
           "400": { "$ref": "#/components/responses/ValidationFailure" },
           "404": { "$ref": "#/components/responses/ChapterNotFound" },
           "409": { "description": "Composition changed since the supplied expected order", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "const": "composition_changed" } } } } } },
-          "500": { "description": "Write acknowledgement is uncertain; reread before retrying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "const": "write_uncertain" } } } } } }
+          "500": { "description": "Pre-write acquisition failed, or write acknowledgement is uncertain; uncertain writes require rereading before retrying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["service_failure", "write_uncertain"] } } } } } }
         }
       }
     },
@@ -937,7 +937,7 @@
       "PlacementCreation": {
         "type": "object", "required": ["slotId", "photoId"],
         "properties": { "slotId": { "type": "string", "format": "uuid" }, "photoId": { "type": "string", "format": "uuid" } }, "additionalProperties": false,
-        "description": "All IDs are lowercase canonical UUIDs. Source placement identity must still exist; clients cannot allocate placement IDs."
+        "description": "All IDs are lowercase canonical UUIDs. The target slot and eligible photo must exist; the backend allocates the placement identity."
       },
       "PlacementChanges": {
         "oneOf": [

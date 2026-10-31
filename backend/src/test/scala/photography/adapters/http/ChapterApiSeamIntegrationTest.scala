@@ -19,6 +19,7 @@ import photography.usecases.photo.ChapterPhotoInventory
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Scheduling, Status as ImportStatus}
 import photography.usecases.photo.{PhotoInventory, PhotoManager, PhotoWriteRecovery}
+import photography.ports.album.AlbumRepository
 
 import java.nio.file.Path
 import java.time.{Instant, LocalDate, LocalDateTime}
@@ -66,6 +67,32 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
   private val vacation    =
     s"""{"kind":"vacation","name":"  Coast  ","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast"}"""
   private val home = s"""{"kind":"home","countries":["${country.id.value}"],"sourceFolder":"/photos/Home"}"""
+
+  test("should read ordered chapter metadata with its exact inclusive period and source"):
+    val refs     = Refs()
+    val expected = json(
+      s"""{"chapters":[{"id":"${chapter.id.value}","kind":"vacation","name":"Coast","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast","description":"Sea air"}]}"""
+    )
+
+    for
+      response <- send(buildApi(refs), Method.GET, s"$albumPath/chapters")
+      calls    <- refs.calls.get
+    yield
+      assertEquals(response, ApiResponse(Status.Ok, expected))
+      assertEquals(calls, Vector(s"chapters:${album.id.value}"))
+
+  test("should distinguish missing chapter collections from failed acquisition"):
+    val missing = buildApi(Refs(), metadataResult = AlbumRepository.ChaptersResult.AlbumNotFound)
+    val failed  = buildApi(Refs(), metadataResult = AlbumRepository.ChaptersResult.Failed(AlbumRepository.Failure.DatabaseFailure))
+
+    for
+      absent  <- send(missing, Method.GET, s"$albumPath/chapters")
+      failure <- send(failed, Method.GET, s"$albumPath/chapters")
+      invalid <- send(failed, Method.GET, "/api/albums/bad/chapters")
+    yield
+      assertEquals(absent, ApiResponse(Status.NotFound, json("""{"code":"album_not_found"}""")))
+      assertEquals(invalid, absent)
+      assertEquals(failure, ApiResponse(Status.InternalServerError, json("""{"code":"service_failure"}""")))
 
   test("should decode vacation and Home creation and type-specific updates into minimal manager inputs"):
     val refs             = Refs()
@@ -396,7 +423,15 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       createResult: CreateResult = CreateResult.Created(chapter.id, Scheduling.Queued),
       updateResult: UpdateResult = UpdateResult.Updated(Scheduling.NotRequested),
       chapterResult: ChapterPhotoInventory.Result = ChapterPhotoInventory.Result.Failed,
-      refreshResult: ChapterMetadataManager.RefreshResult = ChapterMetadataManager.RefreshResult.Failed
+      refreshResult: ChapterMetadataManager.RefreshResult = ChapterMetadataManager.RefreshResult.Failed,
+      metadataResult: AlbumRepository.ChaptersResult =
+        AlbumRepository.ChaptersResult.Found(Vector(AlbumRepository.ChapterMetadata(
+          chapter.id,
+          chapter.destination,
+          chapter.period,
+          chapter.sourceFolder,
+          chapter.description
+        )))
   ) =
     val inventories = new ChapterPhotoInventory[IO]:
       override def read(id: ChapterId): IO[ChapterPhotoInventory.Result] = chapterResult.pure[IO]
@@ -416,7 +451,10 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       ) =
         val call = s"update:${id.value}:${target.value}:$name|$period|$folder|${countries.toList.map(_.value).mkString(",")}"
         refs.calls.update(_ :+ call).as(updateResult)
-    ChapterApi.make(inventories, chapters).routes.orNotFound
+    val metadata = new AlbumRepository.ChapterRead[IO]:
+      override def chapters(id: AlbumId): IO[AlbumRepository.ChaptersResult] =
+        refs.calls.update(_ :+ s"chapters:${id.value}").as(metadataResult)
+    ChapterApi.make(inventories, chapters, metadata).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -428,7 +466,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       content  <- response.as[Json]
     yield
       assertEquals(response.contentType.map(_.mediaType), MediaType.application.json.some)
-      if method === Method.GET && response.status === Status.Ok && path.endsWith("/photos") then
+      if method === Method.GET && response.status === Status.Ok then
         assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
       ApiResponse(response.status, content)
   // scalafix:on DisableSyntax.defaultArgs

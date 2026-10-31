@@ -21,6 +21,7 @@ import photography.ports.spread.SpreadTemplateRepository
 import photography.ports.spread.SpreadTemplateRepository.FindTemplateResult
 
 trait SpreadManager[F[_]]:
+  def replaceChapterOrder(album: AlbumId, chapter: ChapterId, expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]): F[ReplacementResult]
   def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult]
   def changeTemplate(album: AlbumId, spread: SpreadId, template: SpreadTemplateId, confirmPlacements: Boolean): F[ChangeTemplateResult]
   def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): F[DeleteResult]
@@ -44,6 +45,15 @@ object SpreadManager:
       placements: PhotoPlacementRepository[Db],
       defaultPhotoLayout: SpreadTemplateId
   )(using Transaction[Db, F]) extends SpreadManager[F]:
+    override def replaceChapterOrder(
+        album: AlbumId,
+        chapter: ChapterId,
+        expected: NonEmptyList[SpreadId],
+        order: NonEmptyList[SpreadId]
+    ): F[ReplacementResult] =
+      if !isReplacement(expected, order) then ReplacementResult.Invalid.pure[F]
+      else summon[Mutex[F]].lock.surround(MonadCancelThrow[F].uncancelable(_ => replaceCurrent(album, chapter, expected, order)))
+
     override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult] =
       act[AddResult](AddResult.Failed):
         templates.findTemplate(defaultPhotoLayout).flatMap[AddResult]:
@@ -123,6 +133,22 @@ object SpreadManager:
                       case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
                       case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
           Transaction[Db, F].run(mutation)
+
+    private def isReplacement(expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
+      val observed          = expected.toList.map(_.value)
+      val proposed          = order.toList.map(_.value)
+      val retainsOpening    = expected.head.value === order.head.value
+      val retainsMembership = proposed.toSet === observed.toSet && proposed.distinct.size === proposed.size
+      retainsOpening && retainsMembership
+
+    private def replaceCurrent(album: AlbumId, chapter: ChapterId, expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
+      Transaction[Db, F].resolve(composition.findChapterOrder(album, chapter)).attempt.flatMap:
+        case Left(error) => Logger[F].error(error)("Chapter composition read failed").as(ReplacementResult.Failed)
+        case Right(None) => ReplacementResult.NotFound.pure[F]
+        case Right(Some(current)) if current.toList.map(_.value) =!= expected.toList.map(_.value) => ReplacementResult.Stale.pure[F]
+        case Right(Some(_))                                                                       =>
+          Transaction[Db, F].run(spreads.reorder(chapter, order)).as(ReplacementResult.Saved)
+            .handleErrorWith(error => Logger[F].error(error)("Composition write acknowledgement failed").as(ReplacementResult.Uncertain))
 
     private def act[A](failed: A)(body: F[A]) =
       MonadCancelThrow[F].uncancelable: _ =>
@@ -285,6 +311,9 @@ object SpreadManager:
     case Adjust(id: SpreadPlacementId, transform: PhotoTransform)
     case SetCaptionCorner(id: SpreadPlacementId, corner: CaptionCorner)
     case Move(source: SpreadPlacementId, destination: PhotoSpreadSlotId)
+
+  enum ReplacementResult derives CanEqual:
+    case Saved, Invalid, NotFound, Stale, Failed, Uncertain
 
   enum PlacementReadResult:
     case Found(spread: Spread)

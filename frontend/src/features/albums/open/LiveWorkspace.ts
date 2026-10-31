@@ -1,7 +1,7 @@
 import { createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
-import type { Album, AlbumClient } from "../model/Album";
+import { AlbumRequestError, type Album, type AlbumClient } from "../model/Album";
 import type { AlbumPhotoEvents, ChapterSave, PhotoEvent, Scheduling } from "../model/Photo";
-import type { Workspace } from "../model/Workspace";
+import type { Spread, SpreadMembership, Workspace } from "../model/Workspace";
 
 export function createLiveWorkspace(
   albumId: Accessor<string>,
@@ -44,15 +44,21 @@ export function createLiveWorkspace(
       function readAlbum(): Promise<Album> {
         if (metadataRead !== undefined) return metadataRead;
         metadataRead = client
-          .open(id)
+          .open(id, controller.signal)
           .then((metadata) => {
-            if (active) setAlbum(metadata);
+            if (active && workspace() === undefined) setAlbum(metadata);
             return metadata;
           })
           .finally(() => {
             metadataRead = undefined;
           });
         return metadataRead;
+      }
+
+      async function readSpread(member: SpreadMembership): Promise<Spread> {
+        const spread = await readExistingMember(client.spread(id, member.id, member.chapter, controller.signal));
+        if (spread.id !== member.id || spread.chapter !== member.chapter) throw new AcquisitionConflict("Spread identity mismatch");
+        return spread;
       }
 
       function reload(): Promise<void> {
@@ -63,22 +69,29 @@ export function createLiveWorkspace(
         }
         const run = async () => {
           let failure: Error | undefined;
+          let reconciliationAttempts = 0;
+          setLoading(true);
           do {
             readAgain = false;
             epoch++;
             for (const chapter of chapters.values()) chapter.dirty = false;
             try {
               const [metadata, orderedChapters, composition, countries, photoRoot] = await Promise.all([
-                album() ?? readAlbum(),
+                readAlbum(),
                 client.chapters(id, controller.signal),
                 client.composition(id, controller.signal),
                 client.countries(controller.signal),
                 client.photoSource(controller.signal),
               ]);
               if (!active) return;
+              if (metadata.id !== id) throw new Error("Unexpected album identity");
               const [spreads, inventories] = await Promise.all([
-                Promise.all(composition.map((member) => client.spread(id, member.id, member.chapter, controller.signal))),
-                Promise.all(orderedChapters.map(async (chapter) => [chapter.id, await client.chapterPhotos(chapter.id, controller.signal)] as const)),
+                Promise.all(composition.map(readSpread)),
+                Promise.all(
+                  orderedChapters.map(
+                    async (chapter) => [chapter.id, await readExistingMember(client.chapterPhotos(chapter.id, controller.signal))] as const,
+                  ),
+                ),
               ]);
               const snapshot: Workspace = {
                 year: metadata.year,
@@ -88,8 +101,7 @@ export function createLiveWorkspace(
                 spreads,
                 photoInventories: Object.fromEntries(inventories),
               };
-              if (new Set(orderedChapters.map((chapter) => chapter.id)).size !== orderedChapters.length)
-                throw new Error("Duplicate chapter identities");
+              requireCoherentWorkspace(snapshot);
               if (controller.signal.aborted) return;
               setAlbum(metadata);
               setWorkspace(snapshot);
@@ -97,6 +109,10 @@ export function createLiveWorkspace(
               failure = undefined;
             } catch (cause) {
               failure = cause instanceof Error ? cause : new Error("Saved workspace could not be loaded");
+              if (cause instanceof AcquisitionConflict && reconciliationAttempts < 2) {
+                reconciliationAttempts++;
+                readAgain = true;
+              }
             }
           } while (needsAnotherRead());
           reading = undefined;
@@ -238,4 +254,38 @@ export function createLiveWorkspace(
     refresh: (ids: readonly string[]) => operations.refresh(ids),
     saved: (result: ChapterSave) => operations.saved(result),
   };
+}
+
+class AcquisitionConflict extends Error {}
+
+async function readExistingMember<T>(read: Promise<T>): Promise<T> {
+  try {
+    return await read;
+  } catch (failure) {
+    if (failure instanceof AlbumRequestError && failure.status === 404)
+      throw new AcquisitionConflict("Composition changed during resource acquisition");
+    throw failure;
+  }
+}
+
+function requireCoherentWorkspace(snapshot: Workspace): void {
+  const chapterIds = snapshot.chapters.map((chapter) => chapter.id);
+  if (new Set(chapterIds).size !== chapterIds.length) throw new AcquisitionConflict("Duplicate chapter identities");
+  const home = snapshot.chapters.findIndex((chapter) => chapter.kind === "home");
+  if (home !== -1 && home !== chapterIds.length - 1) throw new AcquisitionConflict("Home must be the final chapter");
+  if (new Set(snapshot.spreads.map((spread) => spread.id)).size !== snapshot.spreads.length)
+    throw new AcquisitionConflict("Duplicate spread identities");
+
+  let chapterIndex = -1;
+  for (const [index, spread] of snapshot.spreads.entries()) {
+    if (index === 0) {
+      if (spread.kind !== "album_start") throw new AcquisitionConflict("Missing Synopsis opening");
+    } else if (spread.kind === "chapter_start") {
+      chapterIndex++;
+      if (spread.chapter !== chapterIds[chapterIndex]) throw new AcquisitionConflict("Chapter composition changed during acquisition");
+    } else if (spread.kind !== "photos_only" || spread.chapter !== chapterIds[chapterIndex]) {
+      throw new AcquisitionConflict("Invalid chapter spread block");
+    }
+  }
+  if (snapshot.spreads.length === 0 || chapterIndex + 1 !== chapterIds.length) throw new AcquisitionConflict("Incomplete chapter composition");
 }

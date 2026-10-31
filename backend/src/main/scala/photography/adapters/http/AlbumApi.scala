@@ -12,23 +12,34 @@ import photography.domain.album.{Album, AlbumId, AlbumTitle, AlbumYear, AlbumYea
 import io.github.iltotore.iron.constraint.all.*
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
+import photography.ports.album.AlbumRepository
+import java.util.UUID
 
 trait AlbumApi[F[_]]:
   def routes: HttpRoutes[F]
 
 object AlbumApi:
-  def make[F[_]: Async](albums: AlbumManager[F]): AlbumApi[F] =
-    new LiveAlbumApi(albums)
+  def make[F[_]: Async](albums: AlbumManager[F], metadata: AlbumRepository.MetadataRead[F]): AlbumApi[F] =
+    new LiveAlbumApi(albums, metadata)
 
-  final private class LiveAlbumApi[F[_]: Async](albums: AlbumManager[F]) extends AlbumApi[F] with Http4sDsl[F]:
+  final private class LiveAlbumApi[F[_]: Async](albums: AlbumManager[F], metadata: AlbumRepository.MetadataRead[F])
+      extends AlbumApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
         case request @ GET -> Root / "api" / "albums"                    => list(request.uri.query)
         case request @ POST -> Root / "api" / "albums"                   => create(request)
+        case GET -> Root / "api" / "albums" / CanonicalId(id)            => read(AlbumId(id))
+        case GET -> Root / "api" / "albums" / _                          => respondAlbumNotFound
         case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => rename(id, request)
         case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => delete(id)
         case (PATCH | DELETE) -> Root / "api" / "albums" / _             => respondAlbumNotFound
       }
+
+    private def read(id: AlbumId) =
+      metadata.metadata(id).flatMap:
+        case AlbumRepository.MetadataResult.Found(value) => Ok(value).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case AlbumRepository.MetadataResult.NotFound     => respondAlbumNotFound
+        case AlbumRepository.MetadataResult.Failed(_)    => respondServiceFailure
 
     private def list(query: Query) = query match
       case Page(page) =>
@@ -72,6 +83,13 @@ object AlbumApi:
     private object AlbumIdVar:
       def unapply(value: String): Option[AlbumId] =
         UUIDVar.unapply(value).filter(_.toString.equalsIgnoreCase(value)).map(AlbumId(_))
+
+    private object CanonicalId:
+      def unapply(value: String): Option[UUID] =
+        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
+
+    private given Encoder[AlbumRepository.Metadata] = Encoder.forProduct5("id", "year", "title", "synopsis", "createdAt"): album =>
+      (album.id.value.toString, album.year: Int, album.title: String, album.synopsis, album.createdAt.toString)
 
     private given Decoder[AlbumYear] = Decoder.decodeJsonNumber.emap(_.toInt.toRight("Expected an integer year"))
       .emap(_.refineEither[AlbumYearConstraint]).prepare(_.downField("year"))
