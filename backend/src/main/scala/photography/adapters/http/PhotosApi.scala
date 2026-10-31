@@ -27,7 +27,7 @@ object PhotosApi:
       request.pathInfo.segments.toList match
         case segment :: remaining if remaining.headOption.exists(_.decoded() === "photos") =>
           CanonicalId.unapply(segment.decoded()) match
-            case Some(id) => photos.routes(ChapterId(id))(request.withPathInfo(request.pathInfo.dropSegments(1)))
+            case Some(id) => Router(s"/${segment.decoded()}" -> photos.routes(ChapterId(id)))(request)
             case None     => OptionT.pure[F](Response[F](Status.NotFound).withEntity(Map("code" -> "chapter_not_found")))
         case _ => OptionT.none[F, Response[F]]
     }
