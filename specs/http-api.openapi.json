@@ -580,13 +580,13 @@
         }
       }
     },
-    "/api/photos/{photoId}/caption": {
-      "parameters": [{ "name": "photoId", "in": "path", "required": true, "description": "Lowercase canonical photo UUID.",
+    "/api/chapters/{chapterId}/photos/{photoId}/caption": {
+      "parameters": [{ "$ref": "#/components/parameters/PhotoChapterId" }, { "name": "photoId", "in": "path", "required": true, "description": "Lowercase canonical photo UUID.",
         "schema": { "type": "string", "format": "uuid" } }],
       "put": {
         "operationId": "savePhotoCaption",
         "summary": "Save or clear photo-owned caption text",
-        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears the caption; chapter inventories publish cleared captions as null. Changes only the photo caption, preserving interior corners, transforms and import state. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/chapters/{chapterId}/photos for the photo's chapter; after acknowledgement retry only a failed read.",
+        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears the caption; chapter inventories publish cleared captions as null. The photo must belong to the supplied chapter. Changes only the photo caption, preserving interior corners, transforms and import state. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/chapters/{chapterId}/photos; after acknowledgement retry only a failed read.",
         "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
         "responses": {
           "204": { "description": "Saved; no response body" },
@@ -1181,9 +1181,9 @@
         } } }
       },
       "ContentPhotoNotFound": {
-        "description": "Malformed or missing photo.",
+        "description": "Malformed chapter UUID, or malformed, missing or foreign photo.",
         "content": { "application/json": { "schema": {
-          "type": "object", "required": ["code"], "properties": { "code": { "const": "photo_not_found" } }, "additionalProperties": false
+          "type": "object", "required": ["code"], "properties": { "code": { "enum": ["chapter_not_found", "photo_not_found"] } }, "additionalProperties": false
         } } }
       },
       "CameraNotFound": {

@@ -287,7 +287,7 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
       private val next                  = Ref.unsafe[IO, Long](10L)
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(index => new UUID(0L, index))
     val photos = new PhotoRepository[Db]:
-      override def saveCaption(id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
+      override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         Kleisli.liftF[
           IO,
           Unit,

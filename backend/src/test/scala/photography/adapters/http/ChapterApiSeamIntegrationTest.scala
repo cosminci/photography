@@ -17,14 +17,12 @@ import photography.usecases.chapter.ChapterManager
 import photography.usecases.chapter.ChapterManager.{GearReadResult, GearReplaceResult}
 import photography.usecases.gear.GearManager
 import org.typelevel.ci.CIString
-import photography.usecases.photo.ChapterPhotoInventory
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
-import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Scheduling, Status as ImportStatus}
-import photography.usecases.photo.{PhotoInventory, PhotoManager, PhotoWriteRecovery}
+import photography.usecases.photo.ChapterPhotoImport.Scheduling
 import photography.ports.album.AlbumRepository
 
 import java.nio.file.Path
-import java.time.{Instant, LocalDate, LocalDateTime}
+import java.time.{Instant, LocalDate}
 import java.util.UUID
 
 final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
@@ -332,74 +330,29 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(update, serviceError)
       assertEquals(missing, ApiResponse(Status.NotFound, json("""{"code":"chapter_not_found"}""")))
 
-  test("should adapt chapter-addressed inventory and Refresh with explicit missing and failure outcomes"):
-    val empty     = PhotoInventory.Inventory(photos = Vector.empty[Photo], placed = Set.empty[PhotoId])
-    val execution = ExecutionOutcome(ImportStatus.Idle, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
-    val found     = ChapterPhotoInventory.Result.Found(ChapterPhotoInventory.Snapshot(empty, execution))
+  test("should adapt Refresh with explicit missing and failure outcomes"):
     val scenarios = Vector(
-      (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Queued), Status.Ok, Status.Accepted),
-      (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Coalesced), Status.Ok, Status.Accepted),
-      (ChapterPhotoInventory.Result.ChapterNotFound, ChapterMetadataManager.RefreshResult.ChapterNotFound, Status.NotFound, Status.NotFound),
-      (
-        ChapterPhotoInventory.Result.Failed,
-        ChapterMetadataManager.RefreshResult.Failed,
-        Status.InternalServerError,
-        Status.InternalServerError
-      ),
-      (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Failed), Status.Ok, Status.InternalServerError),
-      (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.NotRequested), Status.Ok, Status.InternalServerError)
+      (ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Queued), Status.Accepted),
+      (ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Coalesced), Status.Accepted),
+      (ChapterMetadataManager.RefreshResult.ChapterNotFound, Status.NotFound),
+      (ChapterMetadataManager.RefreshResult.Failed, Status.InternalServerError),
+      (ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Failed), Status.InternalServerError),
+      (ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.NotRequested), Status.InternalServerError)
     )
 
-    scenarios.traverse_ { case (inventory, refresh, getStatus, postStatus) =>
-      val server = buildApi(Refs(), chapterResult = inventory, refreshResult = refresh)
-      val path   = s"/api/chapters/${chapter.id.value}/photos"
+    scenarios.traverse_ { case (refresh, postStatus) =>
+      val server = buildApi(Refs(), refreshResult = refresh)
 
       for
-        read      <- send(server, Method.GET, path)
         scheduled <- send(server, Method.PUT, s"/api/chapters/${chapter.id.value}/photo-import")
         malformed <- send(server, Method.PUT, "/api/chapters/bad/photo-import")
-        missing   <- send(server, Method.GET, "/api/chapters/bad/photos")
       yield
-        assertEquals((read.status, scheduled.status), (getStatus, postStatus))
+        assertEquals(scheduled.status, postStatus)
         assertEquals(malformed, ApiResponse(Status.NotFound, json("""{"code":"chapter_not_found"}""")))
-        assertEquals(missing, malformed)
     }
 
-  test("should expose safe processing feedback and preserve saved scheduling outcomes"):
-    val empty          = PhotoInventory.Inventory(photos = Vector.empty[Photo], placed = Set.empty[PhotoId])
-    val completed      = PhotoManager.RefreshResult(unsupportedCount = 2, issues = Vector(PhotoManager.Issue.Undecodable(filename = "bad.jpg")))
-    val idleProcessing = json("""{"state":"idle","unsupportedCount":0,"skippedCount":0,"issues":[]}""")
-    val launchFailed   = json("""{"state":"failed","unsupportedCount":0,"skippedCount":0,
-      "issues":[{"stage":"scheduling","code":"scheduling_failed","filename":null}]}""")
-    val uncertain = json("""{"state":"failed","unsupportedCount":0,"skippedCount":0,
-      "issues":[{"stage":"persistence","code":"persistence_failed","filename":null}]}""")
-    val skipped = json("""{"state":"completed","unsupportedCount":2,"skippedCount":1,
-      "issues":[{"stage":"read","code":"undecodable","filename":"bad.jpg"}]}""")
-    val statuses = Vector(
-      (ImportStatus.Idle, idleProcessing),
-      (ImportStatus.Queued, idleProcessing.deepMerge(json("""{"state":"queued"}"""))),
-      (ImportStatus.Running, idleProcessing.deepMerge(json("""{"state":"running"}"""))),
-      (ImportStatus.LaunchFailed, launchFailed),
-      (ImportStatus.Uncertain, uncertain),
-      (ImportStatus.Finished(completed), skipped)
-    )
-
-    statuses.traverse_ { case (status, expected) =>
-      val execution         = ExecutionOutcome(status, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
-      val snapshot          = ChapterPhotoInventory.Snapshot(empty, execution)
-      val found             = ChapterPhotoInventory.Result.Found(snapshot)
-      val server            = buildApi(Refs(), chapterResult = found)
-      val expectedInventory = Json.obj(
-        "photos"         -> Json.arr(),
-        "placedPhotoIds" -> Json.arr(),
-        "counts"         -> Json.obj("unplaced" -> Json.fromInt(0), "total" -> Json.fromInt(0)),
-        "processing"     -> expected
-      )
-
-      for
-        response <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
-      yield assertEquals(response, ApiResponse(Status.Ok, expectedInventory))
-    } >> Scheduling.values.toVector.traverse_ { scheduling =>
+  test("should preserve saved scheduling outcomes"):
+    Scheduling.values.toVector.traverse_ { scheduling =>
       val server   = buildApi(Refs(), createResult = CreateResult.Created(chapter.id, scheduling), updateResult = UpdateResult.Updated(scheduling))
       val expected = scheduling match
         case Scheduling.Queued       => "queued"
@@ -414,98 +367,6 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals((created.status, updated.status), (Status.Created, Status.Ok))
         assertEquals(created.body.hcursor.get[String]("scheduling"), expected.asRight)
         assertEquals(updated.body.hcursor.get[String]("scheduling"), expected.asRight)
-    }
-
-  test("should encode completed photos and every failure without exposing source paths or write identities"):
-    val location = ThumbnailLocation(new UUID(0L, 80L))
-    val intent   = PhotoWriteIntentId(new UUID(0L, 81L))
-    val issues   = Vector(
-      PhotoManager.Issue.Discovery,
-      PhotoManager.Issue.Read(filename = "one.jpg"),
-      PhotoManager.Issue.Generation(filename = "one.jpg"),
-      PhotoManager.Issue.Undecodable(filename = "one.jpg"),
-      PhotoManager.Issue.Unstable(filename = "one.jpg"),
-      PhotoManager.Issue.Storage,
-      PhotoManager.Issue.Cleanup(location),
-      PhotoManager.Issue.Persistence,
-      PhotoManager.Issue.Unexpected,
-      PhotoManager.Issue.WriteReferences(intent),
-      PhotoManager.Issue.WriteCompletion(intent)
-    )
-    val cleanup = Vector(
-      PhotoWriteRecovery.Issue.Listing,
-      PhotoWriteRecovery.Issue.References(intent),
-      PhotoWriteRecovery.Issue.Cleanup(intent, location),
-      PhotoWriteRecovery.Issue.Completion(intent)
-    )
-    val expectedIssues = Vector(
-      ("discovery", "unreadable_source", Json.Null),
-      ("read", "unreadable_source", Json.fromString("one.jpg")),
-      ("generation", "encoding_failed", Json.fromString("one.jpg")),
-      ("read", "undecodable", Json.fromString("one.jpg")),
-      ("read", "unstable", Json.fromString("one.jpg")),
-      ("storage", "storage_failed", Json.Null),
-      ("cleanup", "cleanup_failed", Json.Null)
-    ) ++ Vector.fill(6)(("persistence", "persistence_failed", Json.Null)) ++
-      Vector(("cleanup", "cleanup_failed", Json.Null), ("persistence", "persistence_failed", Json.Null))
-    val expectedFeedback = expectedIssues.map { case (stage, code, filename) =>
-      Json.obj("stage" -> Json.fromString(stage), "code" -> Json.fromString(code), "filename" -> filename)
-    }
-    val expectedProcessing = Json.obj(
-      "state"            -> Json.fromString("failed"),
-      "unsupportedCount" -> Json.fromInt(3),
-      "skippedCount"     -> Json.fromInt(2),
-      "issues"           -> Json.arr(expectedFeedback*)
-    )
-
-    Vector(false, true).traverse_ { annotated =>
-      val maybeDate    = Option.when(annotated)(LocalDateTime.of(2026, 1, 2, 3, 4))
-      val maybeCaption = Option.when(annotated)("Ș 日本語\nSecond line")
-      val metadata     = PhotoMetadata(hash = "source-hash", maybeCapturedLocal = maybeDate, PhotoDimensions(width = 20, height = 30))
-      val thumbnail    = Thumbnail(location, version = "version", ThumbnailDimensions(width = 10, height = 15), ThumbnailQuality.Standard, bytes = 1)
-      val photo        = Photo(
-        PhotoId(new UUID(0L, 82L)),
-        chapter.id,
-        OriginalPhotoLocation(source = "/private/originals", filename = "one.jpg"),
-        metadata,
-        thumbnail,
-        maybeCaption = maybeCaption
-      )
-      val secondPhoto   = photo.copy(id = PhotoId(new UUID(0L, 84L)))
-      val unplacedPhoto = photo.copy(id = PhotoId(new UUID(0L, 83L)))
-      val photos        = Vector(photo, secondPhoto, unplacedPhoto)
-      val placements    = Vector(
-        (Set.empty[PhotoId], Json.arr(), 3),
-        (Set(secondPhoto.id, photo.id), Json.arr(Json.fromString(photo.id.value.toString), Json.fromString(secondPhoto.id.value.toString)), 1)
-      )
-      val execution =
-        ExecutionOutcome(ImportStatus.Finished(PhotoManager.RefreshResult(unsupportedCount = 3, issues = issues)), retirementIssues = cleanup)
-      val expectedPhoto = json(s"""{"id":"${photo.id.value}","filename":"one.jpg","capturedLocal":${maybeDate.fold("null")(date => s"\"$date\"")},
-        "width":20,"height":30,"caption":${maybeCaption.fold("null")(caption => Json.fromString(value = caption).noSpaces)},
-        "thumbnail":{"url":"/thumbnails/${location.value}/version.jpg","width":10,"height":15}}""")
-      val expectedSecond   = expectedPhoto.deepMerge(Json.obj("id" -> Json.fromString(secondPhoto.id.value.toString)))
-      val expectedUnplaced = expectedPhoto.deepMerge(Json.obj("id" -> Json.fromString(unplacedPhoto.id.value.toString)))
-
-      placements.traverse_ { case (placed, encodedPlaced, unplaced) =>
-        val inventory = PhotoInventory.Inventory(photos = photos, placed = placed)
-        val snapshot  = ChapterPhotoInventory.Snapshot(inventory, execution)
-        val server    = buildApi(
-          Refs(),
-          chapterResult = ChapterPhotoInventory.Result.Found(snapshot)
-        )
-        val expectedInventory = Json.obj(
-          "photos"         -> Json.arr(expectedPhoto, expectedSecond, expectedUnplaced),
-          "placedPhotoIds" -> encodedPlaced,
-          "counts"         -> Json.obj("unplaced" -> Json.fromInt(unplaced), "total" -> Json.fromInt(photos.size)),
-          "processing"     -> expectedProcessing
-        )
-
-        for
-          read <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
-        yield
-          assertEquals(read, ApiResponse(Status.Ok, expectedInventory))
-          assert(!read.body.noSpaces.contains("/private") && !read.body.noSpaces.contains(intent.value.toString))
-      }
     }
 
   test("should read and replace ordered shared selections with typed fixed and interchangeable cardinality and explicit empty success"):
@@ -717,7 +578,6 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       refs: Refs,
       createResult: CreateResult = CreateResult.Created(chapter.id, Scheduling.Queued),
       updateResult: UpdateResult = UpdateResult.Updated(Scheduling.NotRequested),
-      chapterResult: ChapterPhotoInventory.Result = ChapterPhotoInventory.Result.Failed,
       refreshResult: ChapterMetadataManager.RefreshResult = ChapterMetadataManager.RefreshResult.Failed,
       metadataResult: AlbumRepository.ChaptersResult =
         AlbumRepository.ChaptersResult.Found(Vector(AlbumRepository.ChapterMetadata(
@@ -732,9 +592,6 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       descriptionResult: IO[ChapterMetadataManager.SaveDescriptionResult] =
         IO.raiseError[ChapterMetadataManager.SaveDescriptionResult](new AssertionError("Unexpected description mutation"))
   ) =
-    val inventories = new ChapterPhotoInventory[IO]:
-      override def read(id: ChapterId): IO[ChapterPhotoInventory.Result] =
-        refs.calls.update(_ :+ s"inventory:${id.value}").as(chapterResult)
     val chapters = new ChapterMetadataManager[IO]:
       override def saveDescription(album: AlbumId, chapter: ChapterId, text: String): IO[ChapterMetadataManager.SaveDescriptionResult] =
         refs.descriptions.update(_ :+ DescriptionCall(album, chapter, text = text)) >> descriptionResult
@@ -760,7 +617,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         refs.gearCalls.update(_ :+ GearCall.Read(album, chapter)) >> gearReadResult
       override def replaceGear(album: AlbumId, chapter: ChapterId, selection: GearSelection): IO[GearReplaceResult] =
         refs.gearCalls.update(_ :+ GearCall.Replace(album, chapter, selection = selection)) >> gearReplaceResult
-    ChapterApi.make(inventories, chapters, metadata, gear).routes.orNotFound
+    ChapterApi.make(chapters, metadata, gear).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs

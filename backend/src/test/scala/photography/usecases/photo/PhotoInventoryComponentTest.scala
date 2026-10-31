@@ -89,7 +89,7 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
         )(IO.raiseError[A])
       override def resolve[A](program: Db[A]): IO[A] = program.runA(0)
     val photos = new PhotoRepository[Db]:
-      override def saveCaption(id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
+      override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         StateT.liftF(IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation")))
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =
         StateT.modify[IO, Int](_ + 1).as(listed)
