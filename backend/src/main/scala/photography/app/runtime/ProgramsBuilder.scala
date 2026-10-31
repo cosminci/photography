@@ -20,7 +20,7 @@ import photography.domain.layout.SpreadTemplateId
 import java.util.UUID
 import photography.ports.photo.{PhotoRepository, ThumbnailStorage}
 import photography.usecases.album.{AlbumManager, AlbumPageSize}
-import photography.usecases.photo.ChapterPhotoInventory
+import photography.usecases.photo.{ChapterPhotoInventory, PhotoManager}
 import photography.ports.album.{AlbumRepository, AlbumCompositionRepository, CountryRepository}
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.usecases.photo.ChapterPhotoImport
@@ -39,6 +39,7 @@ final case class Programs[F[_]](
     chapters: ChapterMetadataManager[F],
     gear: GearManager[F],
     chapterGear: ChapterManager[F],
+    photos: PhotoManager[F],
     templates: SpreadTemplateRepository[F],
     inventories: ChapterPhotoInventory[F],
     metadata: AlbumRepository.MetadataRead[F],
@@ -84,6 +85,8 @@ object ProgramsBuilder:
     private val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
     private val planning          = ChapterPlanning.make(templates)
     private val gearRepository    = SqliteGearRepository.make[F](sqlite)
+    private val storage           = FilePhotoStorage.make(thumbnails)
+    private val generator         = ImageIoPhotoThumbnailGenerator.make[F](quality)
 
     override def build: Resource[F, Programs[F]] =
       for
@@ -98,6 +101,7 @@ object ProgramsBuilder:
           chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
           gear = gear,
           chapterGear = ChapterManager.make(chapterRepository, gear),
+          photos = PhotoManager.make(storage, photoRepository, generator),
           templates = templates,
           inventories = ChapterPhotoInventory.make(inventory, imports),
           metadata = albumRepository,
@@ -110,8 +114,6 @@ object ProgramsBuilder:
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =
-      val storage   = FilePhotoStorage.make(thumbnails)
-      val generator = ImageIoPhotoThumbnailGenerator.make[F](quality)
       ChapterPhotoImport.make(storage, photoRepository, generator, events)
 
   private val defaultPhotoLayout = SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000113"))

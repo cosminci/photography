@@ -41,7 +41,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
       val album      = buildAlbum(index = 1)
-      val expected   = Metadata(album.id, album.year, album.title, album.synopsis, album.createdAt)
+      val expected   = Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
 
       for
         _        <- repository.create(album, buildCover(album))
@@ -270,13 +270,16 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       "UPDATE spread_text_slot SET id = '0-0-0-0-1'"
     ).traverse_ { corruption =>
       buildTransactor.use: xa =>
-        val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-        val album      = buildAlbum(index = 1)
+        val repository       = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val album            = buildAlbum(index = 1)
+        val expectedMetadata = if corruption.startsWith("UPDATE album") then MetadataResult.Failed(Failure.DatabaseFailure)
+        else MetadataResult.Found(Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt))
 
         for
           _        <- repository.create(album, buildCover(album))
           _        <- (sql"PRAGMA ignore_check_constraints=ON".update.run >> Fragment.const(corruption).update.run).transact(xa)
           found    <- repository.get(album.id)
+          metadata <- repository.metadata(album.id)
           listed   <- repository.list(offset = 0, limit = 6)
           before   <- sql"SELECT title FROM album".query[String].unique.transact(xa)
           changed  <- repository.rename(album.id, title = changedTitle)
@@ -287,6 +290,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           removed  <- repository.get(album.id)
         yield
           assertEquals(found, GetResult.Failed(Failure.DatabaseFailure))
+          assertEquals(metadata, expectedMetadata)
           assertEquals(listed, ListResult.Failed(Failure.DatabaseFailure))
           assertEquals(changed, RenameResult.Failed(Failure.DatabaseFailure))
           assertEquals(synopsis, SaveSynopsisResult.Failed(Failure.DatabaseFailure))
@@ -545,14 +549,17 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       val text                   = "Ș 日本語\n🙂"
       val combinations           = Author.all.subsets().filter(_.nonEmpty).toVector.map(_.refineUnsafe[MinLength[1]])
       val saveAuthorCombinations = combinations.traverse_ { authors =>
-        val expected = album.copy(synopsis = text, authors = authors)
+        val expected         = album.copy(synopsis = text, authors = authors)
+        val expectedMetadata = Metadata(album.id, album.year, album.title, text, authors, album.createdAt)
 
         for
-          result <- repository.saveAuthors(album.id, authors)
-          found  <- repository.get(album.id)
+          result   <- repository.saveAuthors(album.id, authors)
+          found    <- repository.get(album.id)
+          metadata <- repository.metadata(album.id)
         yield
           assertEquals(result, SaveAuthorsResult.Saved(expected))
           assertEquals(found, GetResult.Found(expected))
+          assertEquals(metadata, MetadataResult.Found(expectedMetadata))
       }
 
       for

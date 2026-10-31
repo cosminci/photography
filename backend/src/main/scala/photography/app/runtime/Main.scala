@@ -15,7 +15,7 @@ import photography.adapters.http.{AlbumPhotoEventsApi, ThumbnailApi}
 import photography.adapters.http.PhotoPlacementApi
 import photography.adapters.http.ChapterCompositionApi
 import photography.adapters.http.PhotoSourceApi
-import photography.adapters.http.GearApi
+import photography.adapters.http.{GearApi, PhotoApi}
 import photography.adapters.sqlite.photo.SqlitePhotoRepository
 import photography.app.config.{AppConfig, HttpServerConfig}
 import photography.capabilities.{Clock, IdGenerator, Transaction}
@@ -64,7 +64,7 @@ object Main extends IOApp.Simple:
     val placements   = PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
     val api          = HealthRoutes.routes[IO] <+> albums <+> chapters <+> events <+> thumbnailApi <+>
       AlbumCompositionApi.make(managers.membership) <+> CountryApi.make(managers.countries) <+> PhotoSourceApi.make(photoRoot) <+>
-      SpreadTemplateApi.make(managers.templates).routes <+> GearApi.make(managers.gear).routes <+>
+      SpreadTemplateApi.make(managers.templates).routes <+> GearApi.make(managers.gear).routes <+> PhotoApi.make(managers.photos).routes <+>
       ChapterCompositionApi.make(managers.spreads) <+> AlbumSpreadApi.make(managers.spreads).routes <+> placements
     StaticSite.make(api, assetRoot = "frontend").map(_.app)
 

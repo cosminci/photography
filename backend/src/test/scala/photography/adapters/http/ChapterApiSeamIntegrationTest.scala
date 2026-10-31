@@ -86,14 +86,91 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       s"""{"cameraId":"${body.value}","lensIds":["${other.value}","${lens.value}"]},""" +
       s"""{"cameraId":"${second.value}","lensIds":["${lens.value}"]}]}"""
 
+  Vector("Sea — 山\nAnother line", "", " \t\n ").foreach { text =>
+    test(s"should deliver description Saved with exact text ${Json.fromString(text).noSpaces}"):
+      val refs        = Refs()
+      val server      = buildApi(refs, descriptionResult = ChapterMetadataManager.SaveDescriptionResult.Saved.pure[IO])
+      val requestBody = Json.obj("text" -> Json.fromString(text)).noSpaces
+
+      for
+        response     <- sendRaw(server, Method.PUT, path = s"$chapterPath/description", body = requestBody)
+        descriptions <- refs.descriptions.get
+        otherCalls   <- refs.calls.get
+        gearCalls    <- refs.gearCalls.get
+      yield
+        assertEquals(response, (Status.NoContent, "", None, None))
+        assertEquals(descriptions, Vector(DescriptionCall(album.id, chapter.id, text = text)))
+        assertEquals(otherCalls, Vector.empty[String])
+        assertEquals(gearCalls, Vector.empty[GearCall])
+  }
+
+  Vector(
+    DescriptionScenario(ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound, Status.NotFound, code = "album_not_found"),
+    DescriptionScenario(ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound, Status.NotFound, code = "chapter_not_found"),
+    DescriptionScenario(ChapterMetadataManager.SaveDescriptionResult.Failed, Status.InternalServerError, code = "service_failure"),
+    DescriptionScenario(ChapterMetadataManager.SaveDescriptionResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain")
+  ).foreach { scenario =>
+    test(s"should deliver description ${scenario.result} with exact independently scoped inputs"):
+      val refs       = Refs()
+      val otherAlbum = AlbumId(value = new UUID(0L, 99L))
+      val server     = buildApi(refs, descriptionResult = scenario.result.pure[IO])
+      val path       = s"/api/albums/${otherAlbum.value}/chapters/${chapter.id.value}/description"
+
+      for
+        response     <- sendRaw(server, Method.PUT, path = path, body = """{"text":"once"}""")
+        descriptions <- refs.descriptions.get
+        otherCalls   <- refs.calls.get
+        gearCalls    <- refs.gearCalls.get
+      yield
+        assertEquals(response, encodeErrorResponse(scenario.status, code = scenario.code))
+        assertEquals(descriptions, Vector(DescriptionCall(otherAlbum, chapter.id, text = "once")))
+        assertEquals(otherCalls, Vector.empty[String])
+        assertEquals(gearCalls, Vector.empty[GearCall])
+  }
+
+  test("should reject malformed description payloads and identities without metadata import or gear work"):
+    val refs          = Refs()
+    val server        = buildApi(refs)
+    val malformed     = Vector("{", "[]", "null", "{}", """{"text":null}""", """{"text":1}""", """{"text":[]}""")
+    val checkPayloads = malformed.traverse_ { body =>
+      val expected = (Status.BadRequest, """{"message":"Supply a text string"}""", MediaType.application.json.some, None)
+      sendRaw(server, Method.PUT, path = s"$chapterPath/description", body = body).map(response => assertEquals(response, expected))
+    }
+    val checkTargets = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { id =>
+      val albumTarget   = s"/api/albums/$id/chapters/${chapter.id.value}/description"
+      val chapterTarget = s"$albumPath/chapters/$id/description"
+      for
+        badAlbum   <- sendRaw(server, Method.PUT, path = albumTarget, body = "{}")
+        badChapter <- sendRaw(server, Method.PUT, path = chapterTarget, body = "{}")
+      yield
+        assertEquals(badAlbum, encodeErrorResponse(Status.NotFound, code = "album_not_found"))
+        assertEquals(badChapter, encodeErrorResponse(Status.NotFound, code = "chapter_not_found"))
+    }
+
+    for
+      _            <- checkPayloads
+      _            <- checkTargets
+      descriptions <- refs.descriptions.get
+      otherCalls   <- refs.calls.get
+      gearCalls    <- refs.gearCalls.get
+    yield
+      assertEquals(descriptions, Vector.empty[DescriptionCall])
+      assertEquals(otherCalls, Vector.empty[String])
+      assertEquals(gearCalls, Vector.empty[GearCall])
+
   test("should read ordered chapter metadata with its exact inclusive period and source"):
-    val refs     = Refs()
-    val expected = json(
-      s"""{"chapters":[{"id":"${chapter.id.value}","kind":"vacation","name":"Coast","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast","description":"Sea air"}]}"""
+    val refs               = Refs()
+    val description        = "Ș 日本語\nSecond line"
+    val savedMetadata      = AlbumRepository.ChapterMetadata(chapter.id, chapter.destination, chapter.period, chapter.sourceFolder, description)
+    val server             = buildApi(refs, metadataResult = AlbumRepository.ChaptersResult.Found(Vector(savedMetadata)))
+    val encodedDescription = Json.fromString(value = description).noSpaces
+    val expected           = json(
+      s"""{"chapters":[{"id":"${chapter.id.value}","kind":"vacation","name":"Coast","countries":["${country.id.value}"],
+         "start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast","description":$encodedDescription}]}"""
     )
 
     for
-      response <- send(buildApi(refs), Method.GET, s"$albumPath/chapters")
+      response <- send(server, Method.GET, s"$albumPath/chapters")
       calls    <- refs.calls.get
     yield
       assertEquals(response, ApiResponse(Status.Ok, expected))
@@ -382,7 +459,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
 
     Vector(false, true).traverse_ { annotated =>
       val maybeDate    = Option.when(annotated)(LocalDateTime.of(2026, 1, 2, 3, 4))
-      val maybeCaption = Option.when(annotated)("Caption")
+      val maybeCaption = Option.when(annotated)("Ș 日本語\nSecond line")
       val metadata     = PhotoMetadata(hash = "source-hash", maybeCapturedLocal = maybeDate, PhotoDimensions(width = 20, height = 30))
       val thumbnail    = Thumbnail(location, version = "version", ThumbnailDimensions(width = 10, height = 15), ThumbnailQuality.Standard, bytes = 1)
       val photo        = Photo(
@@ -403,7 +480,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       val execution =
         ExecutionOutcome(ImportStatus.Finished(PhotoManager.RefreshResult(unsupportedCount = 3, issues = issues)), retirementIssues = cleanup)
       val expectedPhoto = json(s"""{"id":"${photo.id.value}","filename":"one.jpg","capturedLocal":${maybeDate.fold("null")(date => s"\"$date\"")},
-        "width":20,"height":30,"caption":${maybeCaption.fold("null")(caption => s"\"$caption\"")},
+        "width":20,"height":30,"caption":${maybeCaption.fold("null")(caption => Json.fromString(value = caption).noSpaces)},
         "thumbnail":{"url":"/thumbnails/${location.value}/version.jpg","width":10,"height":15}}""")
       val expectedSecond   = expectedPhoto.deepMerge(Json.obj("id" -> Json.fromString(secondPhoto.id.value.toString)))
       val expectedUnplaced = expectedPhoto.deepMerge(Json.obj("id" -> Json.fromString(unplacedPhoto.id.value.toString)))
@@ -624,10 +701,13 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
   final private case class SavedSelection(selection: GearSelection, body: String)
   final private case class ReadScenario(result: GearReadResult, status: Status, code: String)
   final private case class ReplacementScenario(result: GearReplaceResult, status: Status, code: String)
+  final private case class DescriptionCall(album: AlbumId, chapter: ChapterId, text: String)
+  final private case class DescriptionScenario(result: ChapterMetadataManager.SaveDescriptionResult, status: Status, code: String)
 
   final private case class Refs():
-    val calls: Ref[IO, Vector[String]]       = Ref.unsafe(Vector.empty)
-    val gearCalls: Ref[IO, Vector[GearCall]] = Ref.unsafe(a = Vector.empty[GearCall])
+    val calls: Ref[IO, Vector[String]]                 = Ref.unsafe(Vector.empty)
+    val gearCalls: Ref[IO, Vector[GearCall]]           = Ref.unsafe(a = Vector.empty[GearCall])
+    val descriptions: Ref[IO, Vector[DescriptionCall]] = Ref.unsafe(a = Vector.empty[DescriptionCall])
 
   final private case class ApiResponse(status: Status, body: Json)
 
@@ -647,14 +727,16 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
           chapter.description
         ))),
       gearReadResult: IO[GearReadResult] = IO.raiseError[GearReadResult](new AssertionError("Unexpected gear read")),
-      gearReplaceResult: IO[GearReplaceResult] = IO.raiseError[GearReplaceResult](new AssertionError("Unexpected gear replacement"))
+      gearReplaceResult: IO[GearReplaceResult] = IO.raiseError[GearReplaceResult](new AssertionError("Unexpected gear replacement")),
+      descriptionResult: IO[ChapterMetadataManager.SaveDescriptionResult] =
+        IO.raiseError[ChapterMetadataManager.SaveDescriptionResult](new AssertionError("Unexpected description mutation"))
   ) =
     val inventories = new ChapterPhotoInventory[IO]:
       override def read(id: ChapterId): IO[ChapterPhotoInventory.Result] =
         refs.calls.update(_ :+ s"inventory:${id.value}").as(chapterResult)
     val chapters = new ChapterMetadataManager[IO]:
       override def saveDescription(album: AlbumId, chapter: ChapterId, text: String): IO[ChapterMetadataManager.SaveDescriptionResult] =
-        IO.raiseError[ChapterMetadataManager.SaveDescriptionResult](new AssertionError("Unexpected description mutation"))
+        refs.descriptions.update(_ :+ DescriptionCall(album, chapter, text = text)) >> descriptionResult
       override def refresh(chapter: ChapterId): IO[ChapterMetadataManager.RefreshResult] =
         refs.calls.update(_ :+ s"refresh:${chapter.value}").as(refreshResult)
       override def create(id: AlbumId, name: DestinationName, countries: NonEmptyList[CountryId], period: Period, folder: PhotoSource) =

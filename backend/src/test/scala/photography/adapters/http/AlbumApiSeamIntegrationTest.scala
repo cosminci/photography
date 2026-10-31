@@ -36,11 +36,146 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private val albumPath     = s"/api/albums/${id.value}"
   private val jsonMediaType = MediaType.application.json.some
 
+  Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
+    test(s"should deliver Saved synopsis with exact text ${Json.fromString(text).noSpaces}"):
+      val refs       = Refs()
+      val savedAlbum = album.copy(synopsis = text)
+      val server     = buildAlbumApi(refs, synopsisResult = SaveSynopsisResult.Saved(savedAlbum).pure[IO])
+      val expected   = json(metadata).deepMerge(Json.obj(
+        "synopsis" -> Json.fromString(text),
+        "authors"  -> Json.arr(
+          Json.fromString("Cosmin"),
+          Json.fromString("Mara"),
+          Json.fromString("Iacob")
+        )
+      ))
+      val requestBody = Json.obj("text" -> Json.fromString(text)).noSpaces
+
+      for
+        response     <- send(server, Method.PUT, path = s"$albumPath/synopsis", body = requestBody)
+        contentCalls <- refs.contentCalls.get
+        otherCalls   <- refs.calls.get
+      yield
+        assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
+        assertEquals(contentCalls, Vector(ContentCall.Synopsis(id, text = text)))
+        assertEquals(otherCalls, Vector.empty[String])
+  }
+
+  Author.all.subsets().filter(_.nonEmpty).foreach { selection =>
+    val selected       = Author.values.toVector.filter(selection.contains)
+    val encodedAuthors = Json.arr(selected.map(encodeAuthor)*)
+    test(s"should deliver Saved authors ${encodedAuthors.noSpaces} in canonical display order"):
+      val authors: AlbumAuthors = selection.refineUnsafe
+      val refs                  = Refs()
+      val server                = buildAlbumApi(refs, authorsResult = SaveAuthorsResult.Saved(album.copy(authors = authors)).pure[IO])
+      val requestBody           = Json.obj("authors" -> Json.arr(selected.reverse.map(encodeAuthor)*))
+      val expected              = json(metadata).deepMerge(Json.obj("synopsis" -> Json.fromString(album.synopsis), "authors" -> encodedAuthors))
+
+      for
+        response     <- send(server, Method.PUT, path = s"$albumPath/authors", body = requestBody.noSpaces)
+        contentCalls <- refs.contentCalls.get
+        otherCalls   <- refs.calls.get
+      yield
+        assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors)))
+        assertEquals(otherCalls, Vector.empty[String])
+  }
+
+  Vector(
+    SynopsisScenario(SaveSynopsisResult.NotFound, Status.NotFound, code = "album_not_found"),
+    SynopsisScenario(SaveSynopsisResult.Failed, Status.InternalServerError, code = "service_failure"),
+    SynopsisScenario(SaveSynopsisResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain")
+  ).foreach { scenario =>
+    test(s"should deliver synopsis ${scenario.result} without retry or postwrite read"):
+      val refs   = Refs()
+      val server = buildAlbumApi(refs, synopsisResult = scenario.result.pure[IO])
+
+      for
+        response     <- send(server, Method.PUT, path = s"$albumPath/synopsis", body = """{"text":"once"}""")
+        contentCalls <- refs.contentCalls.get
+        otherCalls   <- refs.calls.get
+      yield
+        val expected = ApiResponse(scenario.status, jsonMediaType, Json.obj("code" -> Json.fromString(scenario.code)).some)
+        assertEquals(response, expected)
+        assertEquals(contentCalls, Vector(ContentCall.Synopsis(id, text = "once")))
+        assertEquals(otherCalls, Vector.empty[String])
+  }
+
+  Vector(
+    AuthorsScenario(SaveAuthorsResult.NotFound, Status.NotFound, code = "album_not_found"),
+    AuthorsScenario(SaveAuthorsResult.Failed, Status.InternalServerError, code = "service_failure"),
+    AuthorsScenario(SaveAuthorsResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain")
+  ).foreach { scenario =>
+    test(s"should deliver authors ${scenario.result} without retry or postwrite read"):
+      val refs                   = Refs()
+      val selected: AlbumAuthors = Set(Author.Mara).refineUnsafe
+      val server                 = buildAlbumApi(refs, authorsResult = scenario.result.pure[IO])
+
+      for
+        response     <- send(server, Method.PUT, path = s"$albumPath/authors", body = """{"authors":["Mara"]}""")
+        contentCalls <- refs.contentCalls.get
+        otherCalls   <- refs.calls.get
+      yield
+        val expected = ApiResponse(scenario.status, jsonMediaType, Json.obj("code" -> Json.fromString(scenario.code)).some)
+        assertEquals(response, expected)
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, selected)))
+        assertEquals(otherCalls, Vector.empty[String])
+  }
+
+  test("should reject malformed content and noncanonical targets before any application call"):
+    val refs             = Refs()
+    val server           = buildAlbumApi(refs)
+    val malformedText    = Vector("{", "[]", "null", "{}", """{"text":null}""", """{"text":1}""", """{"text":[]}""")
+    val malformedAuthors = Vector(
+      "{",
+      "[]",
+      "null",
+      "{}",
+      """{"authors":null}""",
+      """{"authors":1}""",
+      """{"authors":[]}""",
+      """{"authors":["Mara","Mara"]}""",
+      """{"authors":["Unknown"]}""",
+      """{"authors":[null]}"""
+    )
+    val invalidRequests = malformedText.map(value => InvalidContent(resource = "synopsis", body = value, message = "Supply a text string")) ++
+      malformedAuthors.map(value =>
+        InvalidContent(
+          resource = "authors",
+          body = value,
+          message = "Select nonempty unique authors from Cosmin, Mara and Iacob"
+        )
+      )
+    val checkPayloads = invalidRequests.traverse_ { scenario =>
+      val expected = ApiResponse(Status.BadRequest, jsonMediaType, Json.obj("message" -> Json.fromString(scenario.message)).some)
+      send(server, Method.PUT, path = s"$albumPath/${scenario.resource}", body = scenario.body).map(response => assertEquals(response, expected))
+    }
+    val checkTargets = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { target =>
+      Vector("synopsis", "authors").traverse_ { resource =>
+        val expected = ApiResponse(Status.NotFound, jsonMediaType, json("""{"code":"album_not_found"}""").some)
+        send(server, Method.PUT, path = s"/api/albums/$target/$resource", body = "{}").map(response => assertEquals(response, expected))
+      }
+    }
+
+    for
+      _            <- checkPayloads
+      _            <- checkTargets
+      contentCalls <- refs.contentCalls.get
+      otherCalls   <- refs.calls.get
+    yield
+      assertEquals(contentCalls, Vector.empty[ContentCall])
+      assertEquals(otherCalls, Vector.empty[String])
+
   test("should read complete lightweight album metadata without invoking an aggregate operation"):
-    val refs     = Refs()
-    val server   = buildAlbumApi(refs)
-    val expected = json(
-      s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","synopsis":"A synopsis","createdAt":"2026-10-24T10:00:00.123Z"}"""
+    val refs                          = Refs()
+    val savedSynopsis                 = "Ș 日本語\nSecond line"
+    val selectedAuthors: AlbumAuthors = Set(Author.Mara).refineUnsafe
+    val savedMetadata                 = AlbumRepository.Metadata(album.id, album.year, album.title, savedSynopsis, selectedAuthors, album.createdAt)
+    val server                        = buildAlbumApi(refs, metadataResult = AlbumRepository.MetadataResult.Found(savedMetadata))
+    val encodedSynopsis               = Json.fromString(value = savedSynopsis).noSpaces
+    val expected                      = json(
+      s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026",
+         "synopsis":$encodedSynopsis,"authors":["Mara"],"createdAt":"2026-10-24T10:00:00.123Z"}"""
     )
 
     for
@@ -212,7 +347,16 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(calls, Vector.empty)
 
   final private case class Refs():
-    val calls: Ref[IO, Vector[String]] = Ref.unsafe(Vector.empty)
+    val calls: Ref[IO, Vector[String]]             = Ref.unsafe(Vector.empty)
+    val contentCalls: Ref[IO, Vector[ContentCall]] = Ref.unsafe(a = Vector.empty[ContentCall])
+
+  private enum ContentCall:
+    case Synopsis(album: AlbumId, text: String)
+    case Authors(album: AlbumId, authors: AlbumAuthors)
+
+  final private case class SynopsisScenario(result: SaveSynopsisResult, status: Status, code: String)
+  final private case class AuthorsScenario(result: SaveAuthorsResult, status: Status, code: String)
+  final private case class InvalidContent(resource: String, body: String, message: String)
 
   final private case class ApiResponse(status: Status, maybeContentType: Option[MediaType], maybeBody: Option[Json])
 
@@ -225,13 +369,22 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       renameResult: RenameResult = RenameResult.Renamed(album),
       deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted,
       metadataResult: AlbumRepository.MetadataResult =
-        AlbumRepository.MetadataResult.Found(AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.createdAt))
+        AlbumRepository.MetadataResult.Found(AlbumRepository.Metadata(
+          album.id,
+          album.year,
+          album.title,
+          album.synopsis,
+          album.authors,
+          album.createdAt
+        )),
+      synopsisResult: IO[SaveSynopsisResult] = IO.raiseError[SaveSynopsisResult](new AssertionError("Unexpected synopsis mutation")),
+      authorsResult: IO[SaveAuthorsResult] = IO.raiseError[SaveAuthorsResult](new AssertionError("Unexpected author mutation"))
   ) =
     val albums = new AlbumManager[IO]:
       override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =
-        IO.raiseError[AlbumManager.SaveSynopsisResult](new AssertionError("Unexpected synopsis mutation"))
+        refs.contentCalls.update(_ :+ ContentCall.Synopsis(id, text = text)) >> synopsisResult
       override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumManager.SaveAuthorsResult] =
-        IO.raiseError[AlbumManager.SaveAuthorsResult](new AssertionError("Unexpected author mutation"))
+        refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors)) >> authorsResult
       override def list(page: Int): IO[ListAlbumsResult]                             = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
       override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] =
         refs.calls.update(_ :+ s"create:$year:$title").as(createAlbumResult)
@@ -258,4 +411,8 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     response.maybeBody.exists: body =>
       body.asObject.exists(_.keys.toSet === Set("message")) && body.hcursor.get[String]("message").toOption.exists(_.nonEmpty)
 
-  private def json(value: String) = parse(value).fold(error => fail(error.message), identity)
+  private def json(value: String)          = parse(value).fold(error => fail(error.message), identity)
+  private def encodeAuthor(author: Author) = Json.fromString(value = author match
+    case Author.Cosmin => "Cosmin"
+    case Author.Mara   => "Mara"
+    case Author.Iacob  => "Iacob")

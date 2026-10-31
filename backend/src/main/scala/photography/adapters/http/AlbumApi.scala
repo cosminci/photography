@@ -2,13 +2,13 @@ package photography.adapters.http
 
 import cats.effect.Async
 import cats.syntax.all.*
-import io.circe.{Decoder, Encoder}
+import io.circe.{Decoder, Encoder, Json}
 import io.github.iltotore.iron.*
 import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Query, QueryParamDecoder, QueryParameterValue, Request}
 import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
-import photography.domain.album.{Album, AlbumId, AlbumTitle, AlbumYear, AlbumYearConstraint}
+import photography.domain.album.{Album, AlbumId, AlbumTitle, AlbumYear, AlbumYearConstraint, Author}
 import io.github.iltotore.iron.constraint.all.*
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
@@ -26,13 +26,16 @@ object AlbumApi:
       extends AlbumApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
-        case request @ GET -> Root / "api" / "albums"                    => list(request.uri.query)
-        case request @ POST -> Root / "api" / "albums"                   => create(request)
-        case GET -> Root / "api" / "albums" / CanonicalId(id)            => read(AlbumId(id))
-        case GET -> Root / "api" / "albums" / _                          => respondAlbumNotFound
-        case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => rename(id, request)
-        case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => delete(id)
-        case (PATCH | DELETE) -> Root / "api" / "albums" / _             => respondAlbumNotFound
+        case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => saveSynopsis(AlbumId(id), request)
+        case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
+        case PUT -> Root / "api" / "albums" / _ / ("synopsis" | "authors")           => respondAlbumNotFound
+        case request @ GET -> Root / "api" / "albums"                                => list(request.uri.query)
+        case request @ POST -> Root / "api" / "albums"                               => create(request)
+        case GET -> Root / "api" / "albums" / CanonicalId(id)                        => read(AlbumId(id))
+        case GET -> Root / "api" / "albums" / _                                      => respondAlbumNotFound
+        case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id)             => rename(id, request)
+        case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)                      => delete(id)
+        case (PATCH | DELETE) -> Root / "api" / "albums" / _                         => respondAlbumNotFound
       }
 
     private def read(id: AlbumId) =
@@ -40,6 +43,55 @@ object AlbumApi:
         case AlbumRepository.MetadataResult.Found(value) => Ok(value).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
         case AlbumRepository.MetadataResult.NotFound     => respondAlbumNotFound
         case AlbumRepository.MetadataResult.Failed(_)    => respondServiceFailure
+
+    private def saveSynopsis(album: AlbumId, request: Request[F]) =
+      request.as[Json].flatMap { value =>
+        value.hcursor.get[String](k = "text").fold(
+          _ => BadRequest(body = Map("message" -> "Supply a text string")),
+          text =>
+            albums.saveSynopsis(album, text = text).flatMap {
+              case SaveSynopsisResult.Saved(updated) => Ok(buildMetadata(updated))
+              case SaveSynopsisResult.NotFound       => respondAlbumNotFound
+              case SaveSynopsisResult.Failed         => respondServiceFailure
+              case SaveSynopsisResult.Uncertain      => respondUncertain
+            }
+        )
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
+
+    private def saveAuthors(album: AlbumId, request: Request[F]) =
+      request.as[Json].flatMap { value =>
+        authorsDecoder.decodeJson(value).fold(
+          _ => BadRequest(body = invalidAuthors),
+          authors =>
+            albums.saveAuthors(album, authors).flatMap {
+              case SaveAuthorsResult.Saved(updated) => Ok(buildMetadata(updated))
+              case SaveAuthorsResult.NotFound       => respondAlbumNotFound
+              case SaveAuthorsResult.Failed         => respondServiceFailure
+              case SaveAuthorsResult.Uncertain      => respondUncertain
+            }
+        )
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors) }
+
+    private def buildMetadata(album: Album) =
+      AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
+
+    private val authorsDecoder = Decoder.decodeVector[Author].emap { authors =>
+      Either.cond(authors.distinct.size === authors.size, authors.toSet, "Select each author only once")
+        .flatMap(_.refineEither[MinLength[1]])
+    }.prepare(_.downField(k = "authors"))
+
+    private given Decoder[Author] = Decoder.decodeString.emap[Author] {
+      case "Cosmin" => Author.Cosmin.asRight[String]
+      case "Mara"   => Author.Mara.asRight[String]
+      case "Iacob"  => Author.Iacob.asRight[String]
+      case _        => "Select a supported author".asLeft[Author]
+    }
+
+    private given Encoder[Author] = Encoder.encodeString.contramap {
+      case Author.Cosmin => "Cosmin"
+      case Author.Mara   => "Mara"
+      case Author.Iacob  => "Iacob"
+    }
 
     private def list(query: Query) = query match
       case Page(page) =>
@@ -70,6 +122,8 @@ object AlbumApi:
 
     private def respondAlbumNotFound  = NotFound(Map("code" -> "album_not_found"))
     private def respondServiceFailure = InternalServerError(Map("code" -> "service_failure"))
+    private def respondUncertain      = InternalServerError(body = Map("code" -> "mutation_uncertain"))
+    private val invalidAuthors        = Map("message" -> "Select nonempty unique authors from Cosmin, Mara and Iacob")
     private val invalidTitle          = Map("message" -> "Supply a non-blank album title")
     private val invalidYear           = Map("message" -> "Choose a year from 1900 to 2100")
 
@@ -88,8 +142,15 @@ object AlbumApi:
       def unapply(value: String): Option[UUID] =
         Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
 
-    private given Encoder[AlbumRepository.Metadata] = Encoder.forProduct5("id", "year", "title", "synopsis", "createdAt"): album =>
-      (album.id.value.toString, album.year: Int, album.title: String, album.synopsis, album.createdAt.toString)
+    private given Encoder[AlbumRepository.Metadata] = Encoder.forProduct6("id", "year", "title", "synopsis", "authors", "createdAt"): album =>
+      (
+        album.id.value.toString,
+        album.year: Int,
+        album.title: String,
+        album.synopsis,
+        Author.values.toVector.filter(album.authors.contains),
+        album.createdAt.toString
+      )
 
     private given Decoder[AlbumYear] = Decoder.decodeJsonNumber.emap(_.toInt.toRight("Expected an integer year"))
       .emap(_.refineEither[AlbumYearConstraint]).prepare(_.downField("year"))

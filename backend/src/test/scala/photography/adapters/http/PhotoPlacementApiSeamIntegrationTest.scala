@@ -1,6 +1,6 @@
 package photography.adapters.http
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.data.NonEmptyList
 import cats.syntax.all.*
 import fs2.Stream
@@ -47,6 +47,18 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     "photoId"   -> Json.fromString(second.photo.value.toString),
     "transform" -> transformJson
   )
+  private val slot = SpreadSlot.Photo(
+    PhotoSpreadSlotId(cover.front.id.value),
+    SlotBox(x = 0.0, y = 0.0, width = 50.0, height = 100.0),
+    bleed = Set.empty[SpreadEdge]
+  )
+  private val spread = Spread.PhotosOnly(
+    SpreadId(new UUID(0L, 6L)),
+    SpreadTemplateId(new UUID(0L, 7L)),
+    photoSlots = NonEmptyList.one(slot),
+    placements = Vector.empty[SpreadPlacement]
+  )
+
   private val editRequests = Vector(
     (
       Method.POST,
@@ -57,21 +69,113 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       )
     ),
     (Method.DELETE, s"/placements/${placement.id.value}", Json.obj()),
-    (
-      Method.PATCH,
-      s"/placements/${placement.id.value}",
-      Json.obj(
-        "slotId" -> Json.fromString(cover.back.id.value.toString)
+    (Method.PATCH, s"/placements/${placement.id.value}", Json.obj("slotId" -> Json.fromString(cover.back.id.value.toString))),
+    (Method.PATCH, s"/placements/${placement.id.value}", Json.obj("transform" -> transformJson))
+  )
+
+  Vector(
+    CornerScenario(CaptionCorner.TopLeft, encoded = "top_left"),
+    CornerScenario(CaptionCorner.TopRight, encoded = "top_right"),
+    CornerScenario(CaptionCorner.BottomLeft, encoded = "bottom_left"),
+    CornerScenario(CaptionCorner.BottomRight, encoded = "bottom_right")
+  ).foreach { scenario =>
+    test(s"should deliver Saved ${scenario.corner} through only the interior placement owner"):
+      val refs           = Refs()
+      val target         = SpreadPlacementId(placement.id.value)
+      val savedPlacement = SpreadPlacement(target, slot.id, placement.photo, transform, scenario.corner)
+      val savedSpread    = spread.copy(placements = Vector(savedPlacement))
+      val api            = buildApi(refs, result = CoverManager.Result.Failed, spreadResult = SpreadManager.PlacementResult.Saved(savedSpread))
+      val expectedBody   = Json.obj(
+        "id"         -> Json.fromString(spread.id.value.toString),
+        "kind"       -> Json.fromString("photos_only"),
+        "templateId" -> Json.fromString(spread.template.value.toString),
+        "slots"      -> Json.arr(Json.obj(
+          "id"     -> Json.fromString(slot.id.value.toString),
+          "kind"   -> Json.fromString("photo"),
+          "x"      -> Json.fromInt(0),
+          "y"      -> Json.fromInt(0),
+          "width"  -> Json.fromInt(50),
+          "height" -> Json.fromInt(100)
+        )),
+        "placements" -> Json.arr(expectedPlacement.deepMerge(Json.obj("captionCorner" -> Json.fromString(scenario.encoded))))
       )
-    ),
-    (
-      Method.PATCH,
-      s"/placements/${placement.id.value}",
-      Json.obj(
-        "transform" -> transformJson
+      val request = Request[IO](Method.PATCH, Uri.unsafeFromString(s = s"$spreadPath/placements/${target.value}"))
+        .withEntity(b = Json.obj("captionCorner" -> Json.fromString(scenario.encoded)))
+
+      for
+        response <- send(api, request)
+        calls    <- refs.calls.get
+      yield
+        assertEquals(response, (Status.Ok, expectedBody))
+        assertEquals(calls, Vector(PlacementCall.Edit(album, spread.id, SpreadManager.Edit.SetCaptionCorner(target, scenario.corner))))
+  }
+
+  Vector(
+    CornerResultScenario(SpreadManager.PlacementResult.AlbumNotFound, Status.NotFound, code = "album_not_found"),
+    CornerResultScenario(SpreadManager.PlacementResult.SpreadNotFound, Status.NotFound, code = "spread_not_found"),
+    CornerResultScenario(SpreadManager.PlacementResult.Failed, Status.InternalServerError, code = "service_failure"),
+    CornerResultScenario(
+      SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.PlacementNotFound),
+      Status.Conflict,
+      code = "placement_not_found"
+    )
+  ).foreach { scenario =>
+    test(s"should deliver corner ${scenario.result} without retry or postwrite read"):
+      val refs    = Refs()
+      val api     = buildApi(refs, result = CoverManager.Result.Failed, spreadResult = scenario.result)
+      val target  = SpreadPlacementId(placement.id.value)
+      val request = Request[IO](Method.PATCH, Uri.unsafeFromString(s = s"$spreadPath/placements/${target.value}"))
+        .withEntity(b = Json.obj("captionCorner" -> Json.fromString("top_left")))
+
+      for
+        response <- send(api, request)
+        calls    <- refs.calls.get
+      yield
+        assertEquals(response, (scenario.status, Json.obj("code" -> Json.fromString(scenario.code))))
+        assertEquals(calls, Vector(PlacementCall.Edit(album, spread.id, SpreadManager.Edit.SetCaptionCorner(target, CaptionCorner.TopLeft))))
+  }
+
+  test("should reject malformed or ambiguous corners and keep Cover without caption corners"):
+    val refs          = Refs()
+    val api           = buildApi(refs, result = CoverManager.Result.Failed)
+    val invalidBodies = Vector(
+      InvalidCorner(
+        Json.obj("captionCorner" -> Json.fromString("middle")),
+        message = "DecodingFailure at .captionCorner: Select one of the four caption corners"
+      ),
+      InvalidCorner(
+        Json.obj("captionCorner" -> Json.Null),
+        message = "DecodingFailure at .captionCorner: Got value 'null' with wrong type, expecting string"
+      ),
+      InvalidCorner(
+        Json.obj("captionCorner" -> Json.fromInt(1)),
+        message = "DecodingFailure at .captionCorner: Got value '1' with wrong type, expecting string"
+      ),
+      InvalidCorner(
+        Json.obj("captionCorner" -> Json.fromString("top_left"), "transform" -> transformJson),
+        message = "DecodingFailure at : Supply either slotId, transform or captionCorner"
+      ),
+      InvalidCorner(
+        Json.obj("captionCorner" -> Json.fromString("top_left"), "slotId" -> Json.fromString(slot.id.value.toString)),
+        message = "DecodingFailure at : Supply either slotId, transform or captionCorner"
       )
     )
-  )
+    val checkPayloads = invalidBodies.traverse_ { scenario =>
+      val request = Request[IO](Method.PATCH, Uri.unsafeFromString(s = s"$spreadPath/placements/${placement.id.value}")).withEntity(b = scenario.body)
+      val expected = (Status.BadRequest, Json.obj("message" -> Json.fromString(scenario.message)))
+      send(api, request).map(response => assertEquals(response, expected))
+    }
+    val coverRequest = Request[IO](Method.PATCH, Uri.unsafeFromString(s = s"$coverPath/placements/${placement.id.value}"))
+      .withEntity(b = Json.obj("captionCorner" -> Json.fromString("top_left")))
+    val expectedCoverResponse = (Status.BadRequest, Json.obj("message" -> Json.fromString("DecodingFailure at : Supply either slotId or transform")))
+
+    for
+      _             <- checkPayloads
+      coverResponse <- send(api, coverRequest)
+      calls         <- refs.calls.get
+    yield
+      assertEquals(coverResponse, expectedCoverResponse)
+      assertEquals(calls, Vector.empty[PlacementCall])
 
   test("should expose either cover spine, both side associations and empty compositions and dispatch every edit"):
     val expectedEdits = Vector(
@@ -94,9 +198,9 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
         "spineOwner"  -> Json.fromString(encodedOwner),
         "placements"  -> encodedPlacements
       )
-      val api          = buildApi(CoverManager.Result.Saved(saved), coverRead = CoverManager.ReadResult.Found(saved))
+      val api          = buildApi(result = CoverManager.Result.Saved(saved), coverRead = CoverManager.ReadResult.Found(saved))
       val saveCommands = editRequests.zip(expectedEdits).traverse { case ((method, suffix, value), expectedEdit) =>
-        val editing = buildApi(CoverManager.Result.Saved(saved), maybeCoverEdit = expectedEdit.some)
+        val editing = buildApi(result = CoverManager.Result.Saved(saved), maybeCoverEdit = expectedEdit.some)
         send(editing, Request[IO](method, Uri.unsafeFromString(coverPath + suffix)).withEntity(value))
       }
 
@@ -109,17 +213,6 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should expose every interior caption corner and empty composition and dispatch every edit"):
-    val slot = SpreadSlot.Photo(
-      PhotoSpreadSlotId(cover.front.id.value),
-      SlotBox(x = 0.0, y = 0.0, width = 50.0, height = 100.0),
-      bleed = Set.empty[SpreadEdge]
-    )
-    val spread = Spread.PhotosOnly(
-      SpreadId(new UUID(0L, 6L)),
-      SpreadTemplateId(new UUID(0L, 7L)),
-      photoSlots = NonEmptyList.one(slot),
-      placements = Vector.empty[SpreadPlacement]
-    )
     val expectedEdits = Vector(
       SpreadManager.Edit.Place(slot.id, placement.photo),
       SpreadManager.Edit.Remove(SpreadPlacementId(placement.id.value)),
@@ -156,13 +249,13 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
         "placements" -> encodedPlacements
       )
       val api = buildApi(
-        CoverManager.Result.Failed,
+        result = CoverManager.Result.Failed,
         spreadResult = SpreadManager.PlacementResult.Saved(saved),
         spreadRead = SpreadManager.PlacementReadResult.Found(saved)
       )
       val saveCommands = editRequests.zip(expectedEdits).traverse { case ((method, suffix, value), expectedEdit) =>
         val editing = buildApi(
-          CoverManager.Result.Failed,
+          result = CoverManager.Result.Failed,
           spreadResult = SpreadManager.PlacementResult.Saved(saved),
           maybeSpreadEdit = expectedEdit.some
         )
@@ -207,26 +300,26 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       (CoverManager.ReadResult.Failed, Status.InternalServerError, "service_failure")
     )
     val coverFailures = coverEdits.traverse_ { case (result, status, code) =>
-      val api      = buildApi(result)
+      val api      = buildApi(result = result)
       val expected = (status, Json.obj("code" -> Json.fromString(code)))
       send(api, Request[IO](Method.DELETE, Uri.unsafeFromString(s"$coverPath/placements/${placement.id.value}"))).map(actual =>
         assertEquals(actual, expected)
       )
     }
     val spreadFailures = spreadEdits.traverse_ { case (result, status, code) =>
-      val api      = buildApi(CoverManager.Result.Failed, spreadResult = result)
+      val api      = buildApi(result = CoverManager.Result.Failed, spreadResult = result)
       val expected = (status, Json.obj("code" -> Json.fromString(code)))
       send(api, Request[IO](Method.DELETE, Uri.unsafeFromString(s"$spreadPath/placements/${placement.id.value}"))).map(actual =>
         assertEquals(actual, expected)
       )
     }
     val missingSpreads = spreadReads.traverse_ { case (result, status, code) =>
-      val api      = buildApi(CoverManager.Result.Failed, spreadRead = result)
+      val api      = buildApi(result = CoverManager.Result.Failed, spreadRead = result)
       val expected = (status, Json.obj("code" -> Json.fromString(code)))
       send(api, Request[IO](Method.GET, Uri.unsafeFromString(spreadPath))).map(actual => assertEquals(actual, expected))
     }
     val missingCovers = coverReads.traverse_ { case (result, status, code) =>
-      val api      = buildApi(CoverManager.Result.Failed, coverRead = result)
+      val api      = buildApi(result = CoverManager.Result.Failed, coverRead = result)
       val expected = (status, Json.obj("code" -> Json.fromString(code)))
       send(api, Request[IO](Method.GET, Uri.unsafeFromString(coverPath))).map(actual => assertEquals(actual, expected))
     }
@@ -244,7 +337,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       (Spread.ChapterStart(id, template, Vector(photo), text, Vector.empty[SpreadPlacement]): Spread, "chapter_start", Vector("photo", "text"))
     )
     cases.traverse_ { case (spread, kind, slots) =>
-      val api = buildApi(CoverManager.Result.Failed, spreadRead = SpreadManager.PlacementReadResult.Found(spread))
+      val api = buildApi(result = CoverManager.Result.Failed, spreadRead = SpreadManager.PlacementReadResult.Found(spread))
       send(api, Request[IO](Method.GET, Uri.unsafeFromString(spreadPath))).map { case (status, body) =>
         assertEquals(status, Status.Ok)
         assertEquals(body.hcursor.get[String]("kind").toOption, kind.some)
@@ -254,7 +347,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should reject removed operation envelopes and ambiguous placement field replacements"):
-    val api = buildApi(CoverManager.Result.Failed)
+    val api = buildApi(result = CoverManager.Result.Failed)
     Vector(coverPath, spreadPath).traverse_ { path =>
       val creation = Json.obj(
         "operation" -> Json.fromString("place"),
@@ -295,7 +388,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       (Method.PATCH, s"/placements/${placement.id.value}", Json.obj("transform" -> value))
     val requests = Vector(Json.Null, Json.arr(), Json.obj()).map(value => (Method.POST, "/placements", value)) ++
       missingFields ++ invalidFields ++ adjustments
-    val api           = buildApi(CoverManager.Result.Failed)
+    val api           = buildApi(result = CoverManager.Result.Failed)
     val malformedBody = Stream.emits("{invalid json".getBytes(StandardCharsets.UTF_8)).covary[IO]
     val malformed     = Request[IO](Method.POST, Uri.unsafeFromString(s"$coverPath/placements")).withBodyStream(malformedBody)
       .putHeaders(`Content-Type`(MediaType.application.json))
@@ -311,6 +404,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(feedback, Vector.fill(responses.size)((Status.BadRequest, true)))
 
   test("should exclude noncanonical path identities without calling application services"):
+    val refs              = Refs()
     val invalidIdentities = Vector("0-0-0-0-1", "AAAAAAAA-AAAA-4AAA-AAAA-AAAAAAAAAAAA")
     val paths             = invalidIdentities.flatMap: id =>
       Vector(
@@ -318,11 +412,26 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
         s"/api/albums/$id/spreads/${new UUID(0L, 6L)}/placements",
         s"/api/albums/${album.value}/spreads/$id/placements"
       )
-    val api      = buildApi(CoverManager.Result.Failed)
-    val requests = paths.flatMap(path => Vector(Method.GET, Method.POST).map(method => Request[IO](method, Uri.unsafeFromString(path))))
+    val api         = buildApi(refs, result = CoverManager.Result.Failed)
+    val cornerPaths = invalidIdentities.flatMap { id =>
+      Vector(
+        s"/api/albums/$id/spreads/${spread.id.value}/placements/${placement.id.value}",
+        s"/api/albums/${album.value}/spreads/$id/placements/${placement.id.value}",
+        s"$spreadPath/placements/$id"
+      )
+    }
+    val cornerRequests = cornerPaths.map { path =>
+      Request[IO](Method.PATCH, Uri.unsafeFromString(s = path)).withEntity(b = Json.obj("captionCorner" -> Json.fromString("top_left")))
+    }
+    val requests = paths.flatMap(path => Vector(Method.GET, Method.POST).map(method => Request[IO](method, Uri.unsafeFromString(path)))) ++
+      cornerRequests
 
-    requests.traverse(request => api.orNotFound.run(request).map(_.status)).map: statuses =>
-      assertEquals(statuses, Vector.fill(requests.size)(Status.NotFound))
+    for
+      statuses <- requests.traverse(request => api.orNotFound.run(request).map(_.status))
+      calls    <- refs.calls.get
+    yield
+      assertEquals(statuses, Vector.fill(n = requests.size)(Status.NotFound))
+      assertEquals(calls, Vector.empty[PlacementCall])
 
   test("should dispatch domain-valid zoom outside the editing range to the application's rejection owner"):
     val outside = transform.copy(zoom = 6.0)
@@ -331,11 +440,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     )
     val expected = (Status.Conflict, Json.obj("code" -> Json.fromString("invalid_transform")))
     val covers   = buildApi(
-      CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform),
+      result = CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform),
       maybeCoverEdit = CoverManager.Edit.Adjust(placement.id, outside).some
     )
     val spreads = buildApi(
-      CoverManager.Result.Failed,
+      result = CoverManager.Result.Failed,
       spreadResult = SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.InvalidTransform),
       maybeSpreadEdit = SpreadManager.Edit.Adjust(SpreadPlacementId(placement.id.value), outside).some
     )
@@ -350,8 +459,20 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(coverResponse, expected)
       assertEquals(spreadResponse, expected)
 
+  final private case class CornerScenario(corner: CaptionCorner, encoded: String)
+  final private case class InvalidCorner(body: Json, message: String)
+  final private case class CornerResultScenario(result: SpreadManager.PlacementResult, status: Status, code: String)
+  private enum PlacementCall:
+    case Read(album: AlbumId, spread: SpreadId)
+    case Edit(album: AlbumId, spread: SpreadId, edit: SpreadManager.Edit)
+    case ReadCover(album: AlbumId)
+    case EditCover(album: AlbumId, edit: CoverManager.Edit)
+  final private case class Refs():
+    val calls: Ref[IO, Vector[PlacementCall]] = Ref.unsafe(a = Vector.empty[PlacementCall])
+
   // scalafix:off DisableSyntax.defaultArgs
   private def buildApi(
+      refs: Refs = Refs(),
       result: CoverManager.Result,
       spreadResult: SpreadManager.PlacementResult = SpreadManager.PlacementResult.SpreadNotFound,
       coverRead: CoverManager.ReadResult = CoverManager.ReadResult.Found(composition),
@@ -362,11 +483,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     val covers = new CoverManager[IO]:
       override def read(id: AlbumId): IO[CoverManager.ReadResult] =
         assertEquals(id, album)
-        coverRead.pure[IO]
+        refs.calls.update(_ :+ PlacementCall.ReadCover(id)).as(coverRead)
       override def edit(id: AlbumId, request: CoverManager.Edit): IO[CoverManager.Result] =
         assertEquals(id, album)
         maybeCoverEdit.foreach(expected => assertEquals(request, expected))
-        result.pure[IO]
+        refs.calls.update(_ :+ PlacementCall.EditCover(id, request)).as(result)
     val spreads = new SpreadManager[IO]:
       override def replaceChapterOrder(
           album: AlbumId,
@@ -389,12 +510,12 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       override def readPlacements(id: AlbumId, spread: SpreadId): IO[SpreadManager.PlacementReadResult] =
         assertEquals(id, album)
         assertEquals(spread, SpreadId(new UUID(0L, 6L)))
-        spreadRead.pure[IO]
+        refs.calls.update(_ :+ PlacementCall.Read(id, spread)).as(spreadRead)
       override def editPlacements(id: AlbumId, spread: SpreadId, request: SpreadManager.Edit): IO[SpreadManager.PlacementResult] =
         assertEquals(id, album)
         assertEquals(spread, SpreadId(new UUID(0L, 6L)))
         maybeSpreadEdit.foreach(expected => assertEquals(request, expected))
-        spreadResult.pure[IO]
+        refs.calls.update(_ :+ PlacementCall.Edit(id, spread, request)).as(spreadResult)
     PhotoPlacementApi.make(spreads, covers)
   // scalafix:on DisableSyntax.defaultArgs
 

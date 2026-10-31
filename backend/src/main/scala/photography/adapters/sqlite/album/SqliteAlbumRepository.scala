@@ -37,9 +37,12 @@ object SqliteAlbumRepository:
       chapterRepository: ChapterRepository[ConnectionIO]
   ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
     override def metadata(album: AlbumId): F[MetadataResult] =
-      val query = sql"SELECT year, title, synopsis, created_at_ms FROM album WHERE id = ${album.value}"
-        .query[(AlbumYear, AlbumTitle, String, Instant)].option
-        .map(_.map { case (year, title, synopsis, createdAt) => Metadata(album, year, title, synopsis, createdAt) })
+      val query = sql"""SELECT year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms
+                        FROM album WHERE id = ${album.value}"""
+        .query[(AlbumYear, AlbumTitle, String, Int, Instant)].option.flatMap:
+          case None                                                     => none[Metadata].pure[ConnectionIO]
+          case Some((year, title, synopsis, encodedAuthors, createdAt)) =>
+            decodeAuthors(encodedAuthors).liftTo[ConnectionIO].map(authors => Metadata(album, year, title, synopsis, authors, createdAt).some)
       execute(query.map(_.fold[MetadataResult](MetadataResult.NotFound)(MetadataResult.Found(_))), MetadataResult.Failed(_))
 
     override def chapters(album: AlbumId): F[ChaptersResult] =

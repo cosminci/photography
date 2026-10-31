@@ -47,6 +47,10 @@ object ChapterApi:
   ) extends ChapterApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
+        case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" =>
+          saveDescription(AlbumId(album), ChapterId(chapter), request)
+        case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "description"                 => chapterNotFound
+        case PUT -> Root / "api" / "albums" / _ / "chapters" / _ / "description"                              => albumNotFound
         case GET -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
           readGear(AlbumId(value = album), ChapterId(value = chapter))
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
@@ -69,6 +73,21 @@ object ChapterApi:
         case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => chapterNotFound
         case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => albumNotFound
       }
+
+    private def saveDescription(album: AlbumId, chapter: ChapterId, request: Request[F]) =
+      request.as[Json].flatMap { value =>
+        value.hcursor.get[String](k = "text").fold(
+          _ => BadRequest(body = Map("message" -> "Supply a text string")),
+          text =>
+            chapters.saveDescription(album, chapter, text = text).flatMap {
+              case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
+              case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
+              case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
+              case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
+              case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
+            }
+        )
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
 
     private def readGear(album: AlbumId, chapter: ChapterId) =
       gear.readGear(album, chapter).flatMap:
