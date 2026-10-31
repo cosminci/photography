@@ -15,7 +15,7 @@ import photography.ports.photo.{PhotoRepository, PhotoStorage, ThumbnailStorage}
 import photography.usecases.photo.PhotoManager.*
 
 trait PhotoManager[F[_]]:
-  def saveCaption(photo: PhotoId, text: String): F[SaveCaptionResult]
+  def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): F[SaveCaptionResult]
   def refresh(chapter: ChapterId, source: PhotoSource): F[RefreshResult]
 
 object PhotoManager:
@@ -30,9 +30,9 @@ object PhotoManager:
       photos: PhotoRepository[Db],
       thumbnails: PhotoThumbnailGenerator[F]
   )(using Transaction[Db, F]) extends PhotoManager[F]:
-    override def saveCaption(photo: PhotoId, text: String): F[SaveCaptionResult] =
+    override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): F[SaveCaptionResult] =
       Async[F].uncancelable: _ =>
-        Transaction[Db, F].run(photos.saveCaption(photo, text = text)).flatMap:
+        Transaction[Db, F].run(photos.saveCaption(chapter, photo, text = text)).flatMap:
           case PhotoRepository.SaveCaptionResult.Saved         => SaveCaptionResult.Saved.pure[F]
           case PhotoRepository.SaveCaptionResult.PhotoNotFound => SaveCaptionResult.PhotoNotFound.pure[F]
           case PhotoRepository.SaveCaptionResult.Failed(cause) => Logger[F].error(cause)("Photo caption write failed").as(SaveCaptionResult.Failed)

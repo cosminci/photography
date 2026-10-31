@@ -24,7 +24,7 @@ final class AlbumPhotoEventsComponentTest extends CatsEffectSuite:
   private val album   = AlbumId(new UUID(0L, 1L))
   private val chapter = ChapterId(new UUID(0L, 2L))
   private val other   = ChapterId(new UUID(0L, 3L))
-  private val saved   = Metadata(album, year = 2026, title = "Delivery", synopsis = "", Instant.EPOCH)
+  private val saved   = Metadata(album, year = 2026, title = "Delivery", synopsis = "", Author.all, Instant.EPOCH)
 
   Vector(
     (metadata = MetadataResult.NotFound, expected = SubscribeResult.AlbumNotFound[IO]()),

@@ -30,7 +30,7 @@ object AlbumRepository:
     case AlbumNotFound
     case Failed(reason: Failure)
 
-  final case class Metadata(id: AlbumId, year: AlbumYear, title: AlbumTitle, synopsis: String, createdAt: Instant)
+  final case class Metadata(id: AlbumId, year: AlbumYear, title: AlbumTitle, synopsis: String, authors: AlbumAuthors, createdAt: Instant)
   final case class ChapterMetadata(
       id: ChapterId,
       destination: Destination,

@@ -3,7 +3,7 @@ package photography.ports.photo
 import photography.domain.album.*
 
 trait PhotoRepository[Db[_]]:
-  def saveCaption(photo: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult]
+  def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult]
   def listChapter(chapter: ChapterId): Db[PhotoRepository.ListResult]
   def save(photo: Photo): Db[PhotoRepository.WriteResult]
   def remove(photo: PhotoId): Db[PhotoRepository.WriteResult]

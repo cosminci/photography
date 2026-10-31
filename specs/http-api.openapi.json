@@ -337,9 +337,9 @@
         { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
       ],
       "patch": {
-        "operationId": "updateSpreadPlacement", "summary": "Change a placement's slot or transform",
-        "description": "Supply either slotId or transform. An occupied destination swaps placements while preserving transforms and caption corners. The current placement identity must exist. Read after uncertain writes before retrying.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
+        "operationId": "updateSpreadPlacement", "summary": "Change a placement's slot, transform or caption corner",
+        "description": "Supply exactly one of slotId, transform or captionCorner. An occupied destination swaps placements while preserving transforms and caption corners. Corner changes retain photo identity, caption text and every transform. The current placement identity must exist within the scoped spread. Returns the complete saved spread without a postwrite read or retry. Read after failed acknowledgement before retrying.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InteriorPlacementChanges" } } } },
         "responses": {
           "200": { "description": "Saved spread", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
           "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
@@ -500,7 +500,7 @@
         "summary": "Read album metadata without composition",
         "responses": {
           "200": {
-            "description": "Album title, synopsis and immutable metadata",
+            "description": "Album title, synopsis, selected authors and immutable metadata",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/AlbumMetadata" }
@@ -530,6 +530,69 @@
           "204": { "description": "Deleted; no response body" },
           "404": { "$ref": "#/components/responses/AlbumNotFound" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/synopsis": {
+      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "put": {
+        "operationId": "saveAlbumSynopsis",
+        "summary": "Save or clear album synopsis",
+        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears synopsis. Changes only synopsis and returns complete saved album metadata without rereading or retrying. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read.",
+        "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
+        "responses": {
+          "200": { "description": "Saved album metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlbumMetadata" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "$ref": "#/components/responses/AlbumNotFound" },
+          "500": { "$ref": "#/components/responses/ContentMutationFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/authors": {
+      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "put": {
+        "operationId": "saveAlbumAuthors",
+        "summary": "Replace the album's nonempty author selection",
+        "description": "Requires unique supported authors; accepts any nonempty combination and publishes Cosmin, Mara, Iacob display order. Changes only authors and returns complete saved album metadata without rereading or retrying. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["authors"], "properties": { "authors": { "$ref": "#/components/schemas/AlbumAuthors" } }
+        } } } },
+        "responses": {
+          "200": { "description": "Saved album metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlbumMetadata" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "$ref": "#/components/responses/AlbumNotFound" },
+          "500": { "$ref": "#/components/responses/ContentMutationFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/chapters/{chapterId}/description": {
+      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/PhotoChapterId" }],
+      "put": {
+        "operationId": "saveChapterDescription",
+        "summary": "Save or clear chapter description",
+        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears description. Changes only description within the scoped album/chapter; metadata, source, gear and photo import remain unchanged. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/albums/{id}/chapters; after acknowledgement retry only a failed read.",
+        "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
+        "responses": {
+          "204": { "description": "Saved; no response body" },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "$ref": "#/components/responses/ContentChapterNotFound" },
+          "500": { "$ref": "#/components/responses/ContentMutationFailure" }
+        }
+      }
+    },
+    "/api/chapters/{chapterId}/photos/{photoId}/caption": {
+      "parameters": [{ "$ref": "#/components/parameters/PhotoChapterId" }, { "name": "photoId", "in": "path", "required": true, "description": "Lowercase canonical photo UUID.",
+        "schema": { "type": "string", "format": "uuid" } }],
+      "put": {
+        "operationId": "savePhotoCaption",
+        "summary": "Save or clear photo-owned caption text",
+        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears the caption; chapter inventories publish cleared captions as null. The photo must belong to the supplied chapter. Changes only the photo caption, preserving interior corners, transforms and import state. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/chapters/{chapterId}/photos; after acknowledgement retry only a failed read.",
+        "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
+        "responses": {
+          "204": { "description": "Saved; no response body" },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "$ref": "#/components/responses/ContentPhotoNotFound" },
+          "500": { "$ref": "#/components/responses/ContentMutationFailure" }
         }
       }
     },
@@ -1061,6 +1124,13 @@
       }
     },
     "requestBodies": {
+      "ContentText": {
+        "required": true,
+        "description": "Required plain-text string, including empty text. Missing, null or non-string text and malformed JSON return validation feedback.",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["text"], "properties": { "text": { "type": "string" } }
+        } } }
+      },
       "CameraDetails": {
         "required": true,
         "content": {
@@ -1096,6 +1166,26 @@
       }
     },
     "responses": {
+      "ContentMutationFailure": {
+        "description": "service_failure reports a failed operation. mutation_uncertain means acknowledgement was lost and the write may have committed. Reconcile through the authoritative resource read before deciding whether to retry; failed acquisition remains an error rather than empty success.",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "properties": { "code": { "enum": ["service_failure", "mutation_uncertain"] } },
+          "additionalProperties": false
+        } } }
+      },
+      "ContentChapterNotFound": {
+        "description": "Malformed or missing album, or malformed, missing or foreign chapter.",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "properties": { "code": { "enum": ["album_not_found", "chapter_not_found"] } },
+          "additionalProperties": false
+        } } }
+      },
+      "ContentPhotoNotFound": {
+        "description": "Malformed chapter UUID, or malformed, missing or foreign photo.",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "properties": { "code": { "enum": ["chapter_not_found", "photo_not_found"] } }, "additionalProperties": false
+        } } }
+      },
       "CameraNotFound": {
         "description": "Malformed camera UUID or camera not found",
         "content": {
@@ -1615,6 +1705,14 @@
           { "type": "object", "required": ["transform"], "properties": { "transform": { "$ref": "#/components/schemas/PhotoTransform" } }, "additionalProperties": false }
         ]
       },
+      "InteriorPlacementChanges": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/PlacementChanges" },
+          { "type": "object", "required": ["captionCorner"], "properties": {
+            "captionCorner": { "enum": ["top_left", "top_right", "bottom_left", "bottom_right"] }
+          }, "additionalProperties": false }
+        ]
+      },
       "PhotoPlacement": {
         "type": "object",
         "required": ["id", "slotId", "photoId", "transform"],
@@ -1911,11 +2009,16 @@
           { "$ref": "#/components/schemas/AlbumSummary" },
           {
             "type": "object",
-            "required": ["synopsis"],
-            "properties": { "synopsis": { "type": "string" } }
+            "required": ["synopsis", "authors"],
+            "properties": { "synopsis": { "type": "string" }, "authors": { "$ref": "#/components/schemas/AlbumAuthors" } }
           }
         ],
         "unevaluatedProperties": false
+      },
+      "AlbumAuthors": {
+        "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true,
+        "items": { "enum": ["Cosmin", "Mara", "Iacob"] },
+        "description": "Nonempty author selection, published in Cosmin, Mara, Iacob order."
       },
       "AlbumPage": {
         "type": "object",

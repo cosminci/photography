@@ -13,9 +13,6 @@ import org.http4s.dsl.Http4sDsl
 import photography.domain.album.*
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
-import photography.usecases.photo.{ChapterPhotoImport, PhotoManager, PhotoWriteRecovery}
-import photography.usecases.photo.ChapterPhotoInventory
-import photography.usecases.photo.ChapterPhotoInventory.{Snapshot as ChapterPhotos, Result as ChapterResult}
 import photography.usecases.photo.ChapterPhotoImport.Scheduling
 import photography.ports.album.AlbumRepository
 import photography.domain.gear.*
@@ -32,21 +29,23 @@ trait ChapterApi[F[_]]:
 
 object ChapterApi:
   def make[F[_]: Async](
-      inventories: ChapterPhotoInventory[F],
       chapters: ChapterMetadataManager[F],
       metadata: AlbumRepository.ChapterRead[F],
       gear: ChapterManager[F]
   ): ChapterApi[F] =
-    new LiveChapterApi(inventories, chapters, metadata, gear)
+    new LiveChapterApi(chapters, metadata, gear)
 
   final private class LiveChapterApi[F[_]: Async](
-      inventories: ChapterPhotoInventory[F],
       chapters: ChapterMetadataManager[F],
       metadata: AlbumRepository.ChapterRead[F],
       gear: ChapterManager[F]
   ) extends ChapterApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
+        case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" =>
+          saveDescription(AlbumId(album), ChapterId(chapter), request)
+        case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "description"                 => chapterNotFound
+        case PUT -> Root / "api" / "albums" / _ / "chapters" / _ / "description"                              => albumNotFound
         case GET -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
           readGear(AlbumId(value = album), ChapterId(value = chapter))
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
@@ -59,16 +58,28 @@ object ChapterApi:
           create(AlbumId(id), request)
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "chapters" / CanonicalId(chapter) =>
           update(AlbumId(id), ChapterId(chapter), request)
-        case GET -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" =>
-          listChapter(ChapterId(chapter))
         case PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photo-import" =>
           refresh(ChapterId(chapter))
-        case GET -> Root / "api" / "chapters" / _ / "photos"                  => chapterNotFound
         case PUT -> Root / "api" / "chapters" / _ / "photo-import"            => chapterNotFound
         case POST -> Root / "api" / "albums" / _ / "chapters"                 => albumNotFound
         case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => chapterNotFound
         case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => albumNotFound
       }
+
+    private def saveDescription(album: AlbumId, chapter: ChapterId, request: Request[F]) =
+      request.as[Json].flatMap { value =>
+        value.hcursor.get[String](k = "text").fold(
+          _ => BadRequest(body = Map("message" -> "Supply a text string")),
+          text =>
+            chapters.saveDescription(album, chapter, text = text).flatMap {
+              case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
+              case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
+              case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
+              case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
+              case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
+            }
+        )
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
 
     private def readGear(album: AlbumId, chapter: ChapterId) =
       gear.readGear(album, chapter).flatMap:
@@ -170,12 +181,6 @@ object ChapterApi:
             case UpdateResult.Failed           => serviceFailure
       }
 
-    private def listChapter(chapter: ChapterId) =
-      inventories.read(chapter).flatMap:
-        case ChapterResult.Found(snapshot) => Ok(encodePhotos(snapshot)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-        case ChapterResult.ChapterNotFound => chapterNotFound
-        case ChapterResult.Failed          => serviceFailure
-
     private def refresh(chapter: ChapterId) =
       chapters.refresh(chapter).flatMap:
         case ChapterMetadataManager.RefreshResult.Scheduled(scheduling @ (Scheduling.Queued | Scheduling.Coalesced)) =>
@@ -196,75 +201,6 @@ object ChapterApi:
       case Scheduling.Coalesced    => "coalesced"
       case Scheduling.NotRequested => "not-requested"
       case Scheduling.Failed       => "failed"
-
-    private def encodePhotos(snapshot: ChapterPhotos) =
-      val inventory = snapshot.inventory
-      Json.obj(
-        "photos"         -> Json.arr(inventory.photos.map(encodePhoto)*),
-        "placedPhotoIds" -> Json.arr(inventory.placed.toVector.sortBy(_.value.toString).map(photo => Json.fromString(photo.value.toString))*),
-        "counts"         -> Json.obj("unplaced" -> Json.fromInt(inventory.countUnplaced), "total" -> Json.fromInt(inventory.total)),
-        "processing"     -> encodeProcessing(snapshot.execution)
-      )
-
-    private def encodePhoto(photo: Photo) =
-      val thumbnail = photo.thumbnail
-      val url       = s"/thumbnails/${thumbnail.location.value}/${thumbnail.version}.jpg"
-      Json.obj(
-        "id"            -> Json.fromString(photo.id.value.toString),
-        "filename"      -> Json.fromString(photo.original.filename),
-        "capturedLocal" -> photo.metadata.maybeCapturedLocal.fold(Json.Null)(value => Json.fromString(value.toString)),
-        "width"         -> Json.fromInt(photo.metadata.dimensions.width),
-        "height"        -> Json.fromInt(photo.metadata.dimensions.height),
-        "caption"       -> photo.maybeCaption.fold(Json.Null)(Json.fromString),
-        "thumbnail"     -> Json.obj(
-          "url"    -> Json.fromString(url),
-          "width"  -> Json.fromInt(thumbnail.dimensions.width),
-          "height" -> Json.fromInt(thumbnail.dimensions.height)
-        )
-      )
-
-    private def encodeProcessing(execution: ChapterPhotoImport.ExecutionOutcome) =
-      val (state, unsupported, issues) = execution.status match
-        case ChapterPhotoImport.Status.Idle             => ("idle", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Queued           => ("queued", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Running          => ("running", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.LaunchFailed     => ("failed", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Uncertain        => ("failed", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Finished(result) =>
-          val failed = result.issues.exists(issue => !isSkipped(issue))
-          (if failed then "failed" else "completed", result.unsupportedCount: Int, result.issues)
-      val scheduling = execution.status match
-        case ChapterPhotoImport.Status.LaunchFailed => Vector(encodeIssue(stage = "scheduling", code = "scheduling_failed", maybeFilename = None))
-        case ChapterPhotoImport.Status.Uncertain    => Vector(encodeIssue(stage = "persistence", code = "persistence_failed", maybeFilename = None))
-        case _                                      => Vector.empty[Json]
-      val failures = issues.map(encodeImportIssue) ++ execution.retirementIssues.map(encodeRetirementIssue) ++ scheduling
-      Json.obj(
-        "state"            -> Json.fromString(if execution.retirementIssues.nonEmpty then "failed" else state),
-        "unsupportedCount" -> Json.fromInt(unsupported),
-        "skippedCount"     -> Json.fromInt(issues.count(isSkipped)),
-        "issues"           -> Json.arr(failures*)
-      )
-
-    private def isSkipped(issue: PhotoManager.Issue) = issue match
-      case _: PhotoManager.Issue.Undecodable | _: PhotoManager.Issue.Unstable => true
-      case _                                                                  => false
-
-    private def encodeImportIssue(issue: PhotoManager.Issue) = issue match
-      case PhotoManager.Issue.Discovery             => encodeIssue(stage = "discovery", code = "unreadable_source", maybeFilename = None)
-      case PhotoManager.Issue.Read(filename)        => encodeIssue(stage = "read", code = "unreadable_source", maybeFilename = filename.some)
-      case PhotoManager.Issue.Generation(filename)  => encodeIssue(stage = "generation", code = "encoding_failed", maybeFilename = filename.some)
-      case PhotoManager.Issue.Undecodable(filename) => encodeIssue(stage = "read", code = "undecodable", maybeFilename = filename.some)
-      case PhotoManager.Issue.Unstable(filename)    => encodeIssue(stage = "read", code = "unstable", maybeFilename = filename.some)
-      case PhotoManager.Issue.Storage               => encodeIssue(stage = "storage", code = "storage_failed", maybeFilename = None)
-      case _: PhotoManager.Issue.Cleanup            => encodeIssue(stage = "cleanup", code = "cleanup_failed", maybeFilename = None)
-      case _                                        => encodeIssue(stage = "persistence", code = "persistence_failed", maybeFilename = None)
-
-    private def encodeRetirementIssue(issue: PhotoWriteRecovery.Issue) = issue match
-      case _: PhotoWriteRecovery.Issue.Cleanup => encodeIssue(stage = "cleanup", code = "cleanup_failed", maybeFilename = None)
-      case _                                   => encodeIssue(stage = "persistence", code = "persistence_failed", maybeFilename = None)
-
-    private def encodeIssue(stage: String, code: String, maybeFilename: Option[PhotoFilename]) =
-      Json.obj("stage" -> Json.fromString(stage), "code" -> Json.fromString(code), "filename" -> maybeFilename.fold(Json.Null)(Json.fromString))
 
     private def explain(conflict: ChapterConflict) = conflict match
       case ChapterConflict.AtCapacity         => "An album can contain at most 65 interior spreads"

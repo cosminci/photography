@@ -53,7 +53,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         val expectedEvents = texts.flatMap(text => Vector("transaction", s"caption:${existing.id.value}:$text"))
 
         for
-          results <- texts.traverse(text => manager.saveCaption(existing.id, text = text))
+          results <- texts.traverse(text => manager.saveCaption(chapter, existing.id, text = text))
           actual  <- events.get
         yield
           assertEquals(results, Vector.fill(texts.size)(expected))
@@ -66,7 +66,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       val manager = buildManager(events, caption = caption)
 
       for
-        result <- manager.saveCaption(existing.id, text = "Saved?")
+        result <- manager.saveCaption(chapter, existing.id, text = "Saved?")
         actual <- events.get
       yield
         assertEquals(result, SaveCaptionResult.Uncertain)
@@ -82,7 +82,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         val manager = buildManager(events, caption = caption)
 
         for
-          worker       <- manager.saveCaption(existing.id, text = "Caption").start
+          worker       <- manager.saveCaption(chapter, existing.id, text = "Caption").start
           _            <- entered.get
           cancellation <- (cancelStarted.complete(()).void >> worker.cancel).start
           _            <- cancelStarted.get >> IO.cede
@@ -370,7 +370,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
     val writePhoto  = save
     val removePhoto = remove
     val repository  = new PhotoRepository[Db]:
-      override def saveCaption(id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
+      override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.SaveCaptionResult](caption(id, text))
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =
         val listed = maybeListed.getOrElse(current.get.map(photos => PhotoRepository.ListResult.Listed(photos)))

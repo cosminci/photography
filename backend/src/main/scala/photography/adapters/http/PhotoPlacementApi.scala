@@ -105,7 +105,19 @@ object PhotoPlacementApi:
         cursor.get[PhotoTransform]("transform")(using buildTransformDecoder).map(transform =>
           SpreadManager.Edit.Adjust(SpreadPlacementId(id), transform)
         )
-      else DecodingFailure("Supply either slotId or transform", cursor.history).asLeft
+      else if cursor.keys.exists(_.toSet === Set("captionCorner")) then
+        cursor.get[CaptionCorner](k = "captionCorner")(using cornerDecoder).map(corner =>
+          SpreadManager.Edit.SetCaptionCorner(SpreadPlacementId(id), corner)
+        )
+      else DecodingFailure("Supply either slotId, transform or captionCorner", cursor.history).asLeft
+
+    private val cornerDecoder = Decoder.decodeString.emap[CaptionCorner] {
+      case "top_left"     => CaptionCorner.TopLeft.asRight[String]
+      case "top_right"    => CaptionCorner.TopRight.asRight[String]
+      case "bottom_left"  => CaptionCorner.BottomLeft.asRight[String]
+      case "bottom_right" => CaptionCorner.BottomRight.asRight[String]
+      case _              => "Select one of the four caption corners".asLeft[CaptionCorner]
+    }
 
     private def coverPlaceDecoder = Decoder.instance[CoverManager.Edit]: cursor =>
       validateCreation(cursor) >> (decodeId(cursor, field = "slotId"), decodeId(cursor, field = "photoId")).mapN { (slot, photo) =>
