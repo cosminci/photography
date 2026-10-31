@@ -1,6 +1,6 @@
 package photography.usecases.photo
 
-import photography.usecases.album.AlbumManager
+import photography.ports.album.AlbumRepository
 
 import cats.effect.{Async, Ref, Resource}
 import cats.effect.std.Queue
@@ -9,7 +9,6 @@ import fs2.Stream
 import org.typelevel.log4cats.Logger
 import photography.capabilities.IdGenerator
 import photography.domain.album.{AlbumId, ChapterId}
-import photography.usecases.album.AlbumManager.GetAlbumResult
 import photography.usecases.photo.AlbumPhotoEvents.*
 import java.util.UUID
 
@@ -18,18 +17,18 @@ trait AlbumPhotoEvents[F[_]]:
   def invalidate(album: AlbumId, chapter: ChapterId): F[Unit]
 
 object AlbumPhotoEvents:
-  def make[F[_]: Async: IdGenerator: Logger](albums: AlbumManager[F]): F[AlbumPhotoEvents[F]] =
+  def make[F[_]: Async: IdGenerator: Logger](albums: AlbumRepository.MetadataRead[F]): F[AlbumPhotoEvents[F]] =
     Ref.of[F, Map[AlbumId, Map[UUID, Subscriber[F]]]](Map.empty).map(new LiveAlbumPhotoEvents(albums, _))
 
   final private class LiveAlbumPhotoEvents[F[_]: Async: IdGenerator: Logger](
-      albums: AlbumManager[F],
+      albums: AlbumRepository.MetadataRead[F],
       subscribers: Ref[F, Map[AlbumId, Map[UUID, Subscriber[F]]]]
   ) extends AlbumPhotoEvents[F]:
     override def subscribe(album: AlbumId): F[SubscribeResult[F]] =
-      albums.get(album).map:
-        case _: GetAlbumResult.Found => SubscribeResult.Opened(Stream.resource(register(album)).flatMap(readEvents))
-        case GetAlbumResult.NotFound => SubscribeResult.AlbumNotFound()
-        case GetAlbumResult.Failed   => SubscribeResult.Failed()
+      albums.metadata(album).map:
+        case AlbumRepository.MetadataResult.Found(_)  => SubscribeResult.Opened(Stream.resource(register(album)).flatMap(readEvents))
+        case AlbumRepository.MetadataResult.NotFound  => SubscribeResult.AlbumNotFound()
+        case AlbumRepository.MetadataResult.Failed(_) => SubscribeResult.Failed()
       .handleErrorWith(error => Logger[F].error(error)("Album photo subscription failed").as(SubscribeResult.Failed()))
 
     override def invalidate(album: AlbumId, chapter: ChapterId): F[Unit] =

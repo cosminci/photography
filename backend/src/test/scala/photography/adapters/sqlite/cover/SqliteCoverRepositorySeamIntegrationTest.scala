@@ -21,13 +21,14 @@ import photography.domain.layout.*
 import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult}
 import photography.syntax.SyncSyntax.*
 import photography.usecases.cover.CoverManager
-import photography.usecases.spread.{SpreadManager, SpreadTemplateManager}
+import photography.usecases.spread.SpreadManager
 import java.nio.file.{Files, Path}
 import java.util.UUID
 
 class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
-  private val album = AlbumId(new UUID(0L, 1L))
-  private val cover = Cover(
+  private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
+  private val album                  = AlbumId(new UUID(0L, 1L))
+  private val cover                  = Cover(
     album,
     SpineOwner.Back,
     CoverSlot(CoverSlotId(new UUID(0L, 2L))),
@@ -223,6 +224,6 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
     val composition        = SqliteAlbumCompositionRepository.make
     val spreads            = SqliteSpreadRepository.make
     val templateRepository = SqliteSpreadTemplateRepository.make[IO](xa)
-    val templates          = SpreadTemplateManager.make(templateRepository)
+    val templates          = templateRepository
     val defaultLayout      = SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000113"))
     SpreadManager.make[IO, ConnectionIO](templates, composition, spreads, photos, defaultLayout)

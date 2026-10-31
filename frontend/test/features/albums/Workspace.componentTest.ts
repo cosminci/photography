@@ -24,7 +24,8 @@ import { templateCategory } from "../../../src/features/albums/workspace/Templat
 import type { Spread } from "../../../src/features/albums/model/Workspace";
 import { getCoverCredits } from "../../../src/features/albums/workspace/Canvas";
 import { searchCountries } from "../../../src/features/albums/workspace/CountryPicker";
-import { readWorkspace } from "../../../src/features/albums/api/WorkspaceWire";
+import { readChapter, readCountry } from "../../../src/features/albums/api/WorkspaceWire";
+import { readSpread } from "../../../src/features/albums/api/PlacementWire";
 import { readPhotoInventory, readScheduling } from "../../../src/features/albums/api/PhotoWire";
 
 describe("chapter detail feedback", () => {
@@ -273,11 +274,18 @@ describe("chapter outline capacity", () => {
     ],
   ] as const)("should explain spread actions for %s", (_scenario, selectedIndex, total, unavailable, expectedReasons) => {
     const spreads: Spread[] = [
-      { id: "album", templateId: "layout", kind: "album_start", chapter: null, slots: [] },
-      { id: "opening", templateId: "layout", kind: "chapter_start", chapter: "vacation", slots: [] },
-      ...["first", "middle", "last"].map((id) => ({ id, templateId: "layout", kind: "photos_only" as const, chapter: "vacation", slots: [] })),
-      { id: "home-opening", templateId: "layout", kind: "chapter_start", chapter: "home", slots: [] },
-      { id: "single", templateId: "layout", kind: "photos_only", chapter: "home", slots: [] },
+      { id: "album", templateId: "layout", kind: "album_start", chapter: null, slots: [], placements: [] },
+      { id: "opening", templateId: "layout", kind: "chapter_start", chapter: "vacation", slots: [], placements: [] },
+      ...["first", "middle", "last"].map((id) => ({
+        id,
+        templateId: "layout",
+        kind: "photos_only" as const,
+        chapter: "vacation",
+        slots: [],
+        placements: [],
+      })),
+      { id: "home-opening", templateId: "layout", kind: "chapter_start", chapter: "home", slots: [], placements: [] },
+      { id: "single", templateId: "layout", kind: "photos_only", chapter: "home", slots: [], placements: [] },
     ];
     const selected = selectedIndex === undefined ? undefined : spreads[selectedIndex];
     const remaining = Array.from({ length: total - spreads.length }, (_, index): Spread => ({
@@ -286,6 +294,7 @@ describe("chapter outline capacity", () => {
       kind: "photos_only",
       chapter: "other",
       slots: [],
+      placements: [],
     }));
     const [add, earlier, later, remove] = expectedReasons;
     const expected = { add, earlier, later, remove };
@@ -322,21 +331,22 @@ describe("cover credits", () => {
 
 describe("workspace URL selection", () => {
   it.each([
-    ["album opening", 0, false, null],
-    ["chapter opening", 1, false, "chapter"],
-    ["photo spread", 2, false, "photo"],
-    ["past the last spread", 3, false, "photo"],
-    ["empty remaining spreads", 0, true, undefined],
-  ] as const)("should retain the deletion index at %s", (_scenario, index, empty, expected) => {
-    const remainingSpreads: readonly Spread[] = empty
-      ? []
-      : [
-          { id: "album-opening", templateId: "layout", kind: "album_start", chapter: null, slots: [] },
-          { id: "chapter-opening", templateId: "layout", kind: "chapter_start", chapter: "chapter", slots: [] },
-          { id: "photo", templateId: "layout", kind: "photos_only", chapter: "chapter", slots: [] },
-        ];
+    ["album opening", 0, null],
+    ["chapter opening", 1, "chapter"],
+    ["photo spread", 2, "photo"],
+    ["past the last spread", 3, "photo"],
+  ] as const)("should retain the deletion index at %s", (_scenario, index, expected) => {
+    const remainingSpreads: readonly Spread[] = [
+      { id: "album-opening", templateId: "layout", kind: "album_start", chapter: null, slots: [], placements: [] },
+      { id: "chapter-opening", templateId: "layout", kind: "chapter_start", chapter: "chapter", slots: [], placements: [] },
+      { id: "photo", templateId: "layout", kind: "photos_only", chapter: "chapter", slots: [], placements: [] },
+    ];
 
     expect(findDeletionSelection(remainingSpreads, index)).toBe(expected);
+  });
+
+  it("should reject deletion selection from an empty composition rather than inventing a destination", () => {
+    expect(() => findDeletionSelection([], 0)).toThrow("Saved composition has no selectable spread");
   });
 
   it.each([
@@ -347,11 +357,11 @@ describe("workspace URL selection", () => {
     [4, { chapter: { position: 1, total: 1 }, album: { position: 5, total: 5 } }],
   ] as const)("should count openings and exclude Cover for spread index %i", (index, expected) => {
     const spreads: [Spread, Spread, Spread, Spread, Spread] = [
-      { id: "album", templateId: "layout", kind: "album_start", chapter: null, slots: [] },
-      { id: "opening", templateId: "layout", kind: "chapter_start", chapter: "vacation", slots: [] },
-      { id: "first", templateId: "layout", kind: "photos_only", chapter: "vacation", slots: [] },
-      { id: "last", templateId: "layout", kind: "photos_only", chapter: "vacation", slots: [] },
-      { id: "home-opening", templateId: "layout", kind: "chapter_start", chapter: "home", slots: [] },
+      { id: "album", templateId: "layout", kind: "album_start", chapter: null, slots: [], placements: [] },
+      { id: "opening", templateId: "layout", kind: "chapter_start", chapter: "vacation", slots: [], placements: [] },
+      { id: "first", templateId: "layout", kind: "photos_only", chapter: "vacation", slots: [], placements: [] },
+      { id: "last", templateId: "layout", kind: "photos_only", chapter: "vacation", slots: [], placements: [] },
+      { id: "home-opening", templateId: "layout", kind: "chapter_start", chapter: "home", slots: [], placements: [] },
     ];
 
     expect(findSpreadPosition(spreads, spreads[index])).toEqual(expected);
@@ -359,9 +369,9 @@ describe("workspace URL selection", () => {
 
   it("should resolve URL parts through persisted openings and spread ownership without inventing missing values", () => {
     const spreads = [
-      { id: "album-opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [] },
-      { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [] },
-      { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [] },
+      { id: "album-opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [], placements: [] },
+      { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [], placements: [] },
+      { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [], placements: [] },
     ];
 
     expect(findSelection(spreads, null)).toEqual({ kind: "spread", spread: spreads[0] });
@@ -381,17 +391,17 @@ describe("workspace URL selection", () => {
     ["foreign", undefined, undefined],
   ] as const)("should traverse persisted Reader order from %s without wrapping", (part, previous, next) => {
     const spreads = [
-      { id: "album-opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [] },
-      { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [] },
-      { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [] },
-      { id: "home-opening", templateId: "layout", chapter: "home", kind: "chapter_start" as const, slots: [] },
+      { id: "album-opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [], placements: [] },
+      { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [], placements: [] },
+      { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [], placements: [] },
+      { id: "home-opening", templateId: "layout", chapter: "home", kind: "chapter_start" as const, slots: [], placements: [] },
     ];
 
     expect(findReaderNavigation(spreads, findSelection(spreads, part))).toEqual({ previous, next });
   });
 
   it("should navigate an album opening to Cover and keep an empty workspace unavailable", () => {
-    const spreads = [{ id: "opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [] }];
+    const spreads = [{ id: "opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [], placements: [] }];
     const emptyNavigation = { position: undefined, total: 0, first: undefined, previous: undefined, next: undefined, last: undefined };
 
     expect(findReaderNavigation(spreads, findSelection(spreads, null))).toEqual({ previous: "cover", next: undefined });
@@ -409,9 +419,9 @@ describe("workspace URL selection", () => {
     "should derive above-editor spread destinations from %s without wrapping or navigating Cover",
     (part, position, first, previous, next, last) => {
       const spreads = [
-        { id: "opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [] },
-        { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [] },
-        { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [] },
+        { id: "opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [], placements: [] },
+        { id: "chapter-opening", templateId: "layout", chapter: "chapter", kind: "chapter_start" as const, slots: [], placements: [] },
+        { id: "photo", templateId: "layout", chapter: "chapter", kind: "photos_only" as const, slots: [], placements: [] },
       ];
       const expected = { position, total: 3, first, previous, next, last };
 
@@ -432,7 +442,7 @@ describe("workspace wire representations", () => {
     description: "",
   };
   const slot = { id: "slot", kind: "photo", x: 2, y: 3, width: 24, height: 40 };
-  const spread = { id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [slot] };
+  const spread = { id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [slot], placements: [] };
   const workspace = {
     year: 2026,
     photoRoot: "/photos",
@@ -461,35 +471,24 @@ describe("workspace wire representations", () => {
     ["chapter_start", homeWorkspace],
     ["photos_only", photoWorkspace],
   ] as const)("should decode complete saved metadata, country catalog and exact %s geometry", (_kind, expectedWorkspace) => {
-    const actualWorkspace = readWorkspace(expectedWorkspace);
-
-    expect(actualWorkspace).toEqual(expectedWorkspace);
+    expect(expectedWorkspace.chapters.map(readChapter)).toEqual(expectedWorkspace.chapters);
+    expect(expectedWorkspace.spreads.map(readSpread)).toEqual(expectedWorkspace.spreads);
+    expect(expectedWorkspace.countries.map(readCountry)).toEqual(expectedWorkspace.countries);
   });
 
   it.each([
-    { ...workspace, year: undefined },
-    { ...workspace, year: 2026.5 },
-    { ...workspace, year: 1899 },
-    { ...workspace, year: 2101 },
-    { ...workspace, countries: null },
-    { ...workspace, photoRoot: undefined },
-    { ...workspace, photoInventories: undefined },
-    { ...workspace, photoInventories: {} },
-    { ...workspace, photoInventories: { foreign: workspace.photoInventories.chapter } },
-    {
-      ...workspace,
-      chapters: [chapter, chapter],
-      photoInventories: { chapter: workspace.photoInventories.chapter, foreign: workspace.photoInventories.chapter },
-    },
-    { ...workspace, chapters: [{ ...chapter, kind: "unknown" }] },
-    { ...workspace, spreads: [{ ...spread, kind: "unknown" }] },
-    { ...workspace, spreads: [{ ...spread, chapter: chapter.id }] },
-    { ...workspace, spreads: [{ ...spread, kind: "chapter_start", chapter: null }] },
-    { ...workspace, spreads: [{ ...spread, kind: "photos_only", chapter: null }] },
-    { ...workspace, spreads: [{ ...spread, slots: [{ ...slot, kind: "unknown" }] }] },
-    { ...workspace, spreads: [{ ...spread, slots: [{ ...slot, x: Number.NaN }] }] },
-  ])("should reject incomplete or unknown workspace representations %j", (value) => {
-    expect(() => readWorkspace(value)).toThrow();
+    { ...spread, kind: "unknown" },
+    { ...spread, chapter: chapter.id },
+    { ...spread, kind: "chapter_start", chapter: null },
+    { ...spread, kind: "photos_only", chapter: null },
+    { ...spread, slots: [{ ...slot, kind: "unknown" }] },
+    { ...spread, slots: [{ ...slot, x: Number.NaN }] },
+  ])("should reject incomplete or unknown spread resource representations %j", (value) => {
+    expect(() => readSpread(value)).toThrow();
+  });
+
+  it("should reject an unknown chapter type at its resource boundary", () => {
+    expect(() => readChapter({ ...chapter, kind: "unknown" })).toThrow();
   });
 
   describe("photo wire representations", () => {

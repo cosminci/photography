@@ -1,8 +1,9 @@
 import { AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
 import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readText, readNumber } from "./Wire";
-import { readChapterIdentity, readTemplates, readWorkspace } from "./WorkspaceWire";
+import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
+import { readArray } from "./Wire";
 import { readPhotoInventory, readScheduling } from "./PhotoWire";
-import { readPlacementSnapshot } from "./PlacementWire";
+import { readPlacementSnapshot, readSpread } from "./PlacementWire";
 import type {
   CoverContext,
   CoverSnapshot,
@@ -40,6 +41,8 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
       }
       if (response.status === 404 && fields["code"] === "spread_not_found")
         throw new AlbumRequestError(404, "This spread could not be found. Reload the workspace and try again.");
+      if (response.status === 409 && fields["code"] === "composition_changed")
+        throw new AlbumRequestError(409, "This chapter's composition changed. Reload saved workspace before choosing the action again.");
       throw new AlbumRequestError(response.status, readFailureMessage(failure));
     }
     if (response.status !== expectedStatus) throw new Error("Unexpected album response status");
@@ -51,14 +54,19 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   function readPlacements(id: string, context: SpreadContext): Promise<SpreadSnapshot>;
   function readPlacements(id: string, context: PlacementContext): Promise<PlacementSnapshot>;
   function readPlacements(id: string, context: PlacementContext): Promise<PlacementSnapshot> {
-    return request(placementPath(id, context), "GET", undefined, 200, (value) => readPlacementSnapshot(value, context));
+    return request(resourcePath(id, context), "GET", undefined, 200, (value) => readPlacementSnapshot(value, context));
   }
 
   function editPlacements(id: string, context: CoverContext, edit: PlacementEdit): Promise<CoverSnapshot>;
   function editPlacements(id: string, context: SpreadContext, edit: PlacementEdit): Promise<SpreadSnapshot>;
   function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot>;
   function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
-    return request(placementPath(id, context), "POST", edit, 200, (value) => readPlacementSnapshot(value, context));
+    const base = `${resourcePath(id, context)}/placements`;
+    if (edit.operation === "place")
+      return request(base, "POST", { slotId: edit.slotId, photoId: edit.photoId }, 200, (value) => readPlacementSnapshot(value, context));
+    const path = `${base}/${encodeURIComponent(edit.placementId)}`;
+    const body = edit.operation === "adjust" ? { transform: edit.transform } : edit.operation === "move" ? { slotId: edit.slotId } : undefined;
+    return request(path, edit.operation === "remove" ? "DELETE" : "PATCH", body, 200, (value) => readPlacementSnapshot(value, context));
   }
 
   return {
@@ -72,10 +80,14 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
       request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/spreads`, "POST", { afterSpreadId }, 201, (value) =>
         readText(readRecord(value)["id"]),
       ),
-    moveSpread: (id, spreadId, direction) =>
-      request(`/api/albums/${encodeURIComponent(id)}/spreads/${encodeURIComponent(spreadId)}/move`, "POST", { direction }, 200, (value) => {
-        readText(readRecord(value)["id"]);
-      }),
+    replaceChapterComposition: (id, chapter, expectedSpreadIds, spreadIds) =>
+      request(
+        `/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapter)}/composition`,
+        "PUT",
+        { expectedSpreadIds, spreadIds },
+        204,
+        () => undefined,
+      ),
     changeSpreadTemplate: (id, spreadId, templateId, confirmPlacements) =>
       request(
         `/api/albums/${encodeURIComponent(id)}/spreads/${encodeURIComponent(spreadId)}/template${confirmPlacements ? "?confirmPlacements=true" : ""}`,
@@ -99,26 +111,59 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     list: (page) => request(`/api/albums?page=${String(page)}`, "GET", undefined, 200, readPage),
     create: (year) => request("/api/albums", "POST", { year }, 201, readSummary),
     rename: (id, title) => request(`/api/albums/${encodeURIComponent(id)}`, "PATCH", { title }, 200, readSummary),
-    open: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum),
+    open: (id, signal) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum, signal),
     remove: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
-    workspace: (id, signal) => request(`/api/albums/${encodeURIComponent(id)}/workspace`, "GET", undefined, 200, readWorkspace, signal),
+    chapters: (id, signal) =>
+      request(
+        `/api/albums/${encodeURIComponent(id)}/chapters`,
+        "GET",
+        undefined,
+        200,
+        (value) => readArray(readRecord(value)["chapters"]).map(readChapter),
+        signal,
+      ),
+    composition: (id, signal) =>
+      request(
+        `/api/albums/${encodeURIComponent(id)}/composition`,
+        "GET",
+        undefined,
+        200,
+        (value) =>
+          readArray(readRecord(value)["spreads"]).map((entry) => {
+            const fields = readRecord(entry);
+            return { id: readText(fields["id"]), chapter: fields["chapter"] === null ? null : readText(fields["chapter"]) };
+          }),
+        signal,
+      ),
+    spread: (id, spreadId, chapter, signal) =>
+      request(
+        `/api/albums/${encodeURIComponent(id)}/spreads/${encodeURIComponent(spreadId)}`,
+        "GET",
+        undefined,
+        200,
+        (value) => readSpread({ ...readRecord(value), chapter }),
+        signal,
+      ),
+    countries: (signal) =>
+      request("/api/countries", "GET", undefined, 200, (value) => readArray(readRecord(value)["countries"]).map(readCountry), signal),
+    photoSource: (signal) => request("/api/photo-source", "GET", undefined, 200, (value) => readText(readRecord(value)["photoRoot"]), signal),
     chapterPhotos: (id, signal) => request(`/api/chapters/${encodeURIComponent(id)}/photos`, "GET", undefined, 200, readPhotoInventory, signal),
     refreshPhotos: (id) =>
-      request(`/api/chapters/${encodeURIComponent(id)}/photos/refresh`, "POST", undefined, 202, (value) => {
+      request(`/api/chapters/${encodeURIComponent(id)}/photo-import`, "PUT", undefined, 202, (value) => {
         const scheduling = readScheduling(value);
         if (scheduling !== "queued" && scheduling !== "coalesced") throw new Error("Refresh was not scheduled");
         return scheduling;
       }),
     createChapter: (id, details) => request(`/api/albums/${encodeURIComponent(id)}/chapters`, "POST", details, 201, readChapterIdentity),
     updateChapter: (id, chapterId, details) => {
-      const common = { countries: details.countries, sourceFolder: details.sourceFolder };
+      const common = { kind: details.kind, countries: details.countries, sourceFolder: details.sourceFolder };
       const body = details.kind === "home" ? common : { name: details.name, start: details.start, end: details.end, ...common };
       return request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}`, "PUT", body, 200, readChapterIdentity);
     },
   };
 }
 
-function placementPath(id: string, context: PlacementContext): string {
+function resourcePath(id: string, context: PlacementContext): string {
   const target = context.kind === "cover" ? "cover" : `spreads/${encodeURIComponent(context.id)}`;
-  return `/api/albums/${encodeURIComponent(id)}/${target}/placements`;
+  return `/api/albums/${encodeURIComponent(id)}/${target}`;
 }

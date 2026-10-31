@@ -3,7 +3,7 @@ import { createSignal } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
 import { AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../../../src/features/albums/model/Album";
-import type { Chapter, Workspace } from "../../../src/features/albums/model/Workspace";
+import type { Chapter, Spread, Workspace } from "../../../src/features/albums/model/Workspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
 import type { PlacementContext, PlacementSnapshot, SpreadPlacement, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
 
@@ -42,15 +42,30 @@ const home: Chapter = {
 };
 const photoSlot = { id: "photo-slot", kind: "photo" as const, x: 2, y: 4, width: 23, height: 42 };
 const textSlot = { id: "text-slot", kind: "text" as const, x: 50, y: 4, width: 48, height: 92 };
-const opening = { id: "album-opening", templateId: "layout", chapter: null, kind: "album_start" as const, slots: [photoSlot, textSlot] };
+const opening = {
+  id: "album-opening",
+  templateId: "layout",
+  chapter: null,
+  kind: "album_start" as const,
+  slots: [photoSlot, textSlot],
+  placements: [],
+};
 const vacationOpening = {
   id: "vacation-opening",
   templateId: "layout",
   chapter: vacation.id,
   kind: "chapter_start" as const,
   slots: [photoSlot, textSlot],
+  placements: [],
 };
-const vacationPhoto = { id: "vacation-photo", templateId: "layout", chapter: vacation.id, kind: "photos_only" as const, slots: [photoSlot] };
+const vacationPhoto = {
+  id: "vacation-photo",
+  templateId: "layout",
+  chapter: vacation.id,
+  kind: "photos_only" as const,
+  slots: [photoSlot],
+  placements: [],
+};
 const workspace: Workspace = {
   photoInventories: { vacation: inventory, home: inventory },
   year: 2026,
@@ -58,9 +73,9 @@ const workspace: Workspace = {
   chapters: [vacation, home],
   spreads: [
     opening,
-    { id: "vacation-opening", templateId: "layout", chapter: vacation.id, kind: "chapter_start", slots: [photoSlot, textSlot] },
-    { id: "vacation-photo", templateId: "layout", chapter: vacation.id, kind: "photos_only", slots: [photoSlot] },
-    { id: "home-opening", templateId: "layout", chapter: home.id, kind: "chapter_start", slots: [textSlot] },
+    vacationOpening,
+    vacationPhoto,
+    { id: "home-opening", templateId: "layout", chapter: home.id, kind: "chapter_start", slots: [textSlot], placements: [] },
   ],
   countries: [
     { id: "ro", name: "Romania", code: "RO" },
@@ -128,12 +143,28 @@ describe("album workspace browser boundary", () => {
       spreads: [{ ...opening, templateId: "new", slots: [{ ...photoSlot, id: "new-slot" }, textSlot] }, ...used.spreads.slice(1)],
     };
     const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(available).mockResolvedValueOnce(used).mockResolvedValue(changed),
-      readPlacements: vi
+      chapterPhotos: vi.fn().mockResolvedValueOnce(photos).mockResolvedValueOnce(inventory).mockResolvedValue(used.photoInventories.vacation),
+      spread: vi
         .fn()
-        .mockResolvedValueOnce({ kind: "spread", id: opening.id, placements: [] } satisfies SpreadSnapshot)
-        .mockResolvedValue({ kind: "spread", id: opening.id, placements: [{ ...placement, slotId: "new-slot" }] } satisfies SpreadSnapshot),
-      editPlacements: vi.fn().mockResolvedValue({ kind: "spread", id: opening.id, placements: [placement] } satisfies SpreadSnapshot),
+        .mockImplementation((_album, id) => {
+          const spread = changed.spreads.find((candidate) => candidate.id === id);
+          if (spread === undefined) throw new Error("Unknown spread");
+          return Promise.resolve(spread.id === opening.id ? { ...spread, placements: [{ ...placement, slotId: "new-slot" }] } : spread);
+        })
+        .mockResolvedValueOnce(opening)
+        .mockResolvedValueOnce(vacationOpening)
+        .mockResolvedValueOnce(vacationPhoto)
+        .mockResolvedValueOnce(workspace.spreads[3])
+        .mockResolvedValueOnce({ ...opening, placements: [placement] })
+        .mockResolvedValueOnce(vacationOpening)
+        .mockResolvedValueOnce(vacationPhoto)
+        .mockResolvedValueOnce(workspace.spreads[3]),
+      editPlacements: vi.fn().mockResolvedValue({
+        kind: "spread",
+        id: opening.id,
+        placements: [placement],
+        layout: { kind: opening.kind, templateId: opening.templateId, slots: opening.slots },
+      } satisfies SpreadSnapshot),
       templates: vi.fn().mockResolvedValue([
         { id: "layout", name: "Applied", slots: [photoSlot, textSlot] },
         { id: "new", name: "New layout", slots: [photoSlot, textSlot] },
@@ -155,23 +186,26 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel photo choice" }));
     fireEvent.click(screen.getByRole("button", { name: "New layout" }));
     await waitFor(() => {
-      expect(client.readPlacements).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole("button", { name: "New layout" })).toHaveAttribute("aria-pressed", "true");
     });
 
     expect(screen.getByRole("button", { name: "Photo slot 1: Mountain.jpg" })).toBeInTheDocument();
     const expectedContext = { kind: "spread", id: opening.id };
     const expectedEdit = { operation: "place", photoId: photo.id, slotId: photoSlot.id };
     expect(client.editPlacements).toHaveBeenCalledWith(album.id, expectedContext, expectedEdit);
+    expect(client.readPlacements).not.toHaveBeenCalled();
   });
 
-  it("shows failed placement reads and retries through the authoritative read boundary", async () => {
+  it("shows failed Cover reads and retries through the authoritative read boundary", async () => {
+    window.history.replaceState(null, "", "?part=cover");
     const client = buildClient({
       readPlacements: vi
         .fn()
         .mockRejectedValueOnce(new Error("offline"))
-        .mockResolvedValue({ kind: "spread", id: opening.id, placements: [] } satisfies SpreadSnapshot),
+        .mockResolvedValue({ kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }),
     });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
     fireEvent.click(await screen.findByRole("button", { name: "Retry photos" }));
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Retry photos" })).not.toBeInTheDocument();
@@ -181,8 +215,8 @@ describe("album workspace browser boundary", () => {
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
-  it.each([null, "vacation"])("preserves unresolved photo state against navigation and page departure from %s", async (part) => {
-    window.history.replaceState(null, "", part === null ? "/albums/album" : `/albums/album?part=${part}`);
+  it("should preserve unresolved Cover state against navigation and page departure", async () => {
+    window.history.replaceState(null, "", "/albums/album?part=cover");
     const client = buildClient({ readPlacements: vi.fn().mockRejectedValue(new Error("offline")) });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     await screen.findByRole("button", { name: "Retry photos" });
@@ -201,26 +235,63 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("button", { name: "Cover" })).toHaveAccessibleDescription("Reload saved photos before leaving.");
   });
 
-  it("reloads authoritative workspace after a vanished spread and keeps available-part navigation usable", async () => {
+  it("should keep an uncertain Synopsis placement read-only and preserve its URL against history and keyboard navigation", async () => {
+    window.history.replaceState(null, "", "/albums/album");
+    const photo = {
+      id: "mountain",
+      filename: "Mountain.jpg",
+      capturedLocal: null,
+      width: 400,
+      height: 200,
+      caption: null,
+      thumbnail: { url: "/mountain.jpg", width: 400, height: 200 },
+    };
+    const placement: SpreadPlacement = {
+      kind: "spread",
+      captionCorner: "top_left",
+      id: "placed",
+      photoId: photo.id,
+      slotId: photoSlot.id,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+    };
+    const saved = {
+      ...workspace,
+      spreads: [{ ...opening, placements: [placement] }, ...workspace.spreads.slice(1)],
+      photoInventories: {
+        ...workspace.photoInventories,
+        vacation: { ...inventory, photos: [photo], placedPhotoIds: [photo.id], counts: { unplaced: 0, total: 1 } },
+      },
+    };
+    const client = buildClient({ editPlacements: vi.fn().mockRejectedValue(new Error("Acknowledgement lost")) }, saved);
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Remove photo from Photo slot 1" }));
+    await screen.findByRole("button", { name: "Retry photos" });
+
+    window.history.replaceState(null, "", "/?part=home");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    fireEvent.keyDown(document.body, { key: "ArrowRight" });
+    const departure = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(departure);
+
+    expect(window.location.pathname).toBe("/albums/album");
+    expect(window.location.search).toBe("");
+    expect(departure.defaultPrevented).toBe(true);
+    expect(client.editPlacements).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Cover" })).toHaveAccessibleDescription("Reload saved photos before leaving.");
+  });
+
+  it("should use acquired saved spreads for selection and navigation without a second full GET", async () => {
     window.history.replaceState(null, "", "?part=vacation-photo");
-    const missing = new AlbumRequestError(404, "This spread could not be found");
-    const remaining = { ...workspace, spreads: workspace.spreads.filter((spread) => spread.id !== vacationPhoto.id) };
     const client = buildClient({
-      readPlacements: vi
-        .fn()
-        .mockRejectedValueOnce(missing)
-        .mockRejectedValueOnce(missing)
-        .mockResolvedValue({ kind: "spread", id: opening.id, placements: [] } satisfies SpreadSnapshot),
-      workspace: vi.fn().mockResolvedValueOnce(workspace).mockResolvedValue(remaining),
+      readPlacements: vi.fn().mockRejectedValue(new Error("A second spread GET is unnecessary")),
     });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry photos" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Go to Synopsis" }));
-    await waitFor(() => {
-      expect(window.location.search).toBe("");
-    });
 
-    expect(client.workspace).toHaveBeenCalledTimes(2);
+    await screen.findByRole("button", { name: "Photo slot 1: empty" });
+    fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
+    expect(screen.getByRole("heading", { name: "Kyoto" })).toBeInTheDocument();
+    expect(client.spread).toHaveBeenCalledTimes(workspace.spreads.length);
+    expect(client.readPlacements).not.toHaveBeenCalled();
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
@@ -236,7 +307,10 @@ describe("album workspace browser boundary", () => {
     };
     const available = { ...workspace, photoInventories: { vacation: { ...inventory, photos: [photo], counts: { unplaced: 1, total: 1 } } } };
     const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(available).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(available),
+      chapters: vi.fn().mockResolvedValueOnce(available.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(available.chapters),
+      chapterPhotos: vi
+        .fn()
+        .mockImplementation((id: string) => Promise.resolve(id === vacation.id ? available.photoInventories.vacation : inventory)),
     });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     const choose = await screen.findByRole("button", { name: "Choose Mountain.jpg" });
@@ -253,7 +327,7 @@ describe("album workspace browser boundary", () => {
 
     expect(departure.defaultPrevented).toBe(false);
     expect(client.editPlacements).toHaveBeenCalledTimes(1);
-    expect(client.workspace).toHaveBeenCalledTimes(3);
+    expect(client.chapters).toHaveBeenCalledTimes(3);
   });
 
   it.each([new Error("connection lost"), new AlbumRequestError(500, "server failure")])(
@@ -261,7 +335,7 @@ describe("album workspace browser boundary", () => {
     async (failure) => {
       const client = buildClient({
         addSpread: vi.fn().mockRejectedValue(failure),
-        workspace: vi.fn().mockResolvedValueOnce(workspace).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace),
+        chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace.chapters),
       });
       render(() => <AlbumOpen id={album.id} client={client} events={events} />);
       fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
@@ -274,18 +348,25 @@ describe("album workspace browser boundary", () => {
       });
 
       expect(client.addSpread).toHaveBeenCalledTimes(1);
-      expect(client.workspace).toHaveBeenCalledTimes(3);
+      expect(client.chapters).toHaveBeenCalledTimes(3);
     },
   );
 
   it("should add after selection, reload authoritative geometry and retain the deleted spread's album position", async () => {
-    const inserted = { id: "inserted", templateId: "layout", chapter: vacation.id, kind: "photos_only" as const, slots: [photoSlot] };
+    const inserted = { ...vacationPhoto, id: "inserted" };
     const added = { ...workspace, spreads: [opening, vacationOpening, inserted, ...workspace.spreads.slice(2)] };
-    const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(workspace).mockResolvedValueOnce(added).mockResolvedValue(workspace),
-      addSpread: vi.fn().mockResolvedValue("inserted"),
-      deleteSpread: vi.fn().mockResolvedValue(undefined),
-    });
+    const client = buildClient(
+      {
+        composition: vi
+          .fn()
+          .mockResolvedValueOnce(membership(workspace.spreads))
+          .mockResolvedValueOnce(membership(added.spreads))
+          .mockResolvedValue(membership(workspace.spreads)),
+        addSpread: vi.fn().mockResolvedValue("inserted"),
+        deleteSpread: vi.fn().mockResolvedValue(undefined),
+      },
+      added,
+    );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
     fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
@@ -294,13 +375,13 @@ describe("album workspace browser boundary", () => {
     });
 
     expect(client.addSpread).toHaveBeenCalledWith(album.id, vacation.id, "vacation-opening");
-    expect(client.workspace).toHaveBeenCalledTimes(2);
+    expect(client.composition).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
     await waitFor(() => {
       expect(window.location.search).toBe("?part=vacation-photo");
     });
     expect(client.deleteSpread).toHaveBeenCalledWith(album.id, "inserted", false);
-    expect(client.workspace).toHaveBeenCalledTimes(3);
+    expect(client.composition).toHaveBeenCalledTimes(3);
   });
 
   it.each(["next-photo", "next-chapter", "last"] as const)("should retain the deletion index at %s across authoritative reload", async (position) => {
@@ -315,13 +396,13 @@ describe("album workspace browser boundary", () => {
           ? [opening, vacationOpening, first, selected, homeOpening]
           : [opening, vacationOpening, first, homeOpening, { ...first, id: "home-first", chapter: home.id }, { ...selected, chapter: home.id }];
     const remaining = spreads.filter((spread) => spread.id !== selected.id);
-    const client = buildClient({
-      workspace: vi
-        .fn()
-        .mockResolvedValueOnce({ ...workspace, spreads })
-        .mockResolvedValue({ ...workspace, spreads: remaining }),
-      deleteSpread: vi.fn().mockResolvedValue(undefined),
-    });
+    const client = buildClient(
+      {
+        composition: vi.fn().mockResolvedValueOnce(membership(spreads)).mockResolvedValue(membership(remaining)),
+        deleteSpread: vi.fn().mockResolvedValue(undefined),
+      },
+      { ...workspace, spreads },
+    );
     const expectedPart = position === "next-photo" ? "next" : position === "last" ? "home-first" : "home";
     window.history.replaceState(null, "", "?part=selected");
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
@@ -344,13 +425,13 @@ describe("album workspace browser boundary", () => {
         .mockRejectedValueOnce(new AlbumRequestError(400, "Try again"))
         .mockResolvedValue(undefined);
       const client = buildClient({
-        workspace:
+        composition:
           kind === "delete"
             ? vi
                 .fn()
-                .mockResolvedValueOnce(workspace)
-                .mockResolvedValue({ ...workspace, spreads: workspace.spreads.filter((spread) => spread.id !== vacationPhoto.id) })
-            : vi.fn().mockResolvedValue(workspace),
+                .mockResolvedValueOnce(membership(workspace.spreads))
+                .mockResolvedValue(membership(workspace.spreads.filter((spread) => spread.id !== vacationPhoto.id)))
+            : vi.fn().mockResolvedValue(membership(workspace.spreads)),
         changeSpreadTemplate: kind === "template" ? operation : vi.fn(),
         deleteSpread: kind === "delete" ? operation : vi.fn(),
         templates: vi.fn().mockResolvedValue([
@@ -369,7 +450,7 @@ describe("album workspace browser boundary", () => {
       fireEvent(warning, new Event("cancel", { cancelable: true }));
       await waitFor(() => expect(opener).toHaveFocus());
       expect(operation).toHaveBeenCalledTimes(1);
-      expect(client.workspace).toHaveBeenCalledOnce();
+      expect(client.composition).toHaveBeenCalledOnce();
       expect(window.location.search).toBe("?part=vacation-photo");
 
       fireEvent.click(opener);
@@ -378,7 +459,7 @@ describe("album workspace browser boundary", () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry confirmation" }));
       await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
       expect(operation.mock.calls.map((call) => call.at(-1))).toEqual([false, false, true, true]);
-      expect(client.workspace).toHaveBeenCalledTimes(2);
+      expect(client.composition).toHaveBeenCalledTimes(2);
       await waitFor(() => {
         expect(window.location.search).toBe(kind === "delete" ? "?part=home" : "?part=vacation-photo");
       });
@@ -420,15 +501,18 @@ describe("album workspace browser boundary", () => {
 
   it("should retry catalog and mutation failures without losing selection and retry only reload after a successful add", async () => {
     const inserted = { ...vacationPhoto, id: "inserted" };
-    const client = buildClient({
-      templates: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue([]),
-      addSpread: vi.fn().mockRejectedValueOnce(new AlbumRequestError(404, "Stale spread")).mockResolvedValue("inserted"),
-      workspace: vi
-        .fn()
-        .mockResolvedValueOnce(workspace)
-        .mockRejectedValueOnce(new Error("offline"))
-        .mockResolvedValue({ ...workspace, spreads: [...workspace.spreads, inserted] }),
-    });
+    const client = buildClient(
+      {
+        templates: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue([]),
+        addSpread: vi.fn().mockRejectedValueOnce(new AlbumRequestError(404, "Stale spread")).mockResolvedValue("inserted"),
+        chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace.chapters),
+        composition: vi
+          .fn()
+          .mockResolvedValueOnce(membership(workspace.spreads))
+          .mockResolvedValue(membership([opening, vacationOpening, vacationPhoto, inserted, ...workspace.spreads.slice(3)])),
+      },
+      { ...workspace, spreads: [...workspace.spreads, inserted] },
+    );
 
     window.history.replaceState(null, "", "?part=vacation-photo");
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
@@ -450,18 +534,18 @@ describe("album workspace browser boundary", () => {
       expect(window.location.search).toBe("?part=inserted");
     });
     expect(client.addSpread).toHaveBeenCalledTimes(2);
-    expect(client.workspace).toHaveBeenCalledTimes(3);
+    expect(client.chapters).toHaveBeenCalledTimes(3);
   });
 
   it.each(["offline", "empty"] as const)(
     "should retain a committed deletion's index through an %s reload and retry only the read",
     async (failure) => {
       const remaining = { ...workspace, spreads: workspace.spreads.filter((spread) => spread.id !== vacationPhoto.id) };
-      const reads = vi.fn().mockResolvedValueOnce(workspace);
+      const reads = vi.fn().mockResolvedValueOnce(membership(workspace.spreads));
       if (failure === "offline") reads.mockRejectedValueOnce(new Error("Offline"));
-      else reads.mockResolvedValueOnce({ ...workspace, spreads: [] });
-      reads.mockResolvedValue(remaining);
-      const client = buildClient({ workspace: reads, deleteSpread: vi.fn().mockResolvedValue(undefined) });
+      else reads.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      reads.mockResolvedValue(membership(remaining.spreads));
+      const client = buildClient({ composition: reads, deleteSpread: vi.fn().mockResolvedValue(undefined) });
       window.history.replaceState(null, "", "?part=vacation-photo");
       render(() => <AlbumOpen id={album.id} client={client} events={events} />);
 
@@ -474,7 +558,7 @@ describe("album workspace browser boundary", () => {
         expect(window.location.search).toBe("?part=home");
       });
       expect(client.deleteSpread).toHaveBeenCalledExactlyOnceWith(album.id, vacationPhoto.id, false);
-      expect(reads).toHaveBeenCalledTimes(3);
+      expect(reads).toHaveBeenCalledTimes(failure === "empty" ? 5 : 3);
     },
   );
 
@@ -482,10 +566,13 @@ describe("album workspace browser boundary", () => {
     const second = { ...vacationPhoto, id: "second-photo" };
     const withSecond = { ...workspace, spreads: [...workspace.spreads.slice(0, 3), second, ...workspace.spreads.slice(3)] };
     const moved = { ...workspace, spreads: [opening, vacationOpening, second, vacationPhoto, ...workspace.spreads.slice(3)] };
-    const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(withSecond).mockResolvedValue(moved),
-      moveSpread: vi.fn().mockResolvedValue(undefined),
-    });
+    const client = buildClient(
+      {
+        composition: vi.fn().mockResolvedValueOnce(membership(withSecond.spreads)).mockResolvedValue(membership(moved.spreads)),
+        replaceChapterComposition: vi.fn().mockResolvedValue(undefined),
+      },
+      withSecond,
+    );
     window.history.replaceState(null, "", "?part=vacation-photo");
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     const earlier = await screen.findByRole("button", { name: "Shift spread left" });
@@ -495,7 +582,12 @@ describe("album workspace browser boundary", () => {
     expect(earlier).toHaveAccessibleDescription("This is the first photo spread in its chapter.");
     fireEvent.click(later);
     await waitFor(() => expect(later).toHaveAccessibleDescription("This is the last photo spread in its chapter."));
-    expect(client.moveSpread).toHaveBeenCalledWith(album.id, "vacation-photo", "later");
+    expect(client.replaceChapterComposition).toHaveBeenCalledWith(
+      album.id,
+      vacation.id,
+      ["vacation-opening", "vacation-photo", "second-photo"],
+      ["vacation-opening", "second-photo", "vacation-photo"],
+    );
     expect(window.location.search).toBe("?part=vacation-photo");
     fireEvent.click(screen.getByRole("link", { name: "Home" }));
     expect(earlier).toHaveAccessibleDescription("Select a photo spread first.");
@@ -503,9 +595,43 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("link", { name: "Kyoto · Photo spread 2" }));
     fireEvent.click(earlier);
     await waitFor(() => {
-      expect(client.moveSpread).toHaveBeenCalledTimes(2);
+      expect(client.replaceChapterComposition).toHaveBeenCalledTimes(2);
     });
-    expect(client.moveSpread).toHaveBeenLastCalledWith(album.id, "vacation-photo", "earlier");
+    expect(client.replaceChapterComposition).toHaveBeenLastCalledWith(
+      album.id,
+      vacation.id,
+      ["vacation-opening", "second-photo", "vacation-photo"],
+      ["vacation-opening", "vacation-photo", "second-photo"],
+    );
+  });
+
+  it("should reload a concurrently changed chapter composition without replaying the rejected editor intent", async () => {
+    const second = { ...vacationPhoto, id: "second-photo" };
+    const displayed = { ...workspace, spreads: [...workspace.spreads.slice(0, 3), second, ...workspace.spreads.slice(3)] };
+    const changed = { ...workspace, spreads: [opening, vacationOpening, second, vacationPhoto, ...workspace.spreads.slice(3)] };
+    const client = buildClient(
+      {
+        composition: vi.fn().mockResolvedValueOnce(membership(displayed.spreads)).mockResolvedValue(membership(changed.spreads)),
+        replaceChapterComposition: vi.fn().mockRejectedValue(new AlbumRequestError(409, "Composition changed")),
+      },
+      displayed,
+    );
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Shift spread right" }));
+    const reload = await screen.findByRole("button", { name: "Reload saved workspace" });
+    expect(screen.getByRole("alert")).toHaveTextContent("This chapter's composition changed.");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("outcome is uncertain");
+    fireEvent.click(reload);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Reload saved workspace" })).not.toBeInTheDocument();
+    });
+    expect(client.replaceChapterComposition).toHaveBeenCalledExactlyOnceWith(
+      album.id,
+      vacation.id,
+      ["vacation-opening", "vacation-photo", "second-photo"],
+      ["vacation-opening", "second-photo", "vacation-photo"],
+    );
   });
 
   it.each(["resolve", "reject", "reload"] as const)("should discard a late spread %s after leaving the workspace", async (outcome) => {
@@ -521,14 +647,17 @@ describe("album workspace browser boundary", () => {
     });
     const client = buildClient({
       addSpread: outcome === "reload" ? vi.fn().mockResolvedValue("inserted") : vi.fn().mockReturnValue(pending),
-      workspace: outcome === "reload" ? vi.fn().mockResolvedValueOnce(workspace).mockReturnValue(pending) : vi.fn().mockResolvedValue(workspace),
+      chapters:
+        outcome === "reload"
+          ? vi.fn().mockResolvedValueOnce(workspace.chapters).mockReturnValue(pending)
+          : vi.fn().mockResolvedValue(workspace.chapters),
     });
     window.history.replaceState(null, "", "?part=vacation-photo");
     const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add spread" }));
     if (outcome === "reload")
       await waitFor(() => {
-        expect(client.workspace).toHaveBeenCalledTimes(2);
+        expect(client.chapters).toHaveBeenCalledTimes(2);
       });
 
     view.unmount();
@@ -787,15 +916,16 @@ describe("album workspace browser boundary", () => {
     const saved = {
       ...empty,
       chapters: [missed],
-      spreads: [
-        opening,
-        { ...workspace.spreads[1], id: "missed-opening", chapter: missed.id, kind: "chapter_start" as const, slots: [photoSlot, textSlot] },
-      ],
+      spreads: [opening, { ...vacationOpening, id: "missed-opening", chapter: missed.id }],
     };
-    const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(empty).mockResolvedValueOnce(saved),
-      createChapter: vi.fn().mockResolvedValue({ id: missed.id }),
-    });
+    const client = buildClient(
+      {
+        chapters: vi.fn().mockResolvedValueOnce(empty.chapters).mockResolvedValue(saved.chapters),
+        composition: vi.fn().mockResolvedValueOnce(membership(empty.spreads)).mockResolvedValue(membership(saved.spreads)),
+        createChapter: vi.fn().mockResolvedValue({ id: missed.id }),
+      },
+      { ...saved, photoInventories: { [missed.id]: inventory } },
+    );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     const add = await screen.findByRole("button", { name: "Add chapter" });
 
@@ -860,11 +990,11 @@ describe("album workspace browser boundary", () => {
     });
     const changed = { ...vacation, name: "Earlier Kyoto", start: "2026-01-01", end: "2026-01-01" };
     const client = buildClient({
-      workspace: vi
+      chapters: vi
         .fn()
-        .mockResolvedValueOnce(workspace)
+        .mockResolvedValueOnce(workspace.chapters)
         .mockRejectedValueOnce(new Error("Refresh offline"))
-        .mockResolvedValueOnce({ ...workspace, chapters: [changed, home] }),
+        .mockResolvedValueOnce([changed, home]),
       updateChapter: vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce({ id: vacation.id }),
     });
     window.history.replaceState(null, "", "?part=vacation-photo");
@@ -908,7 +1038,10 @@ describe("album workspace browser boundary", () => {
 
   it("should use exact Home fields and saved values, and open vacation creation directly after Home exists", async () => {
     const empty = { ...workspace, chapters: [], spreads: [opening] };
-    const client = buildClient({ workspace: vi.fn().mockResolvedValueOnce(empty).mockResolvedValue(workspace) });
+    const client = buildClient({
+      chapters: vi.fn().mockResolvedValueOnce(empty.chapters).mockResolvedValue(workspace.chapters),
+      composition: vi.fn().mockResolvedValueOnce(membership(empty.spreads)).mockResolvedValue(membership(workspace.spreads)),
+    });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -960,23 +1093,25 @@ describe("album workspace browser boundary", () => {
   it.each([64, 65])("should expose chapter creation capacity at %i persisted interior spreads", async (count) => {
     const spreads = [
       opening,
-      ...Array.from({ length: count - 1 }, (_, index) => ({
-        id: `spread-${String(index)}`,
-        chapter: vacation.id,
-        kind: "photos_only" as const,
-        slots: [photoSlot],
-      })),
+      vacationOpening,
+      ...Array.from({ length: count - 3 }, (_, index) => ({ ...vacationPhoto, id: `spread-${String(index)}` })),
+      ...workspace.spreads.slice(3),
     ];
     const finalChapter = { ...vacation, id: "final-chapter", name: "Final chapter" };
     const finalOpening = { ...opening, id: "final-opening", chapter: finalChapter.id, kind: "chapter_start" as const };
-    const savedWorkspace = { ...workspace, chapters: [vacation, finalChapter, home], spreads: [...spreads, finalOpening] };
-    const client = buildClient({
-      workspace: vi
-        .fn()
-        .mockResolvedValueOnce({ ...workspace, spreads })
-        .mockResolvedValue(savedWorkspace),
-      createChapter: vi.fn().mockResolvedValue({ id: finalChapter.id }),
-    });
+    const savedWorkspace = {
+      ...workspace,
+      chapters: [vacation, finalChapter, home],
+      spreads: [...spreads.slice(0, -1), finalOpening, ...spreads.slice(-1)],
+    };
+    const client = buildClient(
+      {
+        chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue(savedWorkspace.chapters),
+        composition: vi.fn().mockResolvedValueOnce(membership(spreads)).mockResolvedValue(membership(savedWorkspace.spreads)),
+        createChapter: vi.fn().mockResolvedValue({ id: finalChapter.id }),
+      },
+      { ...savedWorkspace, photoInventories: { ...workspace.photoInventories, [finalChapter.id]: inventory } },
+    );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     const add = await screen.findByRole("button", { name: "Add chapter" });
 
@@ -1021,16 +1156,22 @@ describe("album workspace browser boundary", () => {
         return close;
       },
     };
-    const client = buildClient({
-      workspace: vi.fn().mockResolvedValue(savedWorkspace),
-      chapterPhotos: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("Inventory unavailable"))
-        .mockResolvedValue({ ...homePhotos, processing: { ...inventory.processing, state: "running" } }),
-    });
+    const client = buildClient(
+      {
+        chapterPhotos: vi
+          .fn()
+          .mockResolvedValueOnce(vacationPhotos)
+          .mockResolvedValueOnce(homePhotos)
+          .mockRejectedValueOnce(new Error("Inventory unavailable"))
+          .mockImplementation((id: string) =>
+            Promise.resolve(id === home.id ? { ...homePhotos, processing: { ...inventory.processing, state: "running" } } : vacationPhotos),
+          ),
+      },
+      savedWorkspace,
+    );
     const view = render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
 
-    expect(client.workspace).not.toHaveBeenCalled();
+    expect(client.chapters).not.toHaveBeenCalled();
     receive({ kind: "subscribed" });
     await screen.findByRole("img", { name: "Kyoto.jpg" });
     expect(screen.getByRole("img", { name: "Home.jpg" })).toBeInTheDocument();
@@ -1062,8 +1203,8 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByText(/Live updates interrupted/)).toBeInTheDocument();
     receive({ kind: "subscribed" });
     await waitFor(() => expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument());
-    expect(client.workspace).toHaveBeenCalledTimes(2);
-    expect(client.open).toHaveBeenCalledOnce();
+    expect(client.chapters).toHaveBeenCalledTimes(2);
+    expect(client.open).toHaveBeenCalledTimes(2);
     expect(window.location.search).toBe("?part=cover");
     view.unmount();
     expect(close).toHaveBeenCalledOnce();
@@ -1071,11 +1212,20 @@ describe("album workspace browser boundary", () => {
 
   it("should keep a chapter saved after scheduling failure and retry only photo Refresh", async () => {
     const emptyWorkspace = { ...workspace, chapters: [], spreads: [opening], photoInventories: {} };
-    const savedWorkspace = { ...workspace, chapters: [home], photoInventories: { home: inventory } };
-    const client = buildClient({
-      workspace: vi.fn().mockResolvedValueOnce(emptyWorkspace).mockResolvedValue(savedWorkspace),
-      createChapter: vi.fn().mockResolvedValue({ id: home.id, scheduling: "failed" }),
-    });
+    const savedWorkspace = {
+      ...workspace,
+      chapters: [home],
+      spreads: [opening, ...workspace.spreads.filter((spread) => spread.chapter === home.id)],
+      photoInventories: { home: inventory },
+    };
+    const client = buildClient(
+      {
+        chapters: vi.fn().mockResolvedValueOnce(emptyWorkspace.chapters).mockResolvedValue(savedWorkspace.chapters),
+        composition: vi.fn().mockResolvedValueOnce(membership(emptyWorkspace.spreads)).mockResolvedValue(membership(savedWorkspace.spreads)),
+        createChapter: vi.fn().mockResolvedValue({ id: home.id, scheduling: "failed" }),
+      },
+      savedWorkspace,
+    );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -1099,10 +1249,12 @@ describe("album workspace browser boundary", () => {
     });
     const emptyWorkspace = { ...workspace, chapters: [], spreads: [opening], photoInventories: {} };
     const client = buildClient({
-      workspace: vi
+      chapters: vi.fn().mockResolvedValue(emptyWorkspace.chapters),
+      composition: vi.fn().mockResolvedValue(membership(emptyWorkspace.spreads)),
+      open: vi
         .fn()
-        .mockResolvedValueOnce(emptyWorkspace)
-        .mockResolvedValue({ ...emptyWorkspace, year: 2027 }),
+        .mockResolvedValueOnce(album)
+        .mockResolvedValue({ ...album, id: "other", year: 2027 }),
       createChapter: vi.fn().mockReturnValue(pending),
     });
     const [id, changeAlbum] = createSignal(album.id);
@@ -1118,7 +1270,7 @@ describe("album workspace browser boundary", () => {
     finishSave({ id: "old-chapter", scheduling: "queued" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(client.workspace).toHaveBeenCalledTimes(2);
+    expect(client.chapters).toHaveBeenCalledTimes(2);
     expect(window.location.search).toBe("");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
@@ -1139,7 +1291,9 @@ describe("album workspace browser boundary", () => {
       chapters: workspace.chapters.map((chapter) => ({ ...chapter })),
       spreads: workspace.spreads.map((spread) => ({ ...spread })),
     };
-    const client = buildClient({ workspace: vi.fn().mockResolvedValueOnce(workspace).mockResolvedValue(freshWorkspace) });
+    const client = buildClient({
+      chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue(freshWorkspace.chapters),
+    });
     render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
     const first = await screen.findByRole("button", { name: "First spread" });
     const previous = screen.getByRole("button", { name: "Previous spread" });
@@ -1168,7 +1322,7 @@ describe("album workspace browser boundary", () => {
     chapter.focus();
     receive({ kind: "subscribed" });
     await waitFor(() => {
-      expect(client.workspace).toHaveBeenCalledTimes(2);
+      expect(client.chapters).toHaveBeenCalledTimes(2);
     });
     await waitFor(() => {
       expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
@@ -1192,7 +1346,7 @@ describe("album workspace browser boundary", () => {
   });
 });
 
-function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
+function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = workspace): AlbumClient {
   return {
     readPlacements: vi
       .fn()
@@ -1200,7 +1354,7 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
         Promise.resolve(
           context.kind === "cover"
             ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [] },
+            : { kind: "spread", id: context.id, placements: [], layout: { kind: "photos_only", templateId: "layout", slots: [photoSlot] } },
         ),
       ),
     editPlacements: vi
@@ -1209,7 +1363,7 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
         Promise.resolve(
           context.kind === "cover"
             ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [] },
+            : { kind: "spread", id: context.id, placements: [], layout: { kind: "photos_only", templateId: "layout", slots: [photoSlot] } },
         ),
       ),
     list: vi.fn(),
@@ -1217,16 +1371,32 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     rename: vi.fn(),
     remove: vi.fn(),
     open: vi.fn().mockResolvedValue(album),
-    workspace: vi.fn().mockResolvedValue(workspace),
-    chapterPhotos: vi.fn().mockResolvedValue(inventory),
+    chapters: vi.fn().mockResolvedValue(saved.chapters),
+    composition: vi.fn().mockResolvedValue(membership(saved.spreads)),
+    spread: vi.fn().mockImplementation((_album: string, id: string) => {
+      const spread = saved.spreads.find((candidate) => candidate.id === id);
+      if (spread === undefined) throw new Error("Unknown spread");
+      return Promise.resolve(spread);
+    }),
+    countries: vi.fn().mockResolvedValue(saved.countries),
+    photoSource: vi.fn().mockResolvedValue(saved.photoRoot),
+    chapterPhotos: vi.fn().mockImplementation((id: string) => {
+      const photos = saved.photoInventories[id];
+      if (photos === undefined) throw new Error("Unknown chapter inventory");
+      return Promise.resolve(photos);
+    }),
     refreshPhotos: vi.fn().mockResolvedValue("queued"),
     createChapter: vi.fn().mockResolvedValue({ id: home.id, scheduling: "queued" }),
     updateChapter: vi.fn().mockResolvedValue({ id: vacation.id, scheduling: "not-requested" }),
     templates: vi.fn().mockResolvedValue([{ id: "layout", name: "Applied layout", slots: [photoSlot, textSlot] }]),
     addSpread: vi.fn(),
-    moveSpread: vi.fn(),
+    replaceChapterComposition: vi.fn(),
     changeSpreadTemplate: vi.fn(),
     deleteSpread: vi.fn(),
     ...overrides,
   };
+}
+
+function membership(spreads: readonly Spread[]) {
+  return spreads.map(({ id, chapter }) => ({ id, chapter }));
 }

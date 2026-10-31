@@ -1,7 +1,7 @@
 package photography.usecases.chapter
 import photography.domain.gear.CameraSelection
 
-import photography.usecases.spread.SpreadTemplateManager
+import photography.ports.spread.SpreadTemplateRepository
 
 import cats.data.NonEmptyList
 import cats.effect.IO
@@ -13,7 +13,7 @@ import photography.domain.album.*
 import photography.domain.layout.*
 import photography.usecases.chapter.ChapterMetadataManager.Period
 import photography.usecases.chapter.ChapterPlanning.{CreationResult, UpdateResult}
-import photography.usecases.spread.SpreadTemplateManager.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
+import photography.ports.spread.SpreadTemplateRepository.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
 import java.nio.file.Path
 import java.time.LocalDate
 import java.util.UUID
@@ -46,13 +46,15 @@ final class ChapterPlanningComponentTest extends FunSuite:
       spreads = Vector.empty[Spread.PhotosOnly]
     )
   private val planning =
-    val templates = new SpreadTemplateManager[IO]:
-      override def listPhotosOnlyTemplates: IO[SpreadTemplateManager.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateManager.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
-      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateManager.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateManager.FindTemplateResult](new AssertionError("Unexpected template lookup"))
-      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]     = ListAlbumStartTemplatesResult.Failed.pure[IO]
-      override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = ListChapterStartTemplatesResult.Failed.pure[IO]
+    val templates = new SpreadTemplateRepository[IO]:
+      override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
+        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateRepository.FindTemplateResult] =
+        IO.raiseError[SpreadTemplateRepository.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult] =
+        ListAlbumStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]
+      override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] =
+        ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]
     ChapterPlanning.make(templates)
 
   test("should resolve full-year creation from the requested album year"):

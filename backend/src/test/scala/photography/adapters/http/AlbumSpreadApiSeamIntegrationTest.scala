@@ -1,6 +1,7 @@
 package photography.adapters.http
 
 import cats.effect.{IO, Ref}
+import cats.data.NonEmptyList
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Json
@@ -110,31 +111,6 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
     )
       .map(result => assertEquals(result, Status.BadRequest -> parseJson("""{"message":"Template IDs must be canonical UUIDs"}""").some))
 
-  test("should move photo spreads in the requested direction and explain rejected moves"):
-    val earlier = post(s"$albumUrl/spreads/$spread/move", buildDirection("earlier"))
-    val later   = post(s"$albumUrl/spreads/$spread/move", buildDirection("later"))
-    val invalid = post(s"$albumUrl/spreads/$spread/move", buildDirection("sideways"))
-
-    for
-      calls   <- Ref.of[IO, Vector[String]](Vector.empty)
-      moved   <- respond(buildApi(calls, move = MoveResult.Moved(SpreadId(spread))), earlier)
-      seen    <- calls.get
-      bad     <- respond(buildApi(calls), invalid)
-      edge    <- respond(buildApi(calls, move = MoveResult.Rejected(Conflict.NoNeighbour)), later)
-      opening <- respond(buildApi(calls, move = MoveResult.Rejected(Conflict.OpeningMove)), later)
-      missing <- respond(buildApi(calls, move = MoveResult.SpreadNotFound), later)
-      unknown <- respond(buildApi(calls, move = MoveResult.AlbumNotFound), later)
-      failed  <- respond(buildApi(calls, move = MoveResult.Failed), later)
-    yield
-      assertEquals(moved, Status.Ok -> parseJson(s"""{"id":"$spread"}""").some)
-      assertEquals(seen, Vector(s"move:$album:$spread:Earlier"))
-      assertEquals(bad, Status.BadRequest             -> parseJson("""{"message":"Choose earlier or later"}""").some)
-      assertEquals(edge, Status.BadRequest            -> parseJson("""{"message":"Photo spreads can only move within their chapter"}""").some)
-      assertEquals(opening, Status.BadRequest         -> parseJson("""{"message":"Openings cannot be moved"}""").some)
-      assertEquals(missing, Status.NotFound           -> parseJson("""{"code":"spread_not_found"}""").some)
-      assertEquals(unknown, Status.NotFound           -> parseJson("""{"code":"album_not_found"}""").some)
-      assertEquals(failed, Status.InternalServerError -> parseJson("""{"code":"service_failure"}""").some)
-
   test("should delete spreads with explicit confirmation and explain occupied, opening, and missing targets"):
     for
       calls    <- Ref.of[IO, Vector[String]](Vector.empty)
@@ -171,8 +147,6 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def buildRawJson = Stream.emits("{".getBytes(StandardCharsets.UTF_8).toSeq).covary[IO]
 
-  private def buildDirection(value: String) = Json.obj("direction" -> Json.fromString(value))
-
   private def post(path: String, body: Json) =
     Request[IO](Method.POST, Uri.unsafeFromString(path)).withEntity(body)
 
@@ -191,23 +165,26 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
   private def buildApi(
       calls: Ref[IO, Vector[String]],
       add: AddResult = AddResult.Failed,
-      move: MoveResult = MoveResult.Failed,
       change: ChangeTemplateResult = ChangeTemplateResult.Failed,
       delete: DeleteResult = DeleteResult.Failed
   ) =
     val addOutcome    = add
-    val moveOutcome   = move
     val changeOutcome = change
     val deleteOutcome = delete
     val spreads       = new SpreadManager[IO]:
+      override def replaceChapterOrder(
+          album: AlbumId,
+          chapter: ChapterId,
+          expected: NonEmptyList[SpreadId],
+          order: NonEmptyList[SpreadId]
+      ): IO[ReplacementResult] =
+        IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
         IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
       override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
         IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
       override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
         calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
-      override def move(album: AlbumId, spread: SpreadId, direction: Direction): IO[MoveResult] =
-        calls.update(_ :+ s"move:${album.value}:${spread.value}:$direction").as(moveOutcome)
       override def changeTemplate(
           album: AlbumId,
           spread: SpreadId,

@@ -12,6 +12,9 @@ import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, Album
 import photography.domain.layout.*
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
+import photography.ports.album.AlbumRepository
+import org.http4s.headers.`Cache-Control`
+import org.http4s.CacheDirective
 
 import java.time.Instant
 import java.util.UUID
@@ -32,6 +35,43 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private val metadata      = s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","createdAt":"2026-10-24T10:00:00.123Z"}"""
   private val albumPath     = s"/api/albums/${id.value}"
   private val jsonMediaType = MediaType.application.json.some
+
+  test("should read complete lightweight album metadata without invoking an aggregate operation"):
+    val refs     = Refs()
+    val server   = buildAlbumApi(refs)
+    val expected = json(
+      s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","synopsis":"A synopsis","createdAt":"2026-10-24T10:00:00.123Z"}"""
+    )
+
+    for
+      response <- server.run(Request[IO](Method.GET, Uri.unsafeFromString(albumPath)))
+      body     <- response.as[String]
+      calls    <- refs.calls.get
+    yield
+      assertEquals(response.status, Status.Ok)
+      assertEquals(json(body), expected)
+      assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
+      assertEquals(calls, Vector(s"metadata:${id.value}"))
+
+  test("should preserve missing metadata and reject noncanonical identities before reading"):
+    val refs   = Refs()
+    val server = buildAlbumApi(refs, metadataResult = AlbumRepository.MetadataResult.NotFound)
+
+    for
+      missing <- send(server, Method.GET, albumPath, "")
+      invalid <- send(server, Method.GET, "/api/albums/1-1-1-1-1", "")
+      calls   <- refs.calls.get
+    yield
+      val expected = ApiResponse(Status.NotFound, jsonMediaType, json("""{"code":"album_not_found"}""").some)
+      assertEquals(missing, expected)
+      assertEquals(invalid, expected)
+      assertEquals(calls, Vector(s"metadata:${id.value}"))
+
+  test("should expose metadata database failures rather than empty successful responses"):
+    val server = buildAlbumApi(Refs(), metadataResult = AlbumRepository.MetadataResult.Failed(AlbumRepository.Failure.DatabaseFailure))
+
+    send(server, Method.GET, albumPath, "").map: response =>
+      assertEquals(response, ApiResponse(Status.InternalServerError, jsonMediaType, json("""{"code":"service_failure"}""").some))
 
   test("should list exact album metadata and forward default and explicit pages"):
     val refs         = Refs()
@@ -100,32 +140,26 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       assert(responses.forall(hasValidationFeedback))
       assertEquals(calls, Vector.empty)
 
-  test("should read metadata without composition and delete with an empty 204 response"):
-    val refs         = Refs()
-    val server       = buildAlbumApi(refs)
-    val expectedJson =
-      s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","synopsis":"A synopsis","createdAt":"2026-10-24T10:00:00.123Z"}"""
-    val expected = parse(expectedJson).fold(error => fail(error.message), identity)
+  test("should delete with an empty 204 response"):
+    val refs   = Refs()
+    val server = buildAlbumApi(refs)
 
     for
-      found   <- send(server, Method.GET, path = albumPath, body = "")
       deleted <- send(server, Method.DELETE, path = albumPath, body = "")
       calls   <- refs.calls.get
     yield
-      assertEquals(found, ApiResponse(Status.Ok, jsonMediaType, expected.some))
       assertEquals(deleted, ApiResponse(Status.NoContent, maybeContentType = None, maybeBody = None))
-      assertEquals(calls, Vector(s"get:${id.value}", s"delete:${id.value}"))
+      assertEquals(calls, Vector(s"delete:${id.value}"))
 
   test("should give malformed and unknown album IDs the same missing-resource response"):
     val refs   = Refs()
     val server = buildAlbumApi(
       refs,
-      getAlbumResult = GetAlbumResult.NotFound,
       renameResult = RenameResult.NotFound,
       deleteAlbumResult = DeleteAlbumResult.NotFound
     )
     val paths        = Vector(albumPath, "/api/albums/not-a-uuid", "/api/albums/1-1-1-1-1")
-    val requests     = Vector(Method.GET, Method.PATCH, Method.DELETE).flatMap(method => paths.map(method -> _))
+    val requests     = Vector(Method.PATCH, Method.DELETE).flatMap(method => paths.map(method -> _))
     val expectedBody = parse("""{"code":"album_not_found"}""").fold(error => fail(error.message), identity)
     val expected     = Vector.fill(requests.size)(ApiResponse(Status.NotFound, jsonMediaType, expectedBody.some))
     val responses    = requests.traverse { case (method, path) =>
@@ -137,21 +171,19 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       calls  <- refs.calls.get
     yield
       assertEquals(actual, expected)
-      assertEquals(calls, Vector(s"get:${id.value}", s"rename:${id.value}:Journey of the Shepherds 2026", s"delete:${id.value}"))
+      assertEquals(calls, Vector(s"rename:${id.value}:Journey of the Shepherds 2026", s"delete:${id.value}"))
 
   test("should translate every application's service failure to the same JSON error"):
     val server = buildAlbumApi(
       Refs(),
       listAlbumsResult = ListAlbumsResult.Failed,
       createAlbumResult = CreateAlbumResult.Failed,
-      getAlbumResult = GetAlbumResult.Failed,
       renameResult = RenameResult.Failed,
       deleteAlbumResult = DeleteAlbumResult.Failed
     )
     val operations = Vector(
       Method.GET    -> "/api/albums",
       Method.POST   -> "/api/albums",
-      Method.GET    -> albumPath,
       Method.PATCH  -> albumPath,
       Method.DELETE -> albumPath
     )
@@ -190,9 +222,10 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       listAlbumsResult: ListAlbumsResult =
         ListAlbumsResult.Listed(AlbumPage(albums = Vector.empty[Album], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)),
       createAlbumResult: CreateAlbumResult = CreateAlbumResult.Created(album),
-      getAlbumResult: GetAlbumResult = GetAlbumResult.Found(album),
       renameResult: RenameResult = RenameResult.Renamed(album),
-      deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted
+      deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted,
+      metadataResult: AlbumRepository.MetadataResult =
+        AlbumRepository.MetadataResult.Found(AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.createdAt))
   ) =
     val albums = new AlbumManager[IO]:
       override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =
@@ -202,11 +235,13 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       override def list(page: Int): IO[ListAlbumsResult]                             = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
       override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] =
         refs.calls.update(_ :+ s"create:$year:$title").as(createAlbumResult)
-      override def get(albumId: AlbumId): IO[GetAlbumResult]                     = refs.calls.update(_ :+ s"get:${albumId.value}").as(getAlbumResult)
       override def rename(albumId: AlbumId, title: AlbumTitle): IO[RenameResult] =
         refs.calls.update(_ :+ s"rename:${albumId.value}:$title").as(renameResult)
       override def delete(albumId: AlbumId): IO[DeleteAlbumResult] = refs.calls.update(_ :+ s"delete:${albumId.value}").as(deleteAlbumResult)
-    AlbumApi.make(albums).routes.orNotFound
+    val metadata = new AlbumRepository.MetadataRead[IO]:
+      override def metadata(album: AlbumId): IO[AlbumRepository.MetadataResult] =
+        refs.calls.update(_ :+ s"metadata:${album.value}").as(metadataResult)
+    AlbumApi.make(albums, metadata).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   private def send(server: HttpApp[IO], method: Method, path: String, body: String) =
@@ -222,3 +257,5 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private def hasValidationFeedback(response: ApiResponse) =
     response.maybeBody.exists: body =>
       body.asObject.exists(_.keys.toSet === Set("message")) && body.hcursor.get[String]("message").toOption.exists(_.nonEmpty)
+
+  private def json(value: String) = parse(value).fold(error => fail(error.message), identity)

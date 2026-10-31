@@ -10,8 +10,8 @@ import munit.CatsEffectSuite
 import org.http4s.{MediaType, Method, Request, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.layout.*
-import photography.usecases.spread.SpreadTemplateManager
-import photography.usecases.spread.SpreadTemplateManager.ListAlbumStartTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository
+import photography.ports.spread.SpreadTemplateRepository.{FindTemplateResult, ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult, ListPhotosOnlyTemplatesResult}
 
 import java.util.UUID
 
@@ -25,7 +25,7 @@ final class SpreadTemplateApiSeamIntegrationTest extends CatsEffectSuite:
 
   test("should list album opening templates with ordered geometry and report catalog failures"):
     val server            = buildSpreadTemplateApi(ListAlbumStartTemplatesResult.Listed(catalog))
-    val unavailableServer = buildSpreadTemplateApi(ListAlbumStartTemplatesResult.Failed)
+    val unavailableServer = buildSpreadTemplateApi(ListAlbumStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure))
     val request           = Request[IO](Method.GET, Uri.unsafeFromString("/api/templates/album-start"))
     val expectedPhoto     = """{"kind":"photo","x":0.0,"y":0.0,"width":21.0,"height":28.0}"""
     val expectedText      = """{"kind":"text","x":21.0,"y":0.0,"width":21.0,"height":28.0}"""
@@ -49,11 +49,14 @@ final class SpreadTemplateApiSeamIntegrationTest extends CatsEffectSuite:
     val photoLayout   = SpreadTemplate.PhotosOnly(SpreadTemplateId(new UUID(0L, 30L)), name = "Single".refineUnsafe, NonEmptyList.one(photoBox))
     val chapterLayout = SpreadTemplate.ChapterStart(SpreadTemplateId(new UUID(0L, 31L)), name = "Opening".refineUnsafe, Vector(photoBox), synopsisBox)
     val catalogs      = buildCatalogApi(
-      SpreadTemplateManager.ListPhotosOnlyTemplatesResult.Listed(NonEmptyList.one(photoLayout)),
-      SpreadTemplateManager.ListChapterStartTemplatesResult.Listed(NonEmptyList.one(chapterLayout))
+      ListPhotosOnlyTemplatesResult.Listed(NonEmptyList.one(photoLayout)),
+      ListChapterStartTemplatesResult.Listed(NonEmptyList.one(chapterLayout))
     )
     val unavailable =
-      buildCatalogApi(SpreadTemplateManager.ListPhotosOnlyTemplatesResult.Failed, SpreadTemplateManager.ListChapterStartTemplatesResult.Failed)
+      buildCatalogApi(
+        ListPhotosOnlyTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure),
+        ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure)
+      )
     val photosRequest    = Request[IO](Method.GET, Uri.unsafeFromString("/api/templates/photos-only"))
     val chapterRequest   = Request[IO](Method.GET, Uri.unsafeFromString("/api/templates/chapter-start"))
     val expectedPhoto    = """{"kind":"photo","x":0.0,"y":0.0,"width":21.0,"height":28.0}"""
@@ -77,25 +80,25 @@ final class SpreadTemplateApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(failedChapters.status -> failedChapterBody, Status.InternalServerError -> Json.obj("code" -> Json.fromString("service_failure")))
 
   private def buildCatalogApi(
-      photos: SpreadTemplateManager.ListPhotosOnlyTemplatesResult,
-      chapters: SpreadTemplateManager.ListChapterStartTemplatesResult
+      photos: ListPhotosOnlyTemplatesResult,
+      chapters: ListChapterStartTemplatesResult
   ) =
-    val templates = new SpreadTemplateManager[IO]:
+    val templates = new SpreadTemplateRepository[IO]:
       override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult] =
         IO.raiseError[ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
-      override def listChapterStartTemplates: IO[SpreadTemplateManager.ListChapterStartTemplatesResult] = chapters.pure[IO]
-      override def listPhotosOnlyTemplates: IO[SpreadTemplateManager.ListPhotosOnlyTemplatesResult]     = photos.pure[IO]
-      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateManager.FindTemplateResult]     =
-        IO.raiseError[SpreadTemplateManager.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+      override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = chapters.pure[IO]
+      override def listPhotosOnlyTemplates: IO[ListPhotosOnlyTemplatesResult]     = photos.pure[IO]
+      override def findTemplate(id: SpreadTemplateId): IO[FindTemplateResult]     =
+        IO.raiseError[FindTemplateResult](new AssertionError("Unexpected template lookup"))
     SpreadTemplateApi.make(templates).routes.orNotFound
 
   private def buildSpreadTemplateApi(result: ListAlbumStartTemplatesResult) =
-    val templates = new SpreadTemplateManager[IO]:
-      override def listPhotosOnlyTemplates: IO[SpreadTemplateManager.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateManager.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
-      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateManager.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateManager.FindTemplateResult](new AssertionError("Unexpected template lookup"))
-      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]                           = result.pure[IO]
-      override def listChapterStartTemplates: IO[SpreadTemplateManager.ListChapterStartTemplatesResult] =
-        SpreadTemplateManager.ListChapterStartTemplatesResult.Failed.pure[IO]
+    val templates = new SpreadTemplateRepository[IO]:
+      override def listPhotosOnlyTemplates: IO[ListPhotosOnlyTemplatesResult] =
+        IO.raiseError[ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+      override def findTemplate(id: SpreadTemplateId): IO[FindTemplateResult] =
+        IO.raiseError[FindTemplateResult](new AssertionError("Unexpected template lookup"))
+      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]     = result.pure[IO]
+      override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] =
+        ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]
     SpreadTemplateApi.make(templates).routes.orNotFound

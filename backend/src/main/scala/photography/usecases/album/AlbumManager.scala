@@ -1,6 +1,6 @@
 package photography.usecases.album
 
-import photography.usecases.spread.SpreadTemplateManager
+import photography.ports.spread.SpreadTemplateRepository
 
 import cats.Monad
 import cats.syntax.all.*
@@ -12,14 +12,13 @@ import org.typelevel.log4cats.Logger
 import photography.domain.layout.*
 import photography.ports.album.AlbumRepository
 import photography.usecases.album.AlbumManager.*
-import photography.usecases.spread.SpreadTemplateManager.ListAlbumStartTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository.ListAlbumStartTemplatesResult
 
 import java.time.temporal.ChronoUnit
 
 trait AlbumManager[F[_]]:
   def list(page: Int): F[ListAlbumsResult]
   def create(year: AlbumYear, title: AlbumTitle): F[CreateAlbumResult]
-  def get(id: AlbumId): F[GetAlbumResult]
   def rename(id: AlbumId, title: AlbumTitle): F[RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult]
   def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult]
@@ -30,14 +29,14 @@ type AlbumPageSize = Int :| Positive
 object AlbumManager:
   def make[F[_]: Monad: IdGenerator: Clock: Logger](
       repository: AlbumRepository[F],
-      spreads: SpreadTemplateManager[F],
+      spreads: SpreadTemplateRepository[F],
       pageSize: AlbumPageSize
   ): AlbumManager[F] =
     new LiveAlbumManager(repository, spreads, pageSize)
 
   final private class LiveAlbumManager[F[_]: Monad: IdGenerator: Clock: Logger](
       repository: AlbumRepository[F],
-      spreads: SpreadTemplateManager[F],
+      spreads: SpreadTemplateRepository[F],
       pageSize: AlbumPageSize
   ) extends AlbumManager[F]:
 
@@ -68,13 +67,7 @@ object AlbumManager:
               case AlbumRepository.CreateResult.Failed(AlbumRepository.Failure.YearAlreadyUsed) => CreateAlbumResult.YearAlreadyUsed
               case AlbumRepository.CreateResult.Failed(_)                                       => CreateAlbumResult.Failed
           }
-        case ListAlbumStartTemplatesResult.Failed => CreateAlbumResult.Failed.pure[F]
-
-    override def get(id: AlbumId): F[GetAlbumResult] =
-      repository.get(id).map:
-        case AlbumRepository.GetResult.Found(album) => GetAlbumResult.Found(album)
-        case AlbumRepository.GetResult.NotFound     => GetAlbumResult.NotFound
-        case AlbumRepository.GetResult.Failed(_)    => GetAlbumResult.Failed
+        case ListAlbumStartTemplatesResult.Failed(_) => CreateAlbumResult.Failed.pure[F]
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       repository.rename(id, title = title).map:
@@ -138,11 +131,6 @@ object AlbumManager:
   enum CreateAlbumResult derives CanEqual:
     case Created(album: Album)
     case YearAlreadyUsed, Failed
-
-  enum GetAlbumResult derives CanEqual:
-    case Found(album: Album)
-    case NotFound
-    case Failed
 
   enum RenameResult derives CanEqual:
     case Renamed(album: Album)

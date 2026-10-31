@@ -10,7 +10,7 @@ import org.http4s.{HttpRoutes, MessageBodyFailure, Request}
 import photography.domain.album.{AlbumId, ChapterId}
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
-import photography.usecases.spread.SpreadManager.{AddResult, ChangeTemplateResult, Conflict as SpreadConflict, DeleteResult, Direction, MoveResult}
+import photography.usecases.spread.SpreadManager.{AddResult, ChangeTemplateResult, Conflict as SpreadConflict, DeleteResult}
 
 import java.util.UUID
 
@@ -25,8 +25,6 @@ object AlbumSpreadApi:
       HttpRoutes.of[F] {
         case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "spreads" =>
           add(AlbumId(album), ChapterId(chapter), request)
-        case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "move" =>
-          move(AlbumId(album), SpreadId(spread), request)
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "template" :?
             ConfirmPlacements(maybeConfirm) =>
           changeTemplate(AlbumId(album), SpreadId(spread), maybeConfirm = maybeConfirm, request)
@@ -45,17 +43,6 @@ object AlbumSpreadApi:
             case AddResult.ChapterNotFound    => notFound("chapter_not_found")
             case AddResult.SpreadNotFound     => notFound("spread_not_found")
             case AddResult.Failed             => serviceFailure
-
-    private def move(album: AlbumId, spread: SpreadId, request: Request[F]) =
-      decode(request, directionDecoder).flatMap:
-        case Left(message)    => BadRequest(Map("message" -> message))
-        case Right(direction) =>
-          spreads.move(album, spread, direction).flatMap:
-            case MoveResult.Moved(id)          => Ok(Map("id" -> id.value.toString))
-            case MoveResult.Rejected(conflict) => BadRequest(Map("message" -> explain(conflict)))
-            case MoveResult.AlbumNotFound      => albumNotFound
-            case MoveResult.SpreadNotFound     => notFound("spread_not_found")
-            case MoveResult.Failed             => serviceFailure
 
     private def changeTemplate(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String], request: Request[F]) =
       decode(request, templateDecoder).map(_.flatMap(template => parseConfirmation(maybeValue = maybeConfirm).map((template, _)))).flatMap:
@@ -101,15 +88,6 @@ object AlbumSpreadApi:
       .emap(value => CanonicalId.unapply(value).map(SpreadTemplateId(_)).toRight("Template IDs must be canonical UUIDs"))
       .prepare(_.downField("templateId"))
 
-    private val directionDecoder = Decoder.decodeString
-      .emap(parseDirection)
-      .prepare(_.downField("direction"))
-
-    private def parseDirection(value: String) = value match
-      case "earlier" => Direction.Earlier.asRight[String]
-      case "later"   => Direction.Later.asRight[String]
-      case _         => "Choose earlier or later".asLeft[Direction]
-
     private def encodeOccupied(placements: Int) =
       Json.obj("code" -> Json.fromString("spread_occupied"), "placements" -> Json.fromInt(placements))
 
@@ -117,9 +95,7 @@ object AlbumSpreadApi:
       case SpreadConflict.AtCapacity      => "An album can contain at most 65 interior spreads"
       case SpreadConflict.AddTarget       => "Add a spread after a chapter opening or photo spread"
       case SpreadConflict.ContextMismatch => "Choose a layout for this spread's context"
-      case SpreadConflict.OpeningMove     => "Openings cannot be moved"
       case SpreadConflict.OpeningDelete   => "Openings cannot be deleted"
-      case SpreadConflict.NoNeighbour     => "Photo spreads can only move within their chapter"
       case SpreadConflict.UnknownTemplate => "Choose a layout from the catalog"
 
     private def albumNotFound          = NotFound(Map("code" -> "album_not_found"))

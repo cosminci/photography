@@ -16,9 +16,9 @@ import java.util.UUID
 
 object SqliteSpreadTemplateRepository:
   def make[F[_]: Async: Logger](transactor: Transactor[F]): SpreadTemplateRepository[F] =
-    new LiveSpreadTemplateRepository(transactor)
+    new LiveSqliteSpreadTemplateRepository(transactor)
 
-  final private class LiveSpreadTemplateRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends SpreadTemplateRepository[F]:
+  final private class LiveSqliteSpreadTemplateRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends SpreadTemplateRepository[F]:
     override def listAlbumStartTemplates: F[ListAlbumStartTemplatesResult] =
       loadOpenings(kind = "album_start").transact(transactor).attempt.flatMap:
         case Right(rows) =>

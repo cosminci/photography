@@ -1,4 +1,4 @@
-import type { ChapterDetails, SpreadContext, SpreadTemplate, Workspace } from "./Workspace";
+import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTemplate, SpreadMembership } from "./Workspace";
 import type { ChapterSave, PhotoInventory } from "./Photo";
 import type { PlacementClient } from "./Placement";
 
@@ -28,16 +28,25 @@ export interface AlbumClient extends PlacementClient {
   readonly list: (page: number) => Promise<AlbumPage>;
   readonly create: (year: number) => Promise<AlbumSummary>;
   readonly rename: (id: string, title: string) => Promise<AlbumSummary>;
-  readonly open: (id: string) => Promise<Album>;
+  readonly open: (id: string, signal?: AbortSignal) => Promise<Album>;
   readonly remove: (id: string) => Promise<void>;
-  readonly workspace: (id: string, signal?: AbortSignal) => Promise<Workspace>;
+  readonly chapters: (id: string, signal: AbortSignal) => Promise<readonly Chapter[]>;
+  readonly composition: (id: string, signal: AbortSignal) => Promise<readonly SpreadMembership[]>;
+  readonly spread: (id: string, spreadId: string, chapter: string | null, signal: AbortSignal) => Promise<Spread>;
+  readonly countries: (signal: AbortSignal) => Promise<readonly Country[]>;
+  readonly photoSource: (signal: AbortSignal) => Promise<string>;
   readonly chapterPhotos: (id: string, signal: AbortSignal) => Promise<PhotoInventory>;
   readonly refreshPhotos: (id: string) => Promise<"queued" | "coalesced">;
   readonly createChapter: (id: string, details: ChapterDetails) => Promise<ChapterSave>;
   readonly updateChapter: (id: string, chapterId: string, details: ChapterDetails) => Promise<ChapterSave>;
   readonly templates: (context: SpreadContext) => Promise<readonly SpreadTemplate[]>;
   readonly addSpread: (id: string, chapterId: string, afterSpreadId: string) => Promise<string>;
-  readonly moveSpread: (id: string, spreadId: string, direction: "earlier" | "later") => Promise<void>;
+  readonly replaceChapterComposition: (
+    id: string,
+    chapterId: string,
+    expectedSpreadIds: readonly string[],
+    spreadIds: readonly string[],
+  ) => Promise<void>;
   readonly changeSpreadTemplate: (id: string, spreadId: string, templateId: string, confirmPlacements: boolean) => Promise<void>;
   readonly deleteSpread: (id: string, spreadId: string, confirmPlacements: boolean) => Promise<void>;
 }

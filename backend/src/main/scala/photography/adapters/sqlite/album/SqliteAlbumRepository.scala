@@ -28,14 +28,26 @@ object SqliteAlbumRepository:
       transactor: Transactor[F],
       composition: AlbumCompositionRepository[ConnectionIO],
       chapters: ChapterRepository[ConnectionIO]
-  ): AlbumRepository[F] =
-    new LiveAlbumRepository(transactor, composition, chapters)
+  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] =
+    new LiveSqliteAlbumRepository(transactor, composition, chapters)
 
-  final private class LiveAlbumRepository[F[_]: Async: Logger](
+  final private class LiveSqliteAlbumRepository[F[_]: Async: Logger](
       transactor: Transactor[F],
-      composition: AlbumCompositionRepository[ConnectionIO],
-      chapters: ChapterRepository[ConnectionIO]
-  ) extends AlbumRepository[F]:
+      albumComposition: AlbumCompositionRepository[ConnectionIO],
+      chapterRepository: ChapterRepository[ConnectionIO]
+  ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
+    override def metadata(album: AlbumId): F[MetadataResult] =
+      val query = sql"SELECT year, title, synopsis, created_at_ms FROM album WHERE id = ${album.value}"
+        .query[(AlbumYear, AlbumTitle, String, Instant)].option
+        .map(_.map { case (year, title, synopsis, createdAt) => Metadata(album, year, title, synopsis, createdAt) })
+      execute(query.map(_.fold[MetadataResult](MetadataResult.NotFound)(MetadataResult.Found(_))), MetadataResult.Failed(_))
+
+    override def chapters(album: AlbumId): F[ChaptersResult] =
+      val query = albumComposition.hasAlbum(album).flatMap:
+        case false => (ChaptersResult.AlbumNotFound: ChaptersResult).pure[ConnectionIO]
+        case true  => loadChapterMetadata(album.value).map[ChaptersResult](ChaptersResult.Found(_))
+      execute(query, ChaptersResult.Failed(_))
+
     override def list(offset: Int, limit: Int): F[ListResult] =
       val query =
         for
@@ -175,7 +187,7 @@ object SqliteAlbumRepository:
       select.query[UUID].to[List].flatMap(_.traverse(id => loadSpread(AlbumId(albumId), SpreadId(id))))
 
     private def loadSpread(album: AlbumId, id: SpreadId) =
-      composition.findSpread(album, id).flatMap:
+      albumComposition.findSpread(album, id).flatMap:
         case Some(located) => located.spread.pure[ConnectionIO]
         case None          => new IllegalArgumentException(s"Missing required spread ${id.value}").raiseError[ConnectionIO, Spread]
 
@@ -195,27 +207,42 @@ object SqliteAlbumRepository:
       load(id).flatMap(_.toRight(new IllegalArgumentException(s"Missing required album $id")).liftTo[ConnectionIO])
 
     private def loadChapters(albumId: UUID) =
+      loadChapterMetadata(albumId).flatMap(_.traverse(chapter => loadChapter(albumId, chapter)))
+
+    private def loadChapterMetadata(albumId: UUID) =
       val select = sql"""SELECT c.id, d.id, d.name, c.description, c.start_ms, c.end_ms, c.source_folder
                         FROM chapter c LEFT JOIN destination d ON d.id = c.destination_id
                         WHERE c.album_id = $albumId ORDER BY c.position"""
       validateChapters(albumId) >>
         select.query[(UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)].to[Vector]
-          .flatMap(_.traverse(row => decodeChapter(albumId, row)))
+          .flatMap(_.traverse(decodeChapterMetadata))
 
-    private def decodeChapter(albumId: UUID, row: (UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)) =
+    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)) =
       val (id, destination, name, description, start, end, folder) = row
       for
         period    <- decodePeriod(start = start, end = end).leftMap(new IllegalArgumentException(_)).liftTo[ConnectionIO]
-        loaded    <- loadChapterSpreads(albumId, id)
         countries <- loadCountries(destination)
-        gear      <- loadChapterGear(AlbumId(albumId), ChapterId(id))
+      yield ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
+
+    private def loadChapter(albumId: UUID, metadata: ChapterMetadata) =
+      for
+        loaded <- loadChapterSpreads(albumId, metadata.id.value)
+        gear   <- loadChapterGear(AlbumId(albumId), metadata.id)
       yield
         val (opening, photos) = loaded
-        val location          = Destination(DestinationId(destination), name = name, countries = countries)
-        Chapter(ChapterId(id), location, period, description = description, gear = gear, sourceFolder = folder, opening, spreads = photos)
+        Chapter(
+          metadata.id,
+          metadata.destination,
+          metadata.period,
+          description = metadata.description,
+          gear = gear,
+          sourceFolder = metadata.sourceFolder,
+          opening,
+          spreads = photos
+        )
 
     private def loadChapterGear(album: AlbumId, chapter: ChapterId) =
-      chapters.readGear(album, chapter).flatMap:
+      chapterRepository.readGear(album, chapter).flatMap:
         case ChapterRepository.GearReadResult.Found(selection) => selection.pure[ConnectionIO]
         case _ => new IllegalArgumentException("Invalid saved chapter gear").raiseError[ConnectionIO, GearSelection]
 

@@ -36,7 +36,6 @@ import photography.syntax.SyncSyntax.*
 import photography.usecases.chapter.{ChapterManager, ChapterMetadataManager, ChapterPlanning}
 import photography.usecases.gear.GearManager
 import photography.usecases.photo.{ChapterPhotoImport, PhotoWriteRecovery}
-import photography.usecases.spread.SpreadTemplateManager
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Request, Scheduling, Status}
 
 import java.nio.file.{Files, Path}
@@ -509,7 +508,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
       buildTransactor.use: xa =>
         val chapters  = SqliteChapterRepository.make
         val albums    = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
-        val templates = SpreadTemplateManager.make(SqliteSpreadTemplateRepository.make[IO](xa))
+        val templates = SqliteSpreadTemplateRepository.make[IO](xa)
         val imports   = new ChapterPhotoImport[IO]:
           override def prepare(parent: AlbumId, chapter: ChapterId, source: PhotoSource): IO[Request] =
             IO.raiseError[Request](new AssertionError("Unexpected import preparation"))
@@ -803,10 +802,9 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         val slots = sql"SELECT id, x, y, width, height FROM spread_photo_slot ORDER BY id".query[(String, Double, Double, Double, Double)].to[Vector]
         val coverSlots = sql"SELECT id, side FROM cover_slot ORDER BY id".query[(String, String)].to[Vector]
         val change     = buildConnection(path).use: xa =>
-          val albums             = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
-          val templateRepository = SqliteSpreadTemplateRepository.make[IO](xa)
-          val templates          = SpreadTemplateManager.make(templateRepository)
-          val calls              = Ref.unsafe[IO, Int](0)
+          val albums    = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
+          val templates = SqliteSpreadTemplateRepository.make[IO](xa)
+          val calls     = Ref.unsafe[IO, Int](0)
           given Transaction[ConnectionIO, IO] with
             override def run[A](program: ConnectionIO[A]): IO[A] =
               calls.updateAndGet(_ + 1).flatMap: count =>

@@ -8,14 +8,20 @@ import type { CoverSnapshot, SpreadSnapshot } from "../../../src/features/albums
 describe("placement representation", () => {
   const transform = { x: 10, y: -20, zoom: 2, mirrored: true };
   const placement = { id: "p", slotId: "front", photoId: "photo", transform };
+  const layout = {
+    kind: "photos_only" as const,
+    templateId: "layout",
+    slots: [{ id: "front", kind: "photo" as const, x: 0, y: 0, width: 100, height: 100 }],
+  };
 
   it("decodes cover ownership and interior caption corners", () => {
     const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [placement] };
-    const spread = { id: "spread", placements: [{ ...placement, captionCorner: "top_left" }] };
+    const spread = { id: "spread", ...layout, placements: [{ ...placement, captionCorner: "top_left" }] };
     const expectedCover: CoverSnapshot = { ...cover, kind: "cover", spineOwner: "back", placements: [{ ...placement, kind: "cover" }] };
     const expectedSpread: SpreadSnapshot = {
       kind: "spread",
       id: "spread",
+      layout,
       placements: [{ ...placement, kind: "spread", captionCorner: "top_left" }],
     };
 
@@ -80,16 +86,28 @@ describe("placement representation", () => {
     expect(() => readPlacementSnapshot(value, { kind: "spread", id: "spread" })).toThrow();
   });
 
+  it("should reject a placement whose slot is absent from the saved spread geometry", () => {
+    const saved = { id: "spread", ...layout, placements: [{ ...placement, slotId: "missing", captionCorner: "top_left" }] };
+
+    expect(() => readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toThrow("Invalid spread placement slot");
+  });
+
+  it("should reject duplicate slot identities even when no photos are placed", () => {
+    const saved = { id: "spread", ...layout, slots: [...layout.slots, ...layout.slots], placements: [] };
+
+    expect(() => readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toThrow("Invalid spread placement slot");
+  });
+
   it("uses the actual placement paths and JSON commands for both contexts", async () => {
     const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [placement] };
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(cover)))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spread", placements: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spread", ...layout, placements: [] })));
     const client = makeHttpAlbumClient(fetcher);
     const expectedRequests = [
-      ["/api/albums/album/cover/placements", "GET", undefined],
-      ["/api/albums/album/spreads/spread/placements", "POST", '{"operation":"remove","placementId":"p"}'],
+      ["/api/albums/album/cover", "GET", undefined],
+      ["/api/albums/album/spreads/spread/placements/p", "DELETE", undefined],
     ];
 
     const savedCover = await client.readPlacements("album", { kind: "cover" });

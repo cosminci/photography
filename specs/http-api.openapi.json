@@ -7,25 +7,83 @@
   },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/countries": {
+      "get": {
+        "operationId": "listCountries", "summary": "Read the selectable country catalog",
+        "responses": {
+          "200": { "description": "Authoritative country catalog", "content": { "application/json": { "schema": {
+            "type": "object", "required": ["countries"], "properties": { "countries": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/Country" } } }
+          } } } },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
+    "/api/photo-source": {
+      "get": {
+        "operationId": "readPhotoSource", "summary": "Read the configured folder-suggestion root",
+        "responses": { "200": { "description": "Only the browser-needed photo root", "content": { "application/json": { "schema": {
+          "type": "object", "required": ["photoRoot"], "properties": { "photoRoot": { "type": "string", "minLength": 1 } }
+        } } } } }
+      }
+    },
+    "/api/albums/{id}/spreads/{spreadId}/placements/{placementId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/SpreadId" },
+        { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "patch": {
+        "operationId": "updateSpreadPlacement", "summary": "Change a placement's slot or transform",
+        "description": "Supply either slotId or transform. An occupied destination swaps placements while preserving transforms and caption corners. The current placement identity must exist. Read after uncertain writes before retrying.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
+        "responses": {
+          "200": { "description": "Saved spread", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSpreadPlacement", "summary": "Remove one interior placement",
+        "responses": {
+          "200": { "description": "Saved spread; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/cover/placements/{placementId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
+        { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "patch": {
+        "operationId": "updateCoverPlacement", "summary": "Change a cover placement's side or transform",
+        "description": "Supply either slotId or transform. Movement and swaps retain transforms and spine ownership. Read after uncertain writes before retrying.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
+        "responses": {
+          "200": { "description": "Saved cover", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCoverPlacement", "summary": "Remove one cover placement",
+        "responses": {
+          "200": { "description": "Saved cover; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
     "/api/albums/{id}/spreads/{spreadId}/placements": {
       "parameters": [
         { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Lowercase canonical album UUID." },
         { "name": "spreadId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Current spread UUID owned by the album." }
       ],
-      "get": {
-        "operationId": "readSpreadPlacements",
-        "summary": "Read the saved interior photo composition",
-        "responses": {
-          "200": { "description": "Current saved placements", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
-        }
-      },
       "post": {
-        "operationId": "editSpreadPlacements",
-        "summary": "Place, replace, remove, adjust, move or swap an interior photo",
+        "operationId": "createSpreadPlacement",
+        "summary": "Place or replace an interior photo",
         "description": "Synopsis accepts album photos; chapter openings and photo spreads accept their chapter photos. Validate current ownership and globally unique photo use in the same coordination interval as the atomic write. Place initializes centered, unmirrored zoom 1; replacement releases the old photo. Move within this spread swaps occupied destinations and carries transforms and caption corners. Geometry remains with slots. Requests use current saved state, not an editing lease. An uncertain outcome must be read before repeating a mutation.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementEdit" } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
         "responses": {
           "200": { "description": "Acknowledged saved composition; a later refresh failure must be retried as reads only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
           "400": { "$ref": "#/components/responses/ValidationFailure" },
@@ -35,7 +93,7 @@
         }
       }
     },
-    "/api/albums/{id}/cover/placements": {
+    "/api/albums/{id}/cover": {
       "parameters": [
         { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Lowercase canonical album UUID." }
       ],
@@ -43,16 +101,19 @@
         "operationId": "readCoverPlacements",
         "summary": "Read both saved cover sides and spine ownership",
         "responses": {
-          "200": { "description": "Back on the left, front on the right", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
+          "200": { "description": "Back on the left, front on the right", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
           "404": { "$ref": "#/components/responses/PlacementNotFound" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
-      },
+      }
+    },
+    "/api/albums/{id}/cover/placements": {
+      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
       "post": {
-        "operationId": "editCoverPlacements",
-        "summary": "Edit photos on either cover side",
+        "operationId": "createCoverPlacement",
+        "summary": "Place or replace a photo on either cover side",
         "description": "Uses album-wide photos and the same atomic placement, transform and recovery guarantees as interior edits. Movement and swaps are confined to the two cover sides and preserve transforms. Title, credits and spine ownership remain unchanged. Cover placements have no caption corner.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementEdit" } } } },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
         "responses": {
           "200": { "description": "Saved cover composition", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
           "400": { "$ref": "#/components/responses/ValidationFailure" },
@@ -167,21 +228,21 @@
         }
       }
     },
-    "/api/albums/{id}/workspace": {
+    "/api/albums/{id}/composition": {
       "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
       "get": {
-        "operationId": "getAlbumWorkspace",
-        "summary": "Read the complete chapter workspace",
-        "description": "Separate from album metadata. Returns the album opening followed by chronological chapter blocks (first day, last day, chapter ID), with Home last. Each block starts with its opening followed by photo spreads in persisted order. Countries is the complete selectable reference catalog. photoInventories contains exactly one inventory for each chapter ID, including empty chapters; clients derive Synopsis/Cover from these same collections. Reads never initiate import. Inventory/composition failures return 500, not partial or empty-success data.",
+        "operationId": "getAlbumComposition",
+        "summary": "Read ordered composition membership",
+        "description": "Returns the album opening followed by persisted chapter blocks, with each chapter opening before its photo spreads. Browser reads individual spread resources for geometry and placements. Reading never initiates import.",
         "responses": {
           "200": {
-            "description": "Complete year-bearing workspace",
+            "description": "Ordered resource membership",
             "headers": {
               "Cache-Control": { "schema": { "const": "no-store" } }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Workspace" }
+                "schema": { "$ref": "#/components/schemas/Composition" }
               }
             }
           },
@@ -192,6 +253,16 @@
     },
     "/api/albums/{id}/chapters": {
       "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "get": {
+        "operationId": "getAlbumChapters",
+        "summary": "Read authoritative ordered chapter metadata",
+        "responses": {
+          "200": { "description": "Ordered chapters, including empty chapters", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+            "content": { "application/json": { "schema": { "type": "object", "required": ["chapters"], "properties": { "chapters": { "type": "array", "items": { "$ref": "#/components/schemas/Chapter" } } } } } } },
+          "404": { "$ref": "#/components/responses/AlbumNotFound" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      },
       "post": {
         "operationId": "createChapter",
         "summary": "Create a vacation or Home chapter",
@@ -249,17 +320,17 @@
       "put": {
         "operationId": "updateChapter",
         "summary": "Update an owned chapter's metadata",
-        "description": "The saved chapter type selects the details shape: vacation requires name, countries, start, end and sourceFolder; Home requires countries and sourceFolder and retains its year-derived period. No kind field is required or used to change type. Other fields are ignored. Atomically updates metadata, country associations and chronological positions while preserving chapter identity, description, templates, spread/slot IDs and geometry. A changed folder atomically clears previous photo/placement references and schedules processing after commit; unchanged folders return not-requested. Scheduling failed still returns 200 with the saved identity and offers Refresh-only retry. Conflicts/validation failures return 400 without changing persisted state.",
+        "description": "The resource's kind selects its details shape: vacation requires name, countries, start, end and sourceFolder; Home requires countries and sourceFolder and retains its year-derived period. Changing a saved chapter's kind is rejected by the chapter program. Atomically updates metadata, country associations and chronological positions while preserving chapter identity, description, templates, spread/slot IDs and geometry. A changed folder atomically clears previous photo/placement references and schedules processing after commit; unchanged folders return not-requested. Scheduling failed still returns 200 with the saved identity and offers photo-import retry. Conflicts/validation failures return 400 without changing persisted state.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  { "$ref": "#/components/schemas/VacationDetails" },
-                  { "$ref": "#/components/schemas/HomeDetails" }
+                "oneOf": [
+                  { "allOf": [{ "$ref": "#/components/schemas/VacationDetails" }, { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "vacation" } } }] },
+                  { "allOf": [{ "$ref": "#/components/schemas/HomeDetails" }, { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "home" } } }] }
                 ],
-                "description": "Use the shape belonging to the target's saved kind; the server resolves ownership and type before decoding details."
+                "description": "Submit the complete resource metadata in its current kind; the chapter program validates ownership and preserves type under shared coordination."
               }
             }
           }
@@ -321,34 +392,36 @@
         }
       }
     },
-    "/api/albums/{id}/spreads/{spreadId}/move": {
+    "/api/albums/{id}/chapters/{chapterId}/composition": {
       "parameters": [
         { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "$ref": "#/components/parameters/SpreadId" }
+        { "$ref": "#/components/parameters/PhotoChapterId" }
       ],
-      "post": {
-        "operationId": "moveSpread",
-        "summary": "Swap a photo spread with its chapter neighbour",
-        "description": "Only photo spreads move, within their own chapter, preserving chapter blocks and openings. Opening targets and missing neighbours return 400. Commits atomically under the chapter-mutation lock.",
+      "put": {
+        "operationId": "replaceChapterComposition",
+        "summary": "Replace a chapter's complete spread order",
+        "description": "Retains the opening first and every existing spread exactly once. expectedSpreadIds is the order the browser observed. A concurrent change returns 409 without writing. Comparison and replacement share backend mutation coordination; replacement commits in a database transaction. Failed pre-write acquisition returns service_failure. Uncertain acknowledgement returns write_uncertain; reread before retrying.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["direction"],
+                "required": ["expectedSpreadIds", "spreadIds"],
                 "properties": {
-                  "direction": { "enum": ["earlier", "later"] }
+                  "expectedSpreadIds": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "uuid" } },
+                  "spreadIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "format": "uuid" } }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": { "$ref": "#/components/responses/SpreadIdentity" },
+          "204": { "description": "Saved order" },
           "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/SpreadTargetNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": { "$ref": "#/components/responses/ChapterNotFound" },
+          "409": { "description": "Composition changed since the supplied expected order", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "const": "composition_changed" } } } } } },
+          "500": { "description": "Pre-write acquisition failed, or write acknowledgement is uncertain; uncertain writes require rereading before retrying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["service_failure", "write_uncertain"] } } } } } }
         }
       }
     },
@@ -410,6 +483,15 @@
         { "$ref": "#/components/parameters/SpreadId" },
         { "$ref": "#/components/parameters/ConfirmPlacements" }
       ],
+      "get": {
+        "operationId": "readSpread",
+        "summary": "Read one spread's saved geometry and placements",
+        "responses": {
+          "200": { "description": "Current spread resource", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      },
       "delete": {
         "operationId": "deleteSpread",
         "summary": "Delete a photo spread and its placements",
@@ -446,10 +528,10 @@
         }
       }
     },
-    "/api/chapters/{chapterId}/photos/refresh": {
+    "/api/chapters/{chapterId}/photo-import": {
       "parameters": [{ "$ref": "#/components/parameters/PhotoChapterId" }],
-      "post": {
-        "operationId": "refreshChapterPhotos",
+      "put": {
+        "operationId": "requestChapterPhotoImport",
         "summary": "Schedule chapter photo reconciliation",
         "description": "No request body. Reconciles immediate-folder JPEG additions, content-hash edits, removals and changed quality asynchronously. Overlapping requests coalesce. Scheduling is distinct from processing completion; a failed launch/read returns 500. Synopsis/Cover clients invoke this operation for each chapter.",
         "responses": {
@@ -478,7 +560,7 @@
       "get": {
         "operationId": "subscribeAlbumPhotoEvents",
         "summary": "Subscribe to chapter inventory and processing invalidations",
-        "description": "Validates album existence before streaming. Register before subscribed (data: {}), then emit inventory-changed (data: {chapterId}) after committed photo or processing changes. Heartbeat comments arrive every 15 seconds. One stream per open browser workspace; subscribe before initial/reconnect workspace GET, buffer invalidations during catch-up, then reread affected chapters. Slow subscribers use bounded coalescing and never block processing. Opening/reconnecting never initiates import; no image bytes travel over SSE.",
+        "description": "Validates album existence before streaming. Register before subscribed (data: {}), then emit inventory-changed (data: {chapterId}) after committed photo or processing changes. Heartbeat comments arrive every 15 seconds. Subscribe before initial/reconnect resource acquisition; the browser composes album metadata, ordered chapters, composition membership, individual spreads and chapter photo inventories, buffering invalidations during catch-up. Slow subscribers use bounded coalescing and never block processing. Opening/reconnecting never initiates import; no image bytes travel over SSE.",
         "responses": {
           "200": {
             "description": "Named Server-Sent Events with JSON data",
@@ -649,7 +731,7 @@
         "name": "id",
         "in": "path",
         "required": true,
-        "description": "Lowercase canonical UUID. Workspace and chapter metadata routes return album_not_found for malformed or missing IDs. Spread-action routes require a canonical path segment: noncanonical segments use the unmatched API 404 not_found response; a canonical missing album returns album_not_found.",
+        "description": "Lowercase canonical UUID. Album metadata, chapter collection and composition reads return album_not_found for malformed or missing IDs. Spread mutation routes require a canonical path segment: noncanonical segments use the unmatched API 404 not_found response; a canonical missing album returns album_not_found.",
         "schema": { "type": "string", "format": "uuid" }
       }
     },
@@ -852,14 +934,16 @@
           "mirrored": { "type": "boolean" }
         }
       },
-      "PlacementEdit": {
+      "PlacementCreation": {
+        "type": "object", "required": ["slotId", "photoId"],
+        "properties": { "slotId": { "type": "string", "format": "uuid" }, "photoId": { "type": "string", "format": "uuid" } }, "additionalProperties": false,
+        "description": "All IDs are lowercase canonical UUIDs. The target slot and eligible photo must exist; the backend allocates the placement identity."
+      },
+      "PlacementChanges": {
         "oneOf": [
-          { "type": "object", "required": ["operation", "slotId", "photoId"], "properties": { "operation": { "const": "place" }, "slotId": { "type": "string", "format": "uuid" }, "photoId": { "type": "string", "format": "uuid" } } },
-          { "type": "object", "required": ["operation", "placementId"], "properties": { "operation": { "const": "remove" }, "placementId": { "type": "string", "format": "uuid" } } },
-          { "type": "object", "required": ["operation", "placementId", "slotId"], "properties": { "operation": { "const": "move" }, "placementId": { "type": "string", "format": "uuid" }, "slotId": { "type": "string", "format": "uuid" } } },
-          { "type": "object", "required": ["operation", "placementId", "transform"], "properties": { "operation": { "const": "adjust" }, "placementId": { "type": "string", "format": "uuid" }, "transform": { "$ref": "#/components/schemas/PhotoTransform" } } }
-        ],
-        "description": "All IDs are lowercase canonical UUIDs. Source placement identity must still exist; clients cannot allocate placement IDs."
+          { "type": "object", "required": ["slotId"], "properties": { "slotId": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
+          { "type": "object", "required": ["transform"], "properties": { "transform": { "$ref": "#/components/schemas/PhotoTransform" } }, "additionalProperties": false }
+        ]
       },
       "PhotoPlacement": {
         "type": "object",
@@ -873,9 +957,12 @@
       },
       "SpreadPlacements": {
         "type": "object",
-        "required": ["id", "placements"],
+        "required": ["id", "kind", "templateId", "slots", "placements"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
+          "kind": { "enum": ["album_start", "chapter_start", "photos_only"] },
+          "templateId": { "type": "string", "format": "uuid" },
+          "slots": { "type": "array", "items": { "$ref": "#/components/schemas/SpreadSlot" } },
           "placements": { "type": "array", "items": { "allOf": [
             { "$ref": "#/components/schemas/PhotoPlacement" },
             { "type": "object", "required": ["captionCorner"], "properties": { "captionCorner": { "enum": ["top_left", "top_right", "bottom_left", "bottom_right"] } } }
@@ -951,45 +1038,18 @@
           }
         ]
       },
-      "Workspace": {
+      "Composition": {
         "type": "object",
-        "required": [
-          "year",
-          "photoRoot",
-          "chapters",
-          "spreads",
-          "countries",
-          "photoInventories"
-        ],
+        "required": ["spreads"],
         "properties": {
-          "year": { "$ref": "#/components/schemas/AlbumYear" },
-          "photoRoot": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Configured absolute root used for folder suggestions; the configuration default is /photos. Saved sourceFolder values are full paths, not relative to this value."
-          },
-          "chapters": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/Chapter" }
-          },
           "spreads": {
             "type": "array",
             "minItems": 1,
             "maxItems": 65,
-            "items": { "$ref": "#/components/schemas/WorkspaceSpread" }
-          },
-          "countries": {
-            "type": "array",
-            "minItems": 1,
-            "items": { "$ref": "#/components/schemas/Country" }
-          },
-          "photoInventories": {
-            "type": "object",
-            "description": "Exactly one entry per chapter ID, including empty chapters; no foreign or missing keys.",
-            "propertyNames": { "type": "string", "format": "uuid" },
-            "additionalProperties": {
-              "$ref": "#/components/schemas/PhotoInventory"
-            }
+            "items": { "type": "object", "required": ["id", "chapter"], "properties": {
+              "id": { "type": "string", "format": "uuid" },
+              "chapter": { "type": ["string", "null"], "format": "uuid", "description": "Null only for the album opening." }
+            } }
           }
         }
       },
@@ -1152,31 +1212,7 @@
           }
         }
       },
-      "WorkspaceSpread": {
-        "type": "object",
-        "required": ["id", "chapter", "kind", "templateId", "slots"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "templateId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Applied template identity from the spread's context catalog."
-          },
-          "chapter": {
-            "type": ["string", "null"],
-            "format": "uuid",
-            "description": "Null for the album opening; otherwise the owning chapter ID."
-          },
-          "kind": { "enum": ["album_start", "chapter_start", "photos_only"] },
-          "slots": {
-            "type": "array",
-            "minItems": 1,
-            "items": { "$ref": "#/components/schemas/WorkspaceSlot" },
-            "description": "Photo slots followed by the owner-text slot for openings; photo slots only for photos_only. Geometry is persisted percentages of the full spread axes, not normalized to occupied bounds."
-          }
-        }
-      },
-      "WorkspaceSlot": {
+      "SpreadSlot": {
         "allOf": [
           { "$ref": "#/components/schemas/TemplateSlot" },
           {

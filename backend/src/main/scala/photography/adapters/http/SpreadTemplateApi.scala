@@ -3,36 +3,37 @@ package photography.adapters.http
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Encoder
-import org.http4s.HttpRoutes
+import org.http4s.{CacheDirective, HttpRoutes}
+import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.layout.{SlotBox, SpreadTemplate}
-import photography.usecases.spread.SpreadTemplateManager
-import photography.usecases.spread.SpreadTemplateManager.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
-import photography.usecases.spread.SpreadTemplateManager.ListPhotosOnlyTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository
+import photography.ports.spread.SpreadTemplateRepository.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
+import photography.ports.spread.SpreadTemplateRepository.ListPhotosOnlyTemplatesResult
 
 trait SpreadTemplateApi[F[_]]:
   def routes: HttpRoutes[F]
 
 object SpreadTemplateApi:
-  def make[F[_]: Async](templates: SpreadTemplateManager[F]): SpreadTemplateApi[F] =
+  def make[F[_]: Async](templates: SpreadTemplateRepository[F]): SpreadTemplateApi[F] =
     new LiveSpreadTemplateApi(templates)
 
-  final private class LiveSpreadTemplateApi[F[_]: Async](templates: SpreadTemplateManager[F])
+  final private class LiveSpreadTemplateApi[F[_]: Async](templates: SpreadTemplateRepository[F])
       extends SpreadTemplateApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] = HttpRoutes.of[F]:
       case GET -> Root / "api" / "templates" / "album-start" =>
         templates.listAlbumStartTemplates.flatMap:
-          case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed)
-          case ListAlbumStartTemplatesResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+          case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          case ListAlbumStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
       case GET -> Root / "api" / "templates" / "chapter-start" =>
         templates.listChapterStartTemplates.flatMap:
-          case listed: ListChapterStartTemplatesResult.Listed => Ok(listed)
-          case ListChapterStartTemplatesResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+          case listed: ListChapterStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          case ListChapterStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
       case GET -> Root / "api" / "templates" / "photos-only" =>
         templates.listPhotosOnlyTemplates.flatMap:
-          case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed)
-          case ListPhotosOnlyTemplatesResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+          case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          case ListPhotosOnlyTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
 
     private given Encoder[(String, SlotBox)] = Encoder.forProduct5("kind", "x", "y", "width", "height"): slot =>
       val (kind, box) = slot

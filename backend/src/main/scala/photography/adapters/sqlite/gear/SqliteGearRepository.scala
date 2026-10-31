@@ -17,9 +17,9 @@ import java.util.UUID
 
 object SqliteGearRepository:
   def make[F[_]: Async: Logger](transactor: Transactor[F]): GearRepository[F] =
-    new LiveGearRepository(transactor)
+    new LiveSqliteGearRepository(transactor)
 
-  final private class LiveGearRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends GearRepository[F]:
+  final private class LiveSqliteGearRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends GearRepository[F]:
     override def createCamera(camera: Camera): F[CameraCreateResult] =
       val (kind, maybeMount, maybeSensor) = encodeKind(camera.kind)
       val insert                          = sql"""INSERT INTO camera (id, code, friendly_name, kind, mount, sensor_format)

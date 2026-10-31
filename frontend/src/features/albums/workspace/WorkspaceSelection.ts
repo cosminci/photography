@@ -36,9 +36,10 @@ export function findSpreadNavigation(spreads: readonly Spread[], selection: Sele
   };
 }
 
-export function findDeletionSelection(spreads: readonly Pick<Spread, "id" | "kind" | "chapter">[], index: number): string | null | undefined {
+export function findDeletionSelection(spreads: readonly Pick<Spread, "id" | "kind" | "chapter">[], index: number): string | null {
   const spread = spreads[Math.min(index, spreads.length - 1)];
-  return spread === undefined ? undefined : getSpreadPart(spread);
+  if (spread === undefined) throw new Error("Saved composition has no selectable spread");
+  return getSpreadPart(spread);
 }
 
 export function findSpreadPosition(spreads: readonly Spread[], selected: Spread) {
@@ -51,4 +52,17 @@ export function findSpreadPosition(spreads: readonly Spread[], selected: Spread)
 
 function getSpreadPart(spread: Pick<Spread, "id" | "kind" | "chapter">): string | null {
   return spread.kind === "album_start" ? null : spread.kind === "chapter_start" ? spread.chapter : spread.id;
+}
+export function buildChapterReorder(spreads: readonly Spread[], spreadId: string, direction: "earlier" | "later") {
+  const target = spreads.find((spread) => spread.id === spreadId);
+  if (target === undefined || target.chapter === null) throw new Error("This spread cannot be moved");
+  const expectedSpreadIds = spreads.filter((spread) => spread.chapter === target.chapter).map((spread) => spread.id);
+  const spreadIds = [...expectedSpreadIds];
+  const index = spreadIds.indexOf(spreadId);
+  const neighbor = index + (direction === "earlier" ? -1 : 1);
+  const adjacent = spreadIds.at(neighbor);
+  if (index < 1 || neighbor < 1 || adjacent === undefined) throw new Error("No neighboring photo spread");
+  spreadIds[index] = adjacent;
+  spreadIds[neighbor] = spreadId;
+  return { chapter: target.chapter, expectedSpreadIds, spreadIds };
 }

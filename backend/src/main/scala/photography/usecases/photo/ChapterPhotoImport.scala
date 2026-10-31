@@ -95,7 +95,15 @@ object ChapterPhotoImport:
         ExecutionOutcome(feedback.maybeEntry.fold[Status](Status.Idle)(_.status), feedback.retirementIssues)
 
     private def run(request: Request) =
-      val guarded = new Transaction[Db, F]:
+      val guarded = ImportTransaction.make(request)
+      val manager = buildManager(guarded)
+      val started = summon[Mutex[F]].lock.surround(recordStatus(request, Status.Running))
+      started >> manager.refresh(request.chapter, request.source).flatMap(result => recordStatus(request, Status.Finished(result)))
+
+    private object ImportTransaction:
+      def make(request: Request): Transaction[Db, F] = new LiveImportTransaction(request)
+
+      final private class LiveImportTransaction(request: Request) extends Transaction[Db, F]:
         override def run[A](program: Db[A]): F[A] =
           val execute = summon[Mutex[F]].lock.surround:
             state.get.flatMap: current =>
@@ -104,9 +112,6 @@ object ChapterPhotoImport:
               else Async[F].raiseError(new IllegalStateException("Photo import source was superseded"))
           execute.flatTap(_ => invalidateInventory(request.album, request.chapter))
         override def resolve[A](program: Db[A]): F[A] = transaction.resolve(program).flatTap(_ => invalidateInventory(request.album, request.chapter))
-      val manager = buildManager(guarded)
-      val started = summon[Mutex[F]].lock.surround(recordStatus(request, Status.Running))
-      started >> manager.refresh(request.chapter, request.source).flatMap(result => recordStatus(request, Status.Finished(result)))
 
     private def retirePhoto(album: AlbumId, intent: PhotoWriteIntent.Retirement) =
       recovery.resolve(intent).flatMap:

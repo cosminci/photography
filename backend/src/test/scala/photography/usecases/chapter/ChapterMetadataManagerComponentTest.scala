@@ -3,7 +3,7 @@ import photography.domain.gear.CameraSelection
 
 import photography.usecases.photo.ChapterPhotoImport
 import photography.usecases.photo.PhotoWriteRecovery
-import photography.usecases.spread.SpreadTemplateManager
+import photography.ports.spread.SpreadTemplateRepository
 
 import cats.data.NonEmptyList
 import cats.Id
@@ -20,7 +20,7 @@ import photography.ports.album.AlbumRepository
 import photography.ports.chapter.ChapterRepository
 import photography.ports.photo.PhotoRepository
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, RefreshResult, SaveDescriptionResult, UpdateResult}
-import photography.usecases.spread.SpreadTemplateManager.ListChapterStartTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository.ListChapterStartTemplatesResult
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Request, Scheduling, Status}
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
@@ -485,7 +485,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
 
     for
       missing     <- buildManager(refs)
-      noTemplates <- buildManager(refs, templates = ListChapterStartTemplatesResult.Failed)
+      noTemplates <- buildManager(refs, templates = ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure))
       _           <- unavailableReads
       _           <- unavailableWrites
       absent      <- missing.update(album.id, chapter.id, name = "Kyoto", countries = countries.map(_.id), period, sourceFolder = "/photos/new")
@@ -707,13 +707,13 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       override def update(command: ChapterRepository.Update): IO[ChapterRepository.UpdateResult] = command match
         case ChapterRepository.Update(parent, chapter, destination, name, countries, period, sourceFolder, order) =>
           refs.updates.update(_ :+ (parent, chapter, name, countries, period, sourceFolder, order)) >> writeUpdate(destination).as(updateWrite)
-    val catalog = new SpreadTemplateManager[IO]:
-      override def listPhotosOnlyTemplates: IO[SpreadTemplateManager.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateManager.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
-      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateManager.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateManager.FindTemplateResult](new AssertionError("Unexpected template lookup"))
-      override def listAlbumStartTemplates: IO[SpreadTemplateManager.ListAlbumStartTemplatesResult] =
-        IO.raiseError[SpreadTemplateManager.ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
+    val catalog = new SpreadTemplateRepository[IO]:
+      override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
+        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateRepository.FindTemplateResult] =
+        IO.raiseError[SpreadTemplateRepository.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+      override def listAlbumStartTemplates: IO[SpreadTemplateRepository.ListAlbumStartTemplatesResult] =
+        IO.raiseError[SpreadTemplateRepository.ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
       override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = templates.pure[IO]
     Mutex[IO].map: mutex =>
       given Mutex[IO] = mutex

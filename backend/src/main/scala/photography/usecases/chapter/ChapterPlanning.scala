@@ -1,6 +1,6 @@
 package photography.usecases.chapter
 
-import photography.usecases.spread.SpreadTemplateManager
+import photography.ports.spread.SpreadTemplateRepository
 
 import cats.Monad
 import cats.data.NonEmptyList
@@ -12,7 +12,7 @@ import photography.domain.layout.*
 import photography.ports.chapter.ChapterRepository
 import photography.usecases.chapter.ChapterMetadataManager.Period
 import photography.usecases.chapter.ChapterPlanning.*
-import photography.usecases.spread.SpreadTemplateManager.ListChapterStartTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository.ListChapterStartTemplatesResult
 import java.time.{LocalDate, Year}
 
 trait ChapterPlanning[F[_]]:
@@ -29,9 +29,9 @@ trait ChapterPlanning[F[_]]:
   def buildChapter(name: DestinationName, countries: NonEmptyList[CountryId], period: VisitPeriod, source: PhotoSource): F[BuildResult]
 
 object ChapterPlanning:
-  def make[F[_]: Monad: IdGenerator](templates: SpreadTemplateManager[F]): ChapterPlanning[F] = new LiveChapterPlanning(templates)
+  def make[F[_]: Monad: IdGenerator](templates: SpreadTemplateRepository[F]): ChapterPlanning[F] = new LiveChapterPlanning(templates)
 
-  final private class LiveChapterPlanning[F[_]: Monad: IdGenerator](templates: SpreadTemplateManager[F]) extends ChapterPlanning[F]:
+  final private class LiveChapterPlanning[F[_]: Monad: IdGenerator](templates: SpreadTemplateRepository[F]) extends ChapterPlanning[F]:
     override def planCreation(
         year: AlbumYear,
         chapters: Vector[Chapter],
@@ -76,7 +76,7 @@ object ChapterPlanning:
         source: PhotoSource
     ): F[BuildResult] =
       templates.listChapterStartTemplates.flatMap:
-        case ListChapterStartTemplatesResult.Failed            => (BuildResult.Failed: BuildResult).pure[F]
+        case ListChapterStartTemplatesResult.Failed(_)         => (BuildResult.Failed: BuildResult).pure[F]
         case ListChapterStartTemplatesResult.Listed(available) =>
           val template = available.head
           for

@@ -13,27 +13,25 @@ import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.jsonDecoder
 import photography.domain.album.*
 import photography.domain.layout.*
-import photography.usecases.album.{AlbumManager, AlbumWorkspaceManager}
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.domain.gear.CameraSelection
-import photography.usecases.album.AlbumManager.*
-import photography.usecases.album.AlbumWorkspaceManager.GetResult
+import photography.usecases.photo.ChapterPhotoInventory
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Scheduling, Status as ImportStatus}
 import photography.usecases.photo.{PhotoInventory, PhotoManager, PhotoWriteRecovery}
+import photography.ports.album.AlbumRepository
 
 import java.nio.file.Path
 import java.time.{Instant, LocalDate, LocalDateTime}
 import java.util.UUID
 
-final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
-  private val country      = Country(CountryId(new UUID(0L, 8L)), code = "RO", name = "Romania", AbsoluteLocation(Path.of("/flags/ro.svg")))
-  private val otherCountry = country.copy(id = CountryId(new UUID(0L, 9L)), code = "JP", name = "Japan")
-  private val box          = SlotBox(x = 10.0, y = 20.0, width = 30.0, height = 40.0)
-  private val text         = SpreadSlot.Text(TextSpreadSlotId(new UUID(0L, 6L)), box)
-  private val photo        = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(0L, 7L)), box, bleed = Set.empty)
-  private val template     = SpreadTemplateId(new UUID(0L, 4L))
-  private val chapter      =
+final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
+  private val country  = Country(CountryId(new UUID(0L, 8L)), code = "RO", name = "Romania", AbsoluteLocation(Path.of("/flags/ro.svg")))
+  private val box      = SlotBox(x = 10.0, y = 20.0, width = 30.0, height = 40.0)
+  private val text     = SpreadSlot.Text(TextSpreadSlotId(new UUID(0L, 6L)), box)
+  private val photo    = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(0L, 7L)), box, bleed = Set.empty)
+  private val template = SpreadTemplateId(new UUID(0L, 4L))
+  private val chapter  =
     val destination = Destination(DestinationId(new UUID(0L, 10L)), name = "Coast", countries = NonEmptyList.one(country))
     val opening     =
       Spread.ChapterStart(SpreadId(new UUID(0L, 3L)), template, photoSlots = Vector(photo), text, placements = Vector.empty[SpreadPlacement])
@@ -64,62 +62,42 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
       chapters = Vector(chapter)
     )
 
-  private val emptyInventories           = Map.empty[ChapterId, AlbumWorkspaceManager.ChapterPhotos]
-  private val workspace: GetResult.Found =
-    GetResult.Found(album, NonEmptyList.of(country, otherCountry), photoRoot = "/photos", photoInventories = emptyInventories)
-
   private val albumPath   = s"/api/albums/${album.id.value}"
   private val chapterPath = s"$albumPath/chapters/${chapter.id.value}"
   private val vacation    =
     s"""{"kind":"vacation","name":"  Coast  ","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast"}"""
   private val home = s"""{"kind":"home","countries":["${country.id.value}"],"sourceFolder":"/photos/Home"}"""
 
-  test("should return exact workspace metadata, catalog, ordered spread blocks and complete slot geometry"):
-    val server   = buildApi(Refs())
-    val expected = json(s"""{
-      "year":2024,"photoRoot":"/photos",
-      "chapters":[{"id":"${chapter.id.value}","kind":"vacation","name":"Coast","countries":["${country.id.value}"],
-        "start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast","description":"Sea air"}],
-      "spreads":[
-        {"id":"${album.opening.id.value}","chapter":null,"kind":"album_start","templateId":"${template.value}","slots":[
-          {"id":"${text.id.value}","kind":"text","x":10.0,"y":20.0,"width":30.0,"height":40.0}]},
-        {"id":"${chapter.opening.id.value}","chapter":"${chapter.id.value}","kind":"chapter_start","templateId":"${template.value}","slots":[
-          {"id":"${photo.id.value}","kind":"photo","x":10.0,"y":20.0,"width":30.0,"height":40.0},
-          {"id":"${text.id.value}","kind":"text","x":10.0,"y":20.0,"width":30.0,"height":40.0}]},
-        {"id":"${new UUID(0L, 5L)}","chapter":"${chapter.id.value}","kind":"photos_only","templateId":"${template.value}","slots":[
-          {"id":"${photo.id.value}","kind":"photo","x":10.0,"y":20.0,"width":30.0,"height":40.0}]}],
-      "countries":[{"id":"${country.id.value}","name":"Romania","code":"RO"},{"id":"${otherCountry.id.value}","name":"Japan","code":"JP"}],
-      "photoInventories":{}}""")
-
-    send(server, Method.GET, s"$albumPath/workspace").map(response => assertEquals(response, ApiResponse(Status.Ok, expected)))
-
-  test("should expose an empty chapter list and the saved full-year Home dates"):
-    val homeChapter = chapter.copy(
-      destination = chapter.destination.copy(name = "Home"),
-      period = VisitPeriod(LocalDate.of(2024, 1, 1), days = 366)
+  test("should read ordered chapter metadata with its exact inclusive period and source"):
+    val refs     = Refs()
+    val expected = json(
+      s"""{"chapters":[{"id":"${chapter.id.value}","kind":"vacation","name":"Coast","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast","description":"Sea air"}]}"""
     )
-    val emptyAlbum      = album.copy(chapters = Vector.empty[Chapter])
-    val homeAlbum       = album.copy(chapters = Vector(homeChapter))
-    val selectedCountry = NonEmptyList.one(country)
-    val emptyWorkspace  = workspace.copy(album = emptyAlbum, countries = selectedCountry, photoRoot = "/custom")
-    val homeWorkspace   = workspace.copy(album = homeAlbum, countries = selectedCountry)
-    val emptyServer     = buildApi(Refs(), workspaceResult = emptyWorkspace)
-    val homeServer      = buildApi(Refs(), workspaceResult = homeWorkspace)
 
     for
-      empty     <- send(emptyServer, Method.GET, s"$albumPath/workspace")
-      savedHome <- send(homeServer, Method.GET, s"$albumPath/workspace")
+      response <- send(buildApi(refs), Method.GET, s"$albumPath/chapters")
+      calls    <- refs.calls.get
     yield
-      assertEquals(empty.body.hcursor.get[Vector[Json]]("chapters"), Vector.empty[Json].asRight)
-      assertEquals(empty.body.hcursor.get[String]("photoRoot"), "/custom".asRight)
-      assertEquals(savedHome.body.hcursor.downField("chapters").downArray.get[String]("kind"), "home".asRight)
-      assertEquals(savedHome.body.hcursor.downField("chapters").downArray.get[String]("end"), "2024-12-31".asRight)
+      assertEquals(response, ApiResponse(Status.Ok, expected))
+      assertEquals(calls, Vector(s"chapters:${album.id.value}"))
+
+  test("should distinguish missing chapter collections from failed acquisition"):
+    val missing = buildApi(Refs(), metadataResult = AlbumRepository.ChaptersResult.AlbumNotFound)
+    val failed  = buildApi(Refs(), metadataResult = AlbumRepository.ChaptersResult.Failed(AlbumRepository.Failure.DatabaseFailure))
+
+    for
+      absent  <- send(missing, Method.GET, s"$albumPath/chapters")
+      failure <- send(failed, Method.GET, s"$albumPath/chapters")
+      invalid <- send(failed, Method.GET, "/api/albums/bad/chapters")
+    yield
+      assertEquals(absent, ApiResponse(Status.NotFound, json("""{"code":"album_not_found"}""")))
+      assertEquals(invalid, absent)
+      assertEquals(failure, ApiResponse(Status.InternalServerError, json("""{"code":"service_failure"}""")))
 
   test("should decode vacation and Home creation and type-specific updates into minimal manager inputs"):
     val refs             = Refs()
     val server           = buildApi(refs)
-    val homeAlbum        = album.copy(chapters = Vector(chapter.copy(destination = chapter.destination.copy(name = "Home"))))
-    val homeServer       = buildApi(refs, albumResult = GetAlbumResult.Found(homeAlbum))
+    val homeServer       = buildApi(refs)
     val createdId        = json(s"""{"id":"${chapter.id.value}","scheduling":"queued"}""")
     val updatedId        = json(s"""{"id":"${chapter.id.value}","scheduling":"not-requested"}""")
     val expectedVacation = s"Coast|Dates(${chapter.period})|/photos/coast|${country.id.value}"
@@ -136,8 +114,8 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
     for
       createdVacation <- send(server, Method.POST, s"$albumPath/chapters", vacation)
       createdHome     <- send(server, Method.POST, s"$albumPath/chapters", home)
-      updatedVacation <- send(server, Method.PUT, chapterPath, vacation.replace("\"kind\":\"vacation\",", ""))
-      updatedHome     <- send(homeServer, Method.PUT, chapterPath, home.replace("\"kind\":\"home\",", ""))
+      updatedVacation <- send(server, Method.PUT, chapterPath, vacation)
+      updatedHome     <- send(homeServer, Method.PUT, chapterPath, home)
       calls           <- refs.calls.get
     yield
       assertEquals(createdVacation, ApiResponse(Status.Created, createdId))
@@ -198,26 +176,24 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
 
   test("should map missing and malformed ownership targets to the exact resource errors"):
     val refs           = Refs()
-    val missingAlbum   = buildApi(refs, workspaceResult = GetResult.AlbumNotFound, albumResult = GetAlbumResult.NotFound)
-    val foreignChapter = buildApi(refs, albumResult = GetAlbumResult.Found(album.copy(chapters = Vector.empty[Chapter])))
+    val missingAlbum   = buildApi(refs, updateResult = UpdateResult.AlbumNotFound)
+    val foreignChapter = buildApi(refs, updateResult = UpdateResult.ChapterNotFound)
     val normal         = buildApi(refs)
     val albumError     = json("""{"code":"album_not_found"}""")
     val chapterError   = json("""{"code":"chapter_not_found"}""")
 
     for
-      missingWorkspace <- send(missingAlbum, Method.GET, s"$albumPath/workspace")
       missingUpdate    <- send(missingAlbum, Method.PUT, chapterPath, vacation)
       foreign          <- send(foreignChapter, Method.PUT, chapterPath, vacation)
-      malformedAlbums  <- Vector("bad", "1-1-1-1-1").traverse(id => send(normal, Method.GET, s"/api/albums/$id/workspace"))
       malformedCreate  <- send(normal, Method.POST, "/api/albums/bad/chapters", vacation)
       malformedUpdate  <- send(normal, Method.PUT, "/api/albums/bad/chapters/bad", vacation)
       malformedChapter <- send(normal, Method.PUT, s"$albumPath/chapters/bad", vacation)
       calls            <- refs.calls.get
     yield
-      val albumResponses = Vector(missingWorkspace, missingUpdate, malformedCreate, malformedUpdate) ++ malformedAlbums
-      assertEquals(albumResponses, Vector.fill(6)(ApiResponse(Status.NotFound, albumError)))
+      val albumResponses = Vector(missingUpdate, malformedCreate, malformedUpdate)
+      assertEquals(albumResponses, Vector.fill(3)(ApiResponse(Status.NotFound, albumError)))
       assertEquals(Vector(foreign, malformedChapter), Vector.fill(2)(ApiResponse(Status.NotFound, chapterError)))
-      assertEquals(calls, Vector.empty)
+      assertEquals(calls.size, 2)
 
   test("should translate every manager rejection and failure without inventing persistence behavior"):
     val conflicts = ChapterConflict.values.toVector
@@ -247,31 +223,29 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(updated, expected)
     }
 
-  test("should preserve chapter disappearance and all workspace and pre-update service failures"):
+  test("should preserve chapter disappearance and pre-update service failures"):
     val refs         = Refs()
-    val server       = buildApi(refs, workspaceResult = GetResult.Failed, albumResult = GetAlbumResult.Failed)
+    val server       = buildApi(refs, updateResult = UpdateResult.Failed)
     val disappeared  = buildApi(refs, updateResult = UpdateResult.ChapterNotFound)
     val serviceError = ApiResponse(Status.InternalServerError, json("""{"code":"service_failure"}"""))
 
     for
-      workspace <- send(server, Method.GET, s"$albumPath/workspace")
-      update    <- send(server, Method.PUT, chapterPath, vacation)
-      missing   <- send(disappeared, Method.PUT, chapterPath, vacation)
+      update  <- send(server, Method.PUT, chapterPath, vacation)
+      missing <- send(disappeared, Method.PUT, chapterPath, vacation)
     yield
-      assertEquals(workspace, serviceError)
       assertEquals(update, serviceError)
       assertEquals(missing, ApiResponse(Status.NotFound, json("""{"code":"chapter_not_found"}""")))
 
   test("should adapt chapter-addressed inventory and Refresh with explicit missing and failure outcomes"):
     val empty     = PhotoInventory.Inventory(photos = Vector.empty[Photo], placed = Set.empty[PhotoId])
     val execution = ExecutionOutcome(ImportStatus.Idle, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
-    val found     = AlbumWorkspaceManager.ChapterResult.Found(AlbumWorkspaceManager.ChapterPhotos(empty, execution))
+    val found     = ChapterPhotoInventory.Result.Found(ChapterPhotoInventory.Snapshot(empty, execution))
     val scenarios = Vector(
       (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Queued), Status.Ok, Status.Accepted),
       (found, ChapterMetadataManager.RefreshResult.Scheduled(Scheduling.Coalesced), Status.Ok, Status.Accepted),
-      (AlbumWorkspaceManager.ChapterResult.ChapterNotFound, ChapterMetadataManager.RefreshResult.ChapterNotFound, Status.NotFound, Status.NotFound),
+      (ChapterPhotoInventory.Result.ChapterNotFound, ChapterMetadataManager.RefreshResult.ChapterNotFound, Status.NotFound, Status.NotFound),
       (
-        AlbumWorkspaceManager.ChapterResult.Failed,
+        ChapterPhotoInventory.Result.Failed,
         ChapterMetadataManager.RefreshResult.Failed,
         Status.InternalServerError,
         Status.InternalServerError
@@ -286,8 +260,8 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
 
       for
         read      <- send(server, Method.GET, path)
-        scheduled <- send(server, Method.POST, s"$path/refresh")
-        malformed <- send(server, Method.POST, "/api/chapters/bad/photos/refresh")
+        scheduled <- send(server, Method.PUT, s"/api/chapters/${chapter.id.value}/photo-import")
+        malformed <- send(server, Method.PUT, "/api/chapters/bad/photo-import")
         missing   <- send(server, Method.GET, "/api/chapters/bad/photos")
       yield
         assertEquals((read.status, scheduled.status), (getStatus, postStatus))
@@ -315,10 +289,10 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
     statuses.traverse_ { case (status, expected) =>
-      val execution = ExecutionOutcome(status, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
-      val snapshot  = AlbumWorkspaceManager.ChapterPhotos(empty, execution)
-      val found     = AlbumWorkspaceManager.ChapterResult.Found(snapshot)
-      val server    = buildApi(Refs(), chapterResult = found, workspaceResult = workspace.copy(photoInventories = Map(chapter.id -> snapshot)))
+      val execution         = ExecutionOutcome(status, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
+      val snapshot          = ChapterPhotoInventory.Snapshot(empty, execution)
+      val found             = ChapterPhotoInventory.Result.Found(snapshot)
+      val server            = buildApi(Refs(), chapterResult = found)
       val expectedInventory = Json.obj(
         "photos"         -> Json.arr(),
         "placedPhotoIds" -> Json.arr(),
@@ -327,11 +301,8 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
       )
 
       for
-        response  <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
-        aggregate <- send(server, Method.GET, s"$albumPath/workspace")
-      yield
-        assertEquals(response, ApiResponse(Status.Ok, expectedInventory))
-        assertEquals(aggregate.body.hcursor.downField("photoInventories").get[Json](chapter.id.value.toString), expectedInventory.asRight)
+        response <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
+      yield assertEquals(response, ApiResponse(Status.Ok, expectedInventory))
     } >> Scheduling.values.toVector.traverse_ { scheduling =>
       val server   = buildApi(Refs(), createResult = CreateResult.Created(chapter.id, scheduling), updateResult = UpdateResult.Updated(scheduling))
       val expected = scheduling match
@@ -421,11 +392,10 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
 
       placements.traverse_ { case (placed, encodedPlaced, unplaced) =>
         val inventory = PhotoInventory.Inventory(photos = photos, placed = placed)
-        val snapshot  = AlbumWorkspaceManager.ChapterPhotos(inventory, execution)
+        val snapshot  = ChapterPhotoInventory.Snapshot(inventory, execution)
         val server    = buildApi(
           Refs(),
-          chapterResult = AlbumWorkspaceManager.ChapterResult.Found(snapshot),
-          workspaceResult = workspace.copy(photoInventories = Map(chapter.id -> snapshot))
+          chapterResult = ChapterPhotoInventory.Result.Found(snapshot)
         )
         val expectedInventory = Json.obj(
           "photos"         -> Json.arr(expectedPhoto, expectedSecond, expectedUnplaced),
@@ -435,11 +405,9 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
         )
 
         for
-          read      <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
-          aggregate <- send(server, Method.GET, s"$albumPath/workspace")
+          read <- send(server, Method.GET, s"/api/chapters/${chapter.id.value}/photos")
         yield
           assertEquals(read, ApiResponse(Status.Ok, expectedInventory))
-          assertEquals(aggregate.body.hcursor.downField("photoInventories").get[Json](chapter.id.value.toString), expectedInventory.asRight)
           assert(!read.body.noSpaces.contains("/private") && !read.body.noSpaces.contains(intent.value.toString))
       }
     }
@@ -452,26 +420,21 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
   // scalafix:off DisableSyntax.defaultArgs
   private def buildApi(
       refs: Refs,
-      workspaceResult: GetResult = workspace,
-      albumResult: GetAlbumResult = GetAlbumResult.Found(album),
       createResult: CreateResult = CreateResult.Created(chapter.id, Scheduling.Queued),
       updateResult: UpdateResult = UpdateResult.Updated(Scheduling.NotRequested),
-      chapterResult: AlbumWorkspaceManager.ChapterResult = AlbumWorkspaceManager.ChapterResult.Failed,
-      refreshResult: ChapterMetadataManager.RefreshResult = ChapterMetadataManager.RefreshResult.Failed
+      chapterResult: ChapterPhotoInventory.Result = ChapterPhotoInventory.Result.Failed,
+      refreshResult: ChapterMetadataManager.RefreshResult = ChapterMetadataManager.RefreshResult.Failed,
+      metadataResult: AlbumRepository.ChaptersResult =
+        AlbumRepository.ChaptersResult.Found(Vector(AlbumRepository.ChapterMetadata(
+          chapter.id,
+          chapter.destination,
+          chapter.period,
+          chapter.sourceFolder,
+          chapter.description
+        )))
   ) =
-    val workspaces = new AlbumWorkspaceManager[IO]:
-      override def get(id: AlbumId): IO[GetResult]                                     = workspaceResult.pure[IO]
-      override def listChapter(id: ChapterId): IO[AlbumWorkspaceManager.ChapterResult] = chapterResult.pure[IO]
-    val albums = new AlbumManager[IO]:
-      override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =
-        IO.raiseError[AlbumManager.SaveSynopsisResult](new AssertionError("Unexpected synopsis mutation"))
-      override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumManager.SaveAuthorsResult] =
-        IO.raiseError[AlbumManager.SaveAuthorsResult](new AssertionError("Unexpected author mutation"))
-      override def get(id: AlbumId): IO[GetAlbumResult]                              = albumResult.pure[IO]
-      override def list(page: Int): IO[ListAlbumsResult]                             = ListAlbumsResult.Failed.pure[IO]
-      override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] = CreateAlbumResult.Failed.pure[IO]
-      override def rename(id: AlbumId, title: AlbumTitle): IO[RenameResult]          = RenameResult.Failed.pure[IO]
-      override def delete(id: AlbumId): IO[DeleteAlbumResult]                        = DeleteAlbumResult.Failed.pure[IO]
+    val inventories = new ChapterPhotoInventory[IO]:
+      override def read(id: ChapterId): IO[ChapterPhotoInventory.Result] = chapterResult.pure[IO]
     val chapters = new ChapterMetadataManager[IO]:
       override def saveDescription(album: AlbumId, chapter: ChapterId, text: String): IO[ChapterMetadataManager.SaveDescriptionResult] =
         IO.raiseError[ChapterMetadataManager.SaveDescriptionResult](new AssertionError("Unexpected description mutation"))
@@ -488,7 +451,10 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
       ) =
         val call = s"update:${id.value}:${target.value}:$name|$period|$folder|${countries.toList.map(_.value).mkString(",")}"
         refs.calls.update(_ :+ call).as(updateResult)
-    AlbumWorkspaceApi.make(workspaces, albums, chapters).routes.orNotFound
+    val metadata = new AlbumRepository.ChapterRead[IO]:
+      override def chapters(id: AlbumId): IO[AlbumRepository.ChaptersResult] =
+        refs.calls.update(_ :+ s"chapters:${id.value}").as(metadataResult)
+    ChapterApi.make(inventories, chapters, metadata).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -500,7 +466,7 @@ final class AlbumWorkspaceApiSeamIntegrationTest extends CatsEffectSuite:
       content  <- response.as[Json]
     yield
       assertEquals(response.contentType.map(_.mediaType), MediaType.application.json.some)
-      if method === Method.GET && response.status === Status.Ok && (path.endsWith("/workspace") || path.endsWith("/photos")) then
+      if method === Method.GET && response.status === Status.Ok then
         assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
       ApiResponse(response.status, content)
   // scalafix:on DisableSyntax.defaultArgs

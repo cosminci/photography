@@ -3,7 +3,7 @@ package photography.adapters.http
 import cats.data.NonEmptyList
 import cats.effect.Async
 import cats.syntax.all.*
-import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json}
+import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
@@ -11,61 +11,73 @@ import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.*
-import photography.domain.layout.*
-import photography.usecases.album.{AlbumManager, AlbumWorkspaceManager}
 import photography.usecases.chapter.ChapterMetadataManager
-import photography.usecases.album.AlbumManager.GetAlbumResult
-import photography.usecases.album.AlbumWorkspaceManager.GetResult
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.{ChapterPhotoImport, PhotoManager, PhotoWriteRecovery}
-import photography.usecases.album.AlbumWorkspaceManager.{ChapterPhotos, ChapterResult}
+import photography.usecases.photo.ChapterPhotoInventory
+import photography.usecases.photo.ChapterPhotoInventory.{Snapshot as ChapterPhotos, Result as ChapterResult}
 import photography.usecases.photo.ChapterPhotoImport.Scheduling
+import photography.ports.album.AlbumRepository
 
 import java.time.{DateTimeException, LocalDate}
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-trait AlbumWorkspaceApi[F[_]]:
+trait ChapterApi[F[_]]:
   def routes: HttpRoutes[F]
 
-object AlbumWorkspaceApi:
+object ChapterApi:
   def make[F[_]: Async](
-      workspaces: AlbumWorkspaceManager[F],
-      albums: AlbumManager[F],
-      chapters: ChapterMetadataManager[F]
-  ): AlbumWorkspaceApi[F] =
-    new LiveAlbumWorkspaceApi(workspaces, albums, chapters)
+      inventories: ChapterPhotoInventory[F],
+      chapters: ChapterMetadataManager[F],
+      metadata: AlbumRepository.ChapterRead[F]
+  ): ChapterApi[F] =
+    new LiveChapterApi(inventories, chapters, metadata)
 
-  final private class LiveAlbumWorkspaceApi[F[_]: Async](
-      workspaces: AlbumWorkspaceManager[F],
-      albums: AlbumManager[F],
-      chapters: ChapterMetadataManager[F]
-  ) extends AlbumWorkspaceApi[F] with Http4sDsl[F]:
+  final private class LiveChapterApi[F[_]: Async](
+      inventories: ChapterPhotoInventory[F],
+      chapters: ChapterMetadataManager[F],
+      metadata: AlbumRepository.ChapterRead[F]
+  ) extends ChapterApi[F] with Http4sDsl[F]:
     override def routes: HttpRoutes[F] =
       HttpRoutes.of[F] {
-        case GET -> Root / "api" / "albums" / CanonicalId(id) / "workspace" =>
-          get(AlbumId(id))
+        case GET -> Root / "api" / "albums" / CanonicalId(id) / "chapters"            => read(AlbumId(id))
+        case GET -> Root / "api" / "albums" / _ / "chapters"                          => albumNotFound
         case request @ POST -> Root / "api" / "albums" / CanonicalId(id) / "chapters" =>
           create(AlbumId(id), request)
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "chapters" / CanonicalId(chapter) =>
           update(AlbumId(id), ChapterId(chapter), request)
         case GET -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" =>
           listChapter(ChapterId(chapter))
-        case POST -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" / "refresh" =>
+        case PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photo-import" =>
           refresh(ChapterId(chapter))
         case GET -> Root / "api" / "chapters" / _ / "photos"                  => chapterNotFound
-        case POST -> Root / "api" / "chapters" / _ / "photos" / "refresh"     => chapterNotFound
-        case GET -> Root / "api" / "albums" / _ / "workspace"                 => albumNotFound
+        case PUT -> Root / "api" / "chapters" / _ / "photo-import"            => chapterNotFound
         case POST -> Root / "api" / "albums" / _ / "chapters"                 => albumNotFound
         case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => chapterNotFound
         case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => albumNotFound
       }
 
-    private def get(id: AlbumId) =
-      workspaces.get(id).flatMap:
-        case found: GetResult.Found  => Ok(found).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-        case GetResult.AlbumNotFound => albumNotFound
-        case GetResult.Failed        => serviceFailure
+    private def read(id: AlbumId) =
+      metadata.chapters(id).flatMap:
+        case AlbumRepository.ChaptersResult.Found(values) => Ok(Json.obj("chapters" -> Json.arr(values.map(encodeChapter)*)))
+            .map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case AlbumRepository.ChaptersResult.AlbumNotFound => albumNotFound
+        case AlbumRepository.ChaptersResult.Failed(_)     => serviceFailure
+
+    private def encodeChapter(value: AlbumRepository.ChapterMetadata) =
+      val destination = value.destination
+      val period      = value.period
+      Json.obj(
+        "id"           -> Json.fromString(value.id.value.toString),
+        "kind"         -> Json.fromString(if (destination.name: String) === "Home" then "home" else "vacation"),
+        "name"         -> Json.fromString(destination.name),
+        "countries"    -> Json.arr(destination.countries.toList.map(country => Json.fromString(country.id.value.toString))*),
+        "start"        -> Json.fromString(period.firstDay.toString),
+        "end"          -> Json.fromString(period.firstDay.plusDays((period.days: Long) - 1).toString),
+        "sourceFolder" -> Json.fromString(value.sourceFolder),
+        "description"  -> Json.fromString(value.description)
+      )
 
     private def create(id: AlbumId, request: Request[F]) =
       decode(request, creationDecoder).flatMap {
@@ -80,16 +92,7 @@ object AlbumWorkspaceApi:
       }
 
     private def update(id: AlbumId, target: ChapterId, request: Request[F]) =
-      albums.get(id).flatMap:
-        case GetAlbumResult.Found(album) =>
-          album.chapters.find(_.id.value === target.value) match
-            case None          => chapterNotFound
-            case Some(chapter) => saveUpdate(id, target, request, chapter.destination.isHome)
-        case GetAlbumResult.NotFound => albumNotFound
-        case GetAlbumResult.Failed   => serviceFailure
-
-    private def saveUpdate(id: AlbumId, target: ChapterId, request: Request[F], isHome: Boolean) =
-      decode(request, detailsDecoder(isHome)).flatMap {
+      decode(request, creationDecoder).flatMap {
         case Left(message)                            => BadRequest(Map("message" -> message))
         case Right((name, countries, period, folder)) =>
           chapters.update(id, target, name, countries, period, folder).flatMap:
@@ -101,7 +104,7 @@ object AlbumWorkspaceApi:
       }
 
     private def listChapter(chapter: ChapterId) =
-      workspaces.listChapter(chapter).flatMap:
+      inventories.read(chapter).flatMap:
         case ChapterResult.Found(snapshot) => Ok(encodePhotos(snapshot)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
         case ChapterResult.ChapterNotFound => chapterNotFound
         case ChapterResult.Failed          => serviceFailure
@@ -254,61 +257,3 @@ object AlbumWorkspaceApi:
         val valid        =
           if reservedName then "Choose a vacation name other than Home".asLeft[DestinationName] else name.refineEither[Not[Empty] & Not[Blank]]
         valid.leftMap(message => DecodingFailure(message, cursor.history))
-
-    private given Encoder[Country] = Encoder.forProduct3("id", "name", "code"): country =>
-      (country.id.value.toString, country.name: String, country.code: String)
-
-    private given Encoder[Chapter] = Encoder.instance: chapter =>
-      val destination = chapter.destination
-      val end         = chapter.period.firstDay.plusDays((chapter.period.days: Long) - 1L)
-      Json.obj(
-        "id"           -> Json.fromString(chapter.id.value.toString),
-        "kind"         -> Json.fromString(if destination.isHome then "home" else "vacation"),
-        "name"         -> Json.fromString(destination.name),
-        "countries"    -> Json.arr(destination.countries.toList.map(country => Json.fromString(country.id.value.toString))*),
-        "start"        -> Json.fromString(chapter.period.firstDay.toString),
-        "end"          -> Json.fromString(end.toString),
-        "sourceFolder" -> Json.fromString(chapter.sourceFolder),
-        "description"  -> Json.fromString(chapter.description)
-      )
-
-    private def encodeSlot(id: UUID, kind: String, box: SlotBox) =
-      Json.obj(
-        "id"     -> Json.fromString(id.toString),
-        "kind"   -> Json.fromString(kind),
-        "x"      -> Json.fromDoubleOrNull(box.x),
-        "y"      -> Json.fromDoubleOrNull(box.y),
-        "width"  -> Json.fromDoubleOrNull(box.width),
-        "height" -> Json.fromDoubleOrNull(box.height)
-      )
-
-    private def encodeSpread(spread: Spread, maybeChapter: Option[ChapterId]) =
-      val (kind, photos, maybeText) = spread match
-        case value: Spread.AlbumStart   => ("album_start", value.photoSlots, value.textSlot.some)
-        case value: Spread.ChapterStart => ("chapter_start", value.photoSlots, value.textSlot.some)
-        case value: Spread.PhotosOnly   => ("photos_only", value.photoSlots.toList.toVector, None)
-      val slots = photos.map(slot => encodeSlot(slot.id.value, kind = "photo", slot.box)) ++
-        maybeText.toList.toVector.map(slot => encodeSlot(slot.id.value, kind = "text", slot.box))
-      Json.obj(
-        "id"         -> Json.fromString(spread.id.value.toString),
-        "chapter"    -> maybeChapter.fold(Json.Null)(chapter => Json.fromString(chapter.value.toString)),
-        "kind"       -> Json.fromString(kind),
-        "templateId" -> Json.fromString(spread.template.value.toString),
-        "slots"      -> Json.arr(slots*)
-      )
-
-    private given Encoder[GetResult.Found] = Encoder.instance: found =>
-      val album          = found.album
-      val opening        = encodeSpread(album.opening, maybeChapter = None)
-      val chapterSpreads = album.chapters.flatMap: chapter =>
-        (Vector(chapter.opening) ++ chapter.spreads).map(spread => encodeSpread(spread, maybeChapter = chapter.id.some))
-      Json.obj(
-        "year"             -> Json.fromInt(album.year),
-        "photoRoot"        -> Json.fromString(found.photoRoot),
-        "chapters"         -> Encoder.encodeVector[Chapter].apply(album.chapters),
-        "spreads"          -> Json.arr((opening +: chapterSpreads)*),
-        "countries"        -> Encoder.encodeList[Country].apply(found.countries.toList),
-        "photoInventories" -> Json.obj(found.photoInventories.toVector.map { case (chapter, snapshot) =>
-          chapter.value.toString -> encodePhotos(snapshot)
-        }*)
-      )

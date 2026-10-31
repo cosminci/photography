@@ -1,6 +1,6 @@
 package photography.usecases.album
 
-import photography.usecases.spread.SpreadTemplateManager
+import photography.ports.spread.SpreadTemplateRepository
 
 import cats.data.NonEmptyList
 import cats.effect.{IO, Ref}
@@ -16,7 +16,7 @@ import photography.domain.layout.*
 import photography.ports.album.AlbumRepository
 import photography.ports.album.AlbumRepository.{AlbumPageSlice, Failure}
 import photography.usecases.album.AlbumManager.*
-import photography.usecases.spread.SpreadTemplateManager.ListAlbumStartTemplatesResult
+import photography.ports.spread.SpreadTemplateRepository.ListAlbumStartTemplatesResult
 
 import java.time.Instant
 import java.util.UUID
@@ -93,29 +93,16 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       .map(assertEquals(_, CreateAlbumResult.Failed))
 
   test("should reject creation without writing when the AlbumStart template listing fails"):
-    val refs = Refs()
+    val refs            = Refs()
+    val failedTemplates = ListAlbumStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure)
+    val manager         = buildManager(refs, listResult = failedTemplates)
 
     for
-      result  <- buildManager(refs, listResult = ListAlbumStartTemplatesResult.Failed).create(year = selectedYear, title = "Asian capitals")
+      result  <- manager.create(year = selectedYear, title = "Asian capitals")
       created <- refs.maybeCreated.get
     yield
       assertEquals(result, CreateAlbumResult.Failed)
       assertEquals(created, None)
-
-  test("should return the Album by id, report not found, and report failure when lookup fails"):
-    val album = buildAlbum(index = 2)
-    val refs  = Refs()
-
-    for
-      found    <- buildManager(Refs(), getResult = AlbumRepository.GetResult.Found(album)).get(AlbumId(buildUuid(index = 2)))
-      missing  <- buildManager(refs, getResult = AlbumRepository.GetResult.NotFound).get(AlbumId(buildUuid(index = 1)))
-      lastRead <- refs.maybeLastReadId.get
-      failed   <- buildManager(Refs(), getResult = AlbumRepository.GetResult.Failed(Failure.DatabaseFailure)).get(AlbumId(buildUuid(index = 1)))
-    yield
-      assertEquals(found, GetAlbumResult.Found(album))
-      assertEquals(missing, GetAlbumResult.NotFound)
-      assertEquals(lastRead, AlbumId(buildUuid(index = 1)).some)
-      assertEquals(failed, GetAlbumResult.Failed)
 
   test("should report an occupied year as a creation conflict rather than a service failure"):
     val manager = buildManager(Refs(), createResult = AlbumRepository.CreateResult.Failed(Failure.YearAlreadyUsed))
@@ -227,14 +214,14 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
         ListAlbumStartTemplatesResult.Listed(NonEmptyList.of(buildAlbumStartTemplate(index = 20), buildAlbumStartTemplate(index = 21))),
       currentTime: Instant = createdAt
   ) =
-    val spreads = new SpreadTemplateManager[IO]:
-      override def listPhotosOnlyTemplates: IO[SpreadTemplateManager.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateManager.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
-      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateManager.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateManager.FindTemplateResult](new AssertionError("Unexpected template lookup"))
-      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]                           = listResult.pure[IO]
-      override def listChapterStartTemplates: IO[SpreadTemplateManager.ListChapterStartTemplatesResult] =
-        SpreadTemplateManager.ListChapterStartTemplatesResult.Failed.pure[IO]
+    val spreads = new SpreadTemplateRepository[IO]:
+      override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
+        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+      override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateRepository.FindTemplateResult] =
+        IO.raiseError[SpreadTemplateRepository.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+      override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]                              = listResult.pure[IO]
+      override def listChapterStartTemplates: IO[SpreadTemplateRepository.ListChapterStartTemplatesResult] =
+        SpreadTemplateRepository.ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]
     given IdGenerator[IO] with
       private val nextValue             = Ref.unsafe[IO, Int](10)
       override def generateId: IO[UUID] = nextValue.getAndUpdate(_ + 1).map(buildUuid)

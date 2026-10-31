@@ -7,6 +7,7 @@ import { AlbumRequestError } from "../../../src/features/albums/model/Album";
 const initial: SpreadSnapshot = {
   kind: "spread",
   id: "spread",
+  layout: { kind: "photos_only", templateId: "layout", slots: [{ id: "s", kind: "photo", x: 0, y: 0, width: 100, height: 100 }] },
   placements: [
     { kind: "spread", captionCorner: "top_left", id: "p", slotId: "s", photoId: "photo", transform: { x: 0, y: 0, zoom: 1, mirrored: false } },
   ],
@@ -14,6 +15,25 @@ const initial: SpreadSnapshot = {
 const context: SpreadContext = { kind: "spread", id: "spread" };
 
 describe("placement save lifecycle", () => {
+  it("should ignore a late Cover response after navigation uses an already acquired spread", async () => {
+    let resolve!: (value: PlacementSnapshot) => void;
+    const old = new Promise<PlacementSnapshot>((finish) => {
+      resolve = finish;
+    });
+    const read = vi.fn().mockReturnValue(old);
+    const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: vi.fn() }, vi.fn()));
+
+    const pending = session.load("album", { kind: "cover" });
+    session.selectSpread("album", initial);
+    resolve({ kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] });
+    await pending;
+
+    expect(session.snapshot()).toEqual(initial);
+    expect(session.error()).toBeUndefined();
+    expect(session.loading()).toBe(false);
+    expect(read).toHaveBeenCalledExactlyOnceWith("album", { kind: "cover" });
+  });
+
   it("clears stale feedback when an authoritative reload removes the selected part", async () => {
     const clearSelection = vi.fn<() => void>();
     const refresh = () => {

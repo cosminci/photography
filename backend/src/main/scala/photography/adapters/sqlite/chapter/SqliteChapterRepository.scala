@@ -19,9 +19,9 @@ import java.time.ZoneOffset
 import java.util.UUID
 
 object SqliteChapterRepository:
-  def make(using Logger[ConnectionIO]): ChapterRepository[ConnectionIO] = new LiveChapterRepository
+  def make(using Logger[ConnectionIO]): ChapterRepository[ConnectionIO] = new LiveSqliteChapterRepository
 
-  final private class LiveChapterRepository(using Logger[ConnectionIO]) extends ChapterRepository[ConnectionIO]:
+  final private class LiveSqliteChapterRepository(using Logger[ConnectionIO]) extends ChapterRepository[ConnectionIO]:
     override def readGear(album: AlbumId, chapter: ChapterId): ConnectionIO[GearReadResult] =
       chapterExists(album, chapter).flatMap:
         case false => GearReadResult.NotFound.pure[ConnectionIO]

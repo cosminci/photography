@@ -15,9 +15,9 @@ import java.util.UUID
 
 object SqliteCountryRepository:
   def make[F[_]: Async: Logger](transactor: Transactor[F]): CountryRepository[F] =
-    new Live(transactor)
+    new LiveSqliteCountryRepository(transactor)
 
-  final private class Live[F[_]: Async: Logger](transactor: Transactor[F]) extends CountryRepository[F]:
+  final private class LiveSqliteCountryRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends CountryRepository[F]:
     override def list: F[ListResult] =
       loadCountries.transact(transactor).attempt.flatMap:
         case Right(countries) => ListResult.Listed(countries).pure[F]
