@@ -17,9 +17,10 @@ final class PhotoApiSeamIntegrationTest extends CatsEffectSuite:
   private val path  = s"/api/photos/${photo.value}/caption"
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
-    test(s"should deliver caption Saved with exact text ${Json.fromString(text).noSpaces}"):
+    val result = SaveCaptionResult.Saved
+    test(s"should deliver caption $result with exact text ${Json.fromString(text).noSpaces}"):
       val refs        = Refs()
-      val server      = buildApi(refs, SaveCaptionResult.Saved.pure[IO])
+      val server      = buildApi(refs, result.pure[IO])
       val requestBody = Json.obj("text" -> Json.fromString(text)).noSpaces
 
       for

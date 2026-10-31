@@ -37,11 +37,12 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private val jsonMediaType = MediaType.application.json.some
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
-    test(s"should deliver Saved synopsis with exact text ${Json.fromString(text).noSpaces}"):
-      val refs       = Refs()
-      val savedAlbum = album.copy(synopsis = text)
-      val server     = buildAlbumApi(refs, synopsisResult = SaveSynopsisResult.Saved(savedAlbum).pure[IO])
-      val expected   = json(metadata).deepMerge(Json.obj(
+    val savedAlbum = album.copy(synopsis = text)
+    val result     = SaveSynopsisResult.Saved(savedAlbum)
+    test(s"should deliver ${result.productPrefix} synopsis with exact text ${Json.fromString(text).noSpaces}"):
+      val refs     = Refs()
+      val server   = buildAlbumApi(refs, synopsisResult = result.pure[IO])
+      val expected = json(metadata).deepMerge(Json.obj(
         "synopsis" -> Json.fromString(text),
         "authors"  -> Json.arr(
           Json.fromString("Cosmin"),
@@ -62,14 +63,15 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   }
 
   Author.all.subsets().filter(_.nonEmpty).foreach { selection =>
-    val selected       = Author.values.toVector.filter(selection.contains)
-    val encodedAuthors = Json.arr(selected.map(encodeAuthor)*)
-    test(s"should deliver Saved authors ${encodedAuthors.noSpaces} in canonical display order"):
-      val authors: AlbumAuthors = selection.refineUnsafe
-      val refs                  = Refs()
-      val server                = buildAlbumApi(refs, authorsResult = SaveAuthorsResult.Saved(album.copy(authors = authors)).pure[IO])
-      val requestBody           = Json.obj("authors" -> Json.arr(selected.reverse.map(encodeAuthor)*))
-      val expected              = json(metadata).deepMerge(Json.obj("synopsis" -> Json.fromString(album.synopsis), "authors" -> encodedAuthors))
+    val selected              = Author.values.toVector.filter(selection.contains)
+    val encodedAuthors        = Json.arr(selected.map(encodeAuthor)*)
+    val authors: AlbumAuthors = selection.refineUnsafe
+    val result                = SaveAuthorsResult.Saved(album.copy(authors = authors))
+    test(s"should deliver ${result.productPrefix} authors ${encodedAuthors.noSpaces} in canonical display order"):
+      val refs        = Refs()
+      val server      = buildAlbumApi(refs, authorsResult = result.pure[IO])
+      val requestBody = Json.obj("authors" -> Json.arr(selected.reverse.map(encodeAuthor)*))
+      val expected    = json(metadata).deepMerge(Json.obj("synopsis" -> Json.fromString(album.synopsis), "authors" -> encodedAuthors))
 
       for
         response     <- send(server, Method.PUT, path = s"$albumPath/authors", body = requestBody.noSpaces)

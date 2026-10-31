@@ -87,9 +87,10 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       s"""{"cameraId":"${second.value}","lensIds":["${lens.value}"]}]}"""
 
   Vector("Sea — 山\nAnother line", "", " \t\n ").foreach { text =>
-    test(s"should deliver description Saved with exact text ${Json.fromString(text).noSpaces}"):
+    val result = ChapterMetadataManager.SaveDescriptionResult.Saved
+    test(s"should deliver description $result with exact text ${Json.fromString(text).noSpaces}"):
       val refs        = Refs()
-      val server      = buildApi(refs, descriptionResult = ChapterMetadataManager.SaveDescriptionResult.Saved.pure[IO])
+      val server      = buildApi(refs, descriptionResult = result.pure[IO])
       val requestBody = Json.obj("text" -> Json.fromString(text)).noSpaces
 
       for
