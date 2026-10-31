@@ -321,11 +321,20 @@ describe("template photo-slot categories", () => {
 });
 
 describe("cover credits", () => {
+  it("should reject unavailable attribution and preserve display order independently of selection order", () => {
+    expect(() => getCoverCredits([])).toThrow("Cover attribution requires an author");
+    expect(getCoverCredits(["Iacob", "Cosmin", "Mara"])).toBe("by Cosmin, Mara & Iacob");
+  });
   it.each([
-    [2025, "by Cosmin & Mara"],
-    [2026, "by Cosmin, Mara & Iacob"],
-  ] as const)("should credit the family for %i", (year, expected) => {
-    expect(getCoverCredits(year)).toBe(expected);
+    [["Cosmin"], "by Cosmin"],
+    [["Mara"], "by Mara"],
+    [["Iacob"], "by Iacob"],
+    [["Cosmin", "Mara"], "by Cosmin & Mara"],
+    [["Cosmin", "Iacob"], "by Cosmin & Iacob"],
+    [["Mara", "Iacob"], "by Mara & Iacob"],
+    [["Cosmin", "Mara", "Iacob"], "by Cosmin, Mara & Iacob"],
+  ] as const)("should credit the selected authors %j", (authors, expected) => {
+    expect(getCoverCredits(authors)).toBe(expected);
   });
 });
 

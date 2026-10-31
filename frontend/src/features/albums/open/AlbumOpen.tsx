@@ -25,6 +25,10 @@ export function AlbumOpen(props: {
     | "deleteSpread"
     | "readPlacements"
     | "editPlacements"
+    | "saveSynopsis"
+    | "saveAuthors"
+    | "saveDescription"
+    | "saveCaption"
   >;
   events: AlbumPhotoEvents;
   id: string;
@@ -89,6 +93,7 @@ export function AlbumOpen(props: {
                 liveStatus={live.liveStatus()}
                 onPhotoRefresh={live.refresh}
                 onInventoryRetry={live.retryChapter}
+                onAlbumSaved={live.publishAlbum}
               />
             )}
           </Show>

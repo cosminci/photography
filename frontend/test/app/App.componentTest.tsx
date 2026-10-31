@@ -361,7 +361,7 @@ describe("album dashboard and open", () => {
       [operation]: vi
         .fn()
         .mockRejectedValueOnce(new AlbumRequestError(status, "Request failed"))
-        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry." } : []),
+        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry.", authors: ["Cosmin", "Mara", "Iacob"] } : []),
     });
 
     render(() => <App client={client} events={events} />);
@@ -431,7 +431,11 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     list: vi.fn().mockResolvedValue(firstPage),
     create: vi.fn().mockResolvedValue(firstAlbum),
     rename: vi.fn().mockResolvedValue(firstAlbum),
-    open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn." }),
+    open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn.", authors: ["Cosmin", "Mara", "Iacob"] }),
+    saveSynopsis: vi.fn(),
+    saveAuthors: vi.fn(),
+    saveDescription: vi.fn(),
+    saveCaption: vi.fn(),
     remove: vi.fn().mockResolvedValue(undefined),
     chapters: vi.fn().mockResolvedValue([]),
     composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),

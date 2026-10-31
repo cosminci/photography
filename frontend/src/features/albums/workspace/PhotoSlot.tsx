@@ -1,6 +1,7 @@
-import { Show, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
 import type { Photo } from "../model/Photo";
-import type { Placement, PlacementEdit, PhotoTransform } from "../model/Placement";
+import { captionCorners, type Placement, type PlacementEdit, type PhotoTransform } from "../model/Placement";
+import { PhotoCaption, type CaptionEditing } from "./PhotoCaption";
 import { boundTransform, cropImage, panTransform } from "./PlacementCrop";
 import { photoDragFeedback, photoDragType, readPhotoChoice, startPhotoDrag, type PhotoChoice } from "./PhotoDrag";
 import type { PlacementSession } from "./PlacementSession";
@@ -18,12 +19,22 @@ export function PhotoSlot(props: {
   onChoose: (choice: PhotoChoice | undefined) => void;
   unavailable: string | undefined;
   reader: boolean;
+  captions?: CaptionEditing | undefined;
 }) {
   const reasonId = createUniqueId();
   const reason = createMemo(() => props.unavailable ?? props.session.unavailable());
   const actionReason = createMemo(() => reason() ?? props.session.navigationReason());
   const [dragError, setDragError] = createSignal(false);
   const moving = createMemo(() => props.choice?.kind === "move" && props.choice.placementId === props.placement?.id);
+  const caption = createMemo(() => {
+    const row = props.placement;
+    const photo = props.photo;
+    return row?.kind === "spread" && photo !== undefined ? { row, photo } : undefined;
+  });
+  const alternativeCorners = createMemo(() => {
+    const row = props.placement;
+    return row?.kind === "spread" ? captionCorners.filter((corner) => corner !== row.captionCorner) : [];
+  });
   const crop = createMemo(() => {
     const photo = props.photo;
     const placement = props.placement;
@@ -187,6 +198,30 @@ export function PhotoSlot(props: {
           )}
         </Show>
       </button>
+      <Show when={caption()}>
+        {(content) => (
+          <Show
+            when={props.captions}
+            fallback={
+              <div class="photo-caption" data-corner={content().row.captionCorner}>
+                {content().photo.caption}
+              </div>
+            }
+          >
+            {(captions) => (
+              <Show when={content().photo.id} keyed>
+                <PhotoCaption
+                  photo={content().photo}
+                  corner={content().row.captionCorner}
+                  reader={props.reader}
+                  unavailable={actionReason()}
+                  editing={captions()}
+                />
+              </Show>
+            )}
+          </Show>
+        )}
+      </Show>
       <Show when={!props.reader}>
         <span id={`${reasonId}-help`} class="control-help">
           Choose a collection photo, then activate a slot. Pan with arrows; zoom with + or −.
@@ -272,6 +307,37 @@ export function PhotoSlot(props: {
                   <path d="m6 6 12 12M6 18 18 6" />
                 </svg>
               </button>
+              <Show when={row().kind === "spread"}>
+                <For each={alternativeCorners()}>
+                  {(corner) => (
+                    <button
+                      type="button"
+                      class="photo-slot-action"
+                      aria-label={`Caption ${corner.replace("_", " ")}`}
+                      title={`Caption ${corner.replace("_", " ")}`}
+                      disabled={actionReason() !== undefined}
+                      aria-describedby={actionReason() === undefined ? undefined : `${reasonId}-action`}
+                      onClick={() => {
+                        void edit({ operation: "captionCorner", placementId: row().id, captionCorner: corner });
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d={
+                            corner === "top_left"
+                              ? "M4 10V4h6M4 7h10M4 10h7"
+                              : corner === "top_right"
+                                ? "M14 4h6v6M10 7h10M13 10h7"
+                                : corner === "bottom_left"
+                                  ? "M4 14v6h6M4 14h7M4 17h10"
+                                  : "M14 20h6v-6M13 14h7M10 17h10"
+                          }
+                        />
+                      </svg>
+                    </button>
+                  )}
+                </For>
+              </Show>
             </div>
           )}
         </Show>

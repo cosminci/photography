@@ -1,4 +1,4 @@
-import { AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
+import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
 import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readText, readNumber } from "./Wire";
 import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
 import { readArray } from "./Wire";
@@ -45,9 +45,14 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
         throw new AlbumRequestError(409, "This chapter's composition changed. Reload saved workspace before choosing the action again.");
       throw new AlbumRequestError(response.status, readFailureMessage(failure));
     }
-    if (response.status !== expectedStatus) throw new Error("Unexpected album response status");
-    const value: unknown = response.status === 204 ? undefined : await response.json();
-    return decode(value);
+    try {
+      if (response.status !== expectedStatus) throw new Error("Unexpected album response status");
+      const value: unknown = response.status === 204 ? undefined : await response.json();
+      return decode(value);
+    } catch (failure) {
+      if (method !== "GET") throw new AcknowledgedWriteError("The write was acknowledged, but its saved response could not be read.");
+      throw failure;
+    }
   }
 
   function readPlacements(id: string, context: CoverContext): Promise<CoverSnapshot>;
@@ -60,12 +65,20 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   function editPlacements(id: string, context: CoverContext, edit: PlacementEdit): Promise<CoverSnapshot>;
   function editPlacements(id: string, context: SpreadContext, edit: PlacementEdit): Promise<SpreadSnapshot>;
   function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot>;
-  function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
+  async function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
     const base = `${resourcePath(id, context)}/placements`;
     if (edit.operation === "place")
       return request(base, "POST", { slotId: edit.slotId, photoId: edit.photoId }, 200, (value) => readPlacementSnapshot(value, context));
     const path = `${base}/${encodeURIComponent(edit.placementId)}`;
-    const body = edit.operation === "adjust" ? { transform: edit.transform } : edit.operation === "move" ? { slotId: edit.slotId } : undefined;
+    if (edit.operation === "captionCorner" && context.kind === "cover") throw new Error("Caption corners belong to interior placements");
+    const body =
+      edit.operation === "adjust"
+        ? { transform: edit.transform }
+        : edit.operation === "move"
+          ? { slotId: edit.slotId }
+          : edit.operation === "captionCorner"
+            ? { captionCorner: edit.captionCorner }
+            : undefined;
     return request(path, edit.operation === "remove" ? "DELETE" : "PATCH", body, 200, (value) => readPlacementSnapshot(value, context));
   }
 
@@ -112,6 +125,12 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     create: (year) => request("/api/albums", "POST", { year }, 201, readSummary),
     rename: (id, title) => request(`/api/albums/${encodeURIComponent(id)}`, "PATCH", { title }, 200, readSummary),
     open: (id, signal) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum, signal),
+    saveSynopsis: (id, text) => request(`/api/albums/${encodeURIComponent(id)}/synopsis`, "PUT", { text }, 200, readAlbum),
+    saveAuthors: (id, authors) => request(`/api/albums/${encodeURIComponent(id)}/authors`, "PUT", { authors }, 200, readAlbum),
+    saveDescription: (id, chapterId, text) =>
+      request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/description`, "PUT", { text }, 204, () => undefined),
+    saveCaption: (chapterId, photoId, text) =>
+      request(`/api/chapters/${encodeURIComponent(chapterId)}/photos/${encodeURIComponent(photoId)}/caption`, "PUT", { text }, 204, () => undefined),
     remove: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
     chapters: (id, signal) =>
       request(

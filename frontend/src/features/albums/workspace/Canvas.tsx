@@ -4,6 +4,8 @@ import type { Photo } from "../model/Photo";
 import type { PlacementSession } from "./PlacementSession";
 import { PhotoSlot } from "./PhotoSlot";
 import type { PhotoChoice } from "./PhotoDrag";
+import { albumAuthors, type Author } from "../model/Album";
+import type { CaptionEditing } from "./PhotoCaption";
 
 export interface CanvasPhotos {
   readonly session: PlacementSession;
@@ -12,6 +14,7 @@ export interface CanvasPhotos {
   readonly onChoose: (choice: PhotoChoice | undefined) => void;
   readonly unavailable: string | undefined;
   readonly reader: boolean;
+  readonly captions?: CaptionEditing;
 }
 
 const spreadWidth = 2381.102;
@@ -57,25 +60,29 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
         </svg>
         <Show when={props.editing}>
           {(editing) => (
-            <For each={props.slots.filter((slot) => slot.kind === "photo")}>
-              {(slot, index) => (
-                <div
-                  class="spread-photo-frame"
-                  style={{
-                    left: `${String(slot.x)}%`,
-                    top: `${String(slot.y)}%`,
-                    width: `${String(slot.width)}%`,
-                    height: `${String(slot.height)}%`,
-                  }}
-                >
-                  <SlotPhoto
-                    slotId={slot.id}
-                    label={`Photo slot ${String(index() + 1)}`}
-                    width={(spreadWidth * slot.width) / 100}
-                    height={(spreadHeight * slot.height) / 100}
-                    editing={editing()}
-                  />
-                </div>
+            <For each={props.slots.filter((slot) => slot.kind === "photo").map((slot) => slot.id)}>
+              {(slotId, index) => (
+                <Show when={props.slots.find((slot) => slot.id === slotId)}>
+                  {(slot) => (
+                    <div
+                      class="spread-photo-frame"
+                      style={{
+                        left: `${String(slot().x)}%`,
+                        top: `${String(slot().y)}%`,
+                        width: `${String(slot().width)}%`,
+                        height: `${String(slot().height)}%`,
+                      }}
+                    >
+                      <SlotPhoto
+                        slotId={slotId}
+                        label={`Photo slot ${String(index() + 1)}`}
+                        width={(spreadWidth * slot().width) / 100}
+                        height={(spreadHeight * slot().height) / 100}
+                        editing={editing()}
+                      />
+                    </div>
+                  )}
+                </Show>
               )}
             </For>
           )}
@@ -85,7 +92,7 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
   );
 }
 
-export function CoverCanvas(props: { title: string; year: number; editing?: CanvasPhotos }) {
+export function CoverCanvas(props: { title: string; year: number; authors: readonly Author[]; editing?: CanvasPhotos }) {
   const composition = createMemo(() => {
     const snapshot = props.editing?.session.snapshot();
     return snapshot?.kind === "cover" ? snapshot : undefined;
@@ -94,7 +101,7 @@ export function CoverCanvas(props: { title: string; year: number; editing?: Canv
     <div
       class="cover-canvas"
       role={props.editing !== undefined && !props.editing.reader ? "group" : "img"}
-      aria-label={`Cover: back on the left; front on the right. ${props.title}. ${getCoverCredits(props.year)}`}
+      aria-label={`Cover: back on the left; front on the right. ${props.title}. ${getCoverCredits(props.authors)}`}
       style={{ "aspect-ratio": coverAspectRatio }}
     >
       <div class="cover-back">
@@ -123,7 +130,7 @@ export function CoverCanvas(props: { title: string; year: number; editing?: Canv
         <div class="cover-title">
           <h3>{props.title}</h3>
           <p>
-            {getCoverCredits(props.year)} · {props.year}
+            {getCoverCredits(props.authors)} · {props.year}
           </p>
         </div>
       </div>
@@ -131,8 +138,12 @@ export function CoverCanvas(props: { title: string; year: number; editing?: Canv
   );
 }
 
-export function getCoverCredits(year: number): string {
-  return year <= 2025 ? "by Cosmin & Mara" : "by Cosmin, Mara & Iacob";
+export function getCoverCredits(authors: readonly Author[]): string {
+  const ordered = albumAuthors.filter((author) => authors.includes(author));
+  const last = ordered.at(-1);
+  if (last === undefined) throw new Error("Cover attribution requires an author");
+  if (ordered.length === 1) return `by ${last}`;
+  return `by ${ordered.slice(0, -1).join(", ")} & ${last}`;
 }
 
 function SlotPhoto(props: { slotId: string; label: string; width: number; height: number; editing: CanvasPhotos }) {
@@ -150,6 +161,7 @@ function SlotPhoto(props: { slotId: string; label: string; width: number; height
       onChoose={props.editing.onChoose}
       unavailable={props.editing.unavailable}
       reader={props.editing.reader}
+      captions={props.editing.captions}
     />
   );
 }

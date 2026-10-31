@@ -16,6 +16,8 @@ export interface SpreadPlacement extends PlacementFields {
   readonly kind: "spread";
   readonly captionCorner: "top_left" | "top_right" | "bottom_left" | "bottom_right";
 }
+export type CaptionCorner = SpreadPlacement["captionCorner"];
+export const captionCorners: readonly CaptionCorner[] = ["top_left", "top_right", "bottom_left", "bottom_right"];
 export interface CoverPlacement extends PlacementFields {
   readonly kind: "cover";
 }
@@ -47,7 +49,8 @@ export type PlacementEdit =
   | { readonly operation: "place"; readonly slotId: string; readonly photoId: string }
   | { readonly operation: "remove"; readonly placementId: string }
   | { readonly operation: "move"; readonly placementId: string; readonly slotId: string }
-  | { readonly operation: "adjust"; readonly placementId: string; readonly transform: PhotoTransform };
+  | { readonly operation: "adjust"; readonly placementId: string; readonly transform: PhotoTransform }
+  | { readonly operation: "captionCorner"; readonly placementId: string; readonly captionCorner: CaptionCorner };
 
 export interface PlacementClient {
   readonly readPlacements: {

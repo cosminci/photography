@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readAlbum, readFailureMessage, readPage, readSummary } from "../../../src/features/albums/api/Wire";
 
 describe("album wire representations", () => {
+  it.each([undefined, [], ["Mara", "Mara"], ["Unknown"], ["Cosmin", 1]].map((authors) => ({ authors })))(
+    "should reject invalid album authors $authors",
+    ({ authors }) => {
+      expect(() => readAlbum({ ...summary, synopsis: "", authors })).toThrow();
+    },
+  );
   const summary = {
     id: "00000000-0000-0000-0000-000000000001",
     year: 2026,
@@ -11,7 +17,7 @@ describe("album wire representations", () => {
   const page = { albums: [summary], page: 1, pageSize: 6, totalAlbums: 1, totalPages: 1 };
 
   it("should retain exact album metadata and pagination", () => {
-    const album = { ...summary, synopsis: "At dawn." };
+    const album = { ...summary, synopsis: "At dawn.", authors: ["Cosmin", "Mara", "Iacob"] };
 
     expect(readSummary(summary)).toEqual(summary);
     expect(readAlbum(album)).toEqual(album);

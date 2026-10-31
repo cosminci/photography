@@ -1,5 +1,5 @@
 import { createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
-import { AlbumRequestError, type Album, type AlbumClient } from "../model/Album";
+import { AcknowledgedWriteError, AlbumRequestError, type Album, type AlbumClient } from "../model/Album";
 import type { AlbumPhotoEvents, ChapterSave, PhotoEvent, Scheduling } from "../model/Photo";
 import type { Spread, SpreadMembership, Workspace } from "../model/Workspace";
 
@@ -15,6 +15,7 @@ export function createLiveWorkspace(
   const [liveStatus, setLiveStatus] = createSignal<"connecting" | "catching-up" | "live" | "interrupted" | "invalid">("connecting");
   const [inventoryErrors, setInventoryErrors] = createSignal<Readonly<Record<string, string>>>({});
   const [scheduling, setScheduling] = createSignal<Readonly<Record<string, Scheduling | "pending">>>({});
+  let metadataRevision = 0;
   let operations: {
     reload: () => Promise<void>;
     retryChapter: (id: string) => void;
@@ -43,9 +44,11 @@ export function createLiveWorkspace(
 
       function readAlbum(): Promise<Album> {
         if (metadataRead !== undefined) return metadataRead;
+        const revision = metadataRevision;
         metadataRead = client
           .open(id, controller.signal)
           .then((metadata) => {
+            if (active && revision !== metadataRevision) throw new AcquisitionConflict("Album content changed during acquisition");
             if (active && workspace() === undefined) setAlbum(metadata);
             return metadata;
           })
@@ -253,6 +256,11 @@ export function createLiveWorkspace(
     },
     refresh: (ids: readonly string[]) => operations.refresh(ids),
     saved: (result: ChapterSave) => operations.saved(result),
+    publishAlbum: (saved: Album) => {
+      if (saved.id !== albumId()) throw new AcknowledgedWriteError("Unexpected saved album identity");
+      metadataRevision++;
+      setAlbum(saved);
+    },
   };
 }
 

@@ -123,6 +123,62 @@
   background: #e8f4f4;
   color: #145d66;
 }
+.workspace-mode button:hover:not(:disabled),
+.workspace-mode button:focus-visible {
+  background: #e8f4f4;
+  color: #145d66;
+}
+.workspace-authors button {
+  flex: none;
+  min-width: 0;
+  padding-inline: 8px;
+}
+.content-actions {
+  display: flex;
+  gap: 4px;
+}
+button.content-action {
+  display: inline-grid;
+  place-items: center;
+  min-height: 26px;
+  min-width: 26px;
+  padding: 4px;
+  border: 0;
+  border-radius: 3px;
+  color: #25444c;
+  background: transparent;
+  font-weight: 400;
+}
+button.content-action:hover:not(:disabled),
+button.content-action:focus-visible {
+  background: #e8f4f4;
+}
+button.content-cancel {
+  color: #a03a42;
+}
+.content-dialog {
+  width: min(640px, calc(100% - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+.content-dialog textarea {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  resize: vertical;
+  color: inherit;
+  background: white;
+  font:
+    400 14px/1.5 Georgia,
+    serif;
+}
+.content-dialog textarea:focus-visible {
+  outline: 3px solid #70b8c1;
+  outline-offset: 2px;
+}
 .workspace-preview {
   min-width: 0;
   border: 0;
@@ -261,7 +317,7 @@
   text-align: center;
   overflow-wrap: anywhere;
   font:
-    500 64px/1.2 Georgia,
+    400 40px/1.2 Georgia,
     serif;
 }
 .spread-owner-title {
@@ -271,7 +327,7 @@
 .spread-owner-text p {
   margin: 1em 0 0;
   color: inherit;
-  font-size: 32px;
+  font-size: 14.6667px;
   white-space: pre-wrap;
 }
 .spread-owner-text p:empty {

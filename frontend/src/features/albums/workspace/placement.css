@@ -30,11 +30,74 @@
   position: absolute;
   right: 4px;
   top: 4px;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, 22px);
   gap: 2px;
   opacity: 0;
   pointer-events: none;
   z-index: 2;
+}
+.photo-caption {
+  position: absolute;
+  z-index: 1;
+  max-width: 100%;
+  min-width: 1em;
+  margin: 0;
+  padding: 3px 6px;
+  background: #0009;
+  color: white;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    400 12px/1.3 Georgia,
+    serif;
+}
+.photo-caption:empty:not([role="textbox"]) {
+  display: none;
+}
+.photo-caption[data-corner="top_left"],
+.photo-caption[data-corner="top_right"] {
+  top: 3%;
+}
+.photo-caption[data-corner="bottom_left"],
+.photo-caption[data-corner="bottom_right"] {
+  bottom: 3%;
+}
+.photo-caption[data-corner="top_left"],
+.photo-caption[data-corner="bottom_left"] {
+  left: 0;
+  text-align: left;
+}
+.photo-caption[data-corner="top_right"],
+.photo-caption[data-corner="bottom_right"] {
+  right: 0;
+  text-align: right;
+}
+.photo-caption[role="button"] {
+  cursor: text;
+}
+.photo-caption[role="textbox"]:focus-visible {
+  outline: 1px solid #70b8c1;
+}
+.photo-caption-empty {
+  opacity: 0;
+}
+.photo-slot:hover .photo-caption-empty,
+.photo-caption-empty:focus-visible {
+  opacity: 1;
+}
+.caption-feedback {
+  position: absolute;
+  z-index: 3;
+  inset: auto 0 0;
+  background: #000c;
+  color: white;
+  padding: 4px;
+  font-size: 11px;
+}
+.caption-feedback button {
+  min-height: 24px;
+  font-size: 11px;
 }
 .photo-slot:hover .photo-slot-actions,
 .photo-slot:focus-within .photo-slot-actions,
