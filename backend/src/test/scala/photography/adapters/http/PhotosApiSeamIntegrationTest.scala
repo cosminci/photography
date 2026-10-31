@@ -78,10 +78,16 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       )
       send(server, path = s"/api/chapters/${chapter.value}/photos/$id/caption", body = "{}").map(response => assertEquals(response, expected))
     }
+    val checkUnmatched = Vector("/api/chapters", s"/api/chapters/${chapter.value}", s"/api/chapters/${chapter.value}/photo-import")
+      .traverse_ { path =>
+        val request = Request[IO](Method.PUT, Uri.unsafeFromString(s = path))
+        server.run(request).map(response => assertEquals(response.status, Status.NotFound))
+      }
 
     for
       _     <- checkPayloads
       _     <- checkTargets
+      _     <- checkUnmatched
       calls <- refs.calls.get
     yield assertEquals(calls, Vector.empty[CaptionCall])
 
