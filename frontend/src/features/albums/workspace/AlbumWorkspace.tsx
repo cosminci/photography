@@ -26,6 +26,7 @@ import type { CanvasPhotos } from "./Canvas";
 import { AlbumAuthors } from "./AlbumAuthors";
 import { TextEditor } from "./TextEditor";
 import { createCaptionEditing } from "./PhotoCaption";
+import { RetainedCaption } from "./RetainedCaption";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -221,6 +222,7 @@ export function AlbumWorkspace(props: {
           : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
+  const contentEditReason = createMemo(() => refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
   let active = true;
@@ -475,32 +477,13 @@ export function AlbumWorkspace(props: {
       <For each={captions.sessions()}>
         {(retained) => (
           <Show when={retained.save.draft() !== undefined && !placement.placements().some((row) => row.photoId === retained.photoId)}>
-            <div role="alert" id={`retained-caption-${retained.photoId}`}>
-              The caption's photo is no longer placed here. Its draft is retained.
-              <pre>{retained.save.draft()?.value}</pre>
-              <Show when={retained.save.error()}>{(message) => <p>{message()}</p>}</Show>
-              <Show when={retained.save.unavailable()}>{(reason) => <p role="status">{reason()}</p>}</Show>
-              <button
-                type="button"
-                disabled={retained.save.pending()}
-                aria-describedby={retained.save.pending() ? `retained-caption-${retained.photoId}` : undefined}
-                onClick={() => {
-                  void retained.save.commit();
-                }}
-              >
-                {retained.save.recovery() === undefined ? "Save retained caption" : "Read retained caption"}
-              </button>
-              <button
-                type="button"
-                disabled={retained.save.unavailable() !== undefined}
-                aria-describedby={retained.save.unavailable() === undefined ? undefined : `retained-caption-${retained.photoId}`}
-                onClick={() => {
-                  retained.save.cancel();
-                }}
-              >
-                Cancel retained caption
-              </button>
-            </div>
+            <RetainedCaption
+              caption={retained}
+              focus={captions.focus}
+              returnFocus={() => {
+                workspaceElement.focus();
+              }}
+            />
           </Show>
         )}
       </For>
@@ -630,14 +613,21 @@ export function AlbumWorkspace(props: {
                   class="content-action"
                   aria-label={chapter() === undefined ? "Edit synopsis" : "Edit chapter description"}
                   title={chapter() === undefined ? "Edit synopsis" : "Edit chapter description"}
-                  disabled={(refreshReason() ?? navigationReason()) !== undefined}
-                  aria-describedby={(refreshReason() ?? navigationReason()) === undefined ? undefined : "photo-navigation-reason"}
+                  disabled={contentEditReason() !== undefined}
+                  aria-describedby={contentEditReason() === undefined ? undefined : "content-edit-reason"}
                   onClick={(event) => setTextEdit({ chapter: chapter(), opener: event.currentTarget })}
                 >
                   <svg class="workspace-action-icon" viewBox="0 0 24 24" aria-hidden="true">
                     <path d="m4 16 12-12 4 4-12 12-5 1ZM14 6l4 4" />
                   </svg>
                 </button>
+              </Show>
+              <Show when={contentEditReason()}>
+                {(reason) => (
+                  <p id="content-edit-reason" class="control-help">
+                    {reason()}
+                  </p>
+                )}
               </Show>
               <Show when={chapter()}>
                 {(owner) => (

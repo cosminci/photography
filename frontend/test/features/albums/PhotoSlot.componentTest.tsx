@@ -6,6 +6,7 @@ import { createPlacementSession } from "../../../src/features/albums/workspace/P
 import type { PlacementSnapshot, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
 import { photoDragType, type PhotoChoice } from "../../../src/features/albums/workspace/PhotoDrag";
 import { createCaptionEditing } from "../../../src/features/albums/workspace/PhotoCaption";
+import { RetainedCaption } from "../../../src/features/albums/workspace/RetainedCaption";
 
 describe("on-slot photo editing", () => {
   it("should bind caption writes to the current photo after replacement in the same slot", async () => {
@@ -44,45 +45,69 @@ describe("on-slot photo editing", () => {
     expect(save).toHaveBeenCalledExactlyOnceWith(replacement.id, "Changed replacement");
     expect(session.placements()[0]).toEqual({ ...initial.placements[0], photoId: replacement.id });
   });
-  it("should retain a photo-owned draft when its slot is unmounted and restored", async () => {
-    const save = vi.fn();
-    const captions = createRoot(() => createCaptionEditing({ save, read: vi.fn(), onBlock: vi.fn() }));
-    const session = createRoot(() =>
-      createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: vi.fn() }, vi.fn()),
-    );
-    await session.load("album", { kind: "spread", id: "spread" });
-    const [visible, setVisible] = createSignal(true);
-    render(() => (
-      <Show when={visible()}>
-        <PhotoSlot
-          slotId="s"
-          label="Photo slot 1"
-          width={200}
-          height={200}
-          placement={session.placements()[0]}
-          photo={photo}
-          session={session}
-          choice={undefined}
-          onChoose={vi.fn()}
-          unavailable={undefined}
-          reader={false}
-          captions={captions}
-        />
-      </Show>
-    ));
-    fireEvent.click(screen.getByRole("button", { name: "Add caption for Mountains.jpg" }));
-    const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
-    editor.textContent = "Draft";
-    Object.defineProperty(editor, "innerText", { configurable: true, value: "Draft" });
-    fireEvent.input(editor);
-    setVisible(false);
-    setVisible(true);
+  it.each(["caption", "other control"] as const)(
+    "should retain a photo-owned draft and %s focus when its slot is unmounted and restored",
+    async (focused) => {
+      let acknowledge!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      });
+      const save = vi.fn(() => pending);
+      const captions = createRoot(() => createCaptionEditing({ save, read: vi.fn().mockResolvedValue(""), onBlock: vi.fn() }));
+      const caption = { photoId: photo.id, save: captions.getPhotoSave(photo.id) };
+      const returnFocus = vi.fn();
+      const session = createRoot(() =>
+        createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: vi.fn() }, vi.fn()),
+      );
+      await session.load("album", { kind: "spread", id: "spread" });
+      const [visible, setVisible] = createSignal(true);
+      render(() => (
+        <>
+          <button type="button">Other action</button>
+          <Show when={visible()} fallback={<RetainedCaption caption={caption} focus={captions.focus} returnFocus={returnFocus} />}>
+            <PhotoSlot
+              slotId="s"
+              label="Photo slot 1"
+              width={200}
+              height={200}
+              placement={session.placements()[0]}
+              photo={photo}
+              session={session}
+              choice={undefined}
+              onChoose={vi.fn()}
+              unavailable={undefined}
+              reader={false}
+              captions={captions}
+            />
+          </Show>
+        </>
+      ));
+      fireEvent.click(screen.getByRole("button", { name: "Add caption for Mountains.jpg" }));
+      const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
+      editor.textContent = "Draft";
+      Object.defineProperty(editor, "innerText", { configurable: true, value: "Draft" });
+      fireEvent.input(editor);
+      const other = screen.getByRole("button", { name: "Other action" });
+      if (focused === "other control") other.focus();
+      setVisible(false);
+      expect(focused === "caption" ? screen.getByRole("alert") : other).toHaveFocus();
+      setVisible(true);
 
-    expect(screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }).textContent).toBe("Draft");
-    expect(save).not.toHaveBeenCalled();
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }), { key: "Escape" });
-    expect(screen.getByRole("button", { name: "Add caption for Mountains.jpg" })).toBeInTheDocument();
-  });
+      expect(screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }).textContent).toBe("Draft");
+      expect(focused === "caption" ? screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }) : other).toHaveFocus();
+      expect(returnFocus).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledTimes(focused === "caption" ? 0 : 1);
+      if (focused === "caption") {
+        screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }).focus();
+        fireEvent.keyDown(screen.getByRole("textbox", { name: "Caption for Mountains.jpg" }), { key: "Escape" });
+        expect(screen.getByRole("button", { name: "Add caption for Mountains.jpg" })).toBeInTheDocument();
+      } else {
+        acknowledge();
+        await vi.waitUntil(() => screen.queryByRole("textbox", { name: "Caption for Mountains.jpg" }) === null);
+        expect(other).toHaveFocus();
+      }
+    },
+  );
   it.each([
     { trigger: "pointer departure", text: "  山\n\n ", original: "Saved", escape: false, writes: 1 },
     { trigger: "blur", text: "", original: "Saved", escape: false, writes: 1 },

@@ -97,6 +97,41 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each(["refresh", "spread save"] as const)("should explain content editing disabled during %s", async (phase) => {
+    let finishWrite!: (id: string) => void;
+    let finishRead!: (chapters: readonly Chapter[]) => void;
+    const writing = new Promise<string>((resolve) => {
+      finishWrite = resolve;
+    });
+    const reading = new Promise<readonly Chapter[]>((resolve) => {
+      finishRead = resolve;
+    });
+    const client = buildClient({
+      addSpread: vi.fn().mockReturnValue(writing),
+      chapters:
+        phase === "refresh"
+          ? vi.fn().mockResolvedValueOnce(workspace.chapters).mockReturnValue(reading)
+          : vi.fn().mockResolvedValue(workspace.chapters),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    await screen.findByRole("button", { name: "Edit chapter description" });
+    if (phase === "refresh") {
+      fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+      fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
+      await waitFor(() => {
+        expect(client.chapters).toHaveBeenCalledTimes(2);
+      });
+    } else fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
+    const opener = screen.getByRole("button", { name: "Edit chapter description" });
+
+    expect(opener).toBeDisabled();
+    expect(opener).toHaveAccessibleDescription(phase === "refresh" ? "Refreshing saved workspace. Please wait." : "Saving spread. Please wait.");
+    view.unmount();
+    finishWrite("inserted");
+    finishRead(workspace.chapters);
+    await Promise.all([writing, reading]);
+  });
   it("should retain chapter text when an acknowledged read finds that its chapter was removed", async () => {
     window.history.replaceState(null, "", "?part=vacation");
     const remaining = [opening, ...workspace.spreads.slice(-1)];
@@ -166,6 +201,9 @@ describe("album workspace browser boundary", () => {
     });
     vi.mocked(client.chapterPhotos).mockResolvedValue(inventory);
     receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveFocus();
+    });
     fireEvent.click(await screen.findByRole("button", { name: uncertain ? "Read retained caption" : "Save retained caption" }));
     if (uncertain) {
       await screen.findByText(/Saved content could not be read/);
@@ -178,10 +216,12 @@ describe("album workspace browser boundary", () => {
       expect(client.saveCaption).not.toHaveBeenCalled();
       expect(screen.getByText("Draft")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Cover" })).toBeDisabled();
+      screen.getByRole("button", { name: "Cancel retained caption" }).focus();
       fireEvent.click(screen.getByRole("button", { name: "Cancel retained caption" }));
     }
     await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel retained caption" })).not.toBeInTheDocument());
     expect(client.saveCaption).toHaveBeenCalledTimes(uncertain ? 1 : 0);
+    if (!uncertain) expect(screen.getByRole("region", { name: "Album workspace" })).toHaveFocus();
   });
   it.each([
     { failure: new AlbumRequestError(400, "Rejected authors"), uncertain: false },

@@ -96,3 +96,5 @@ export function createContentSave<T>(operations: {
   });
   return { draft, isUnchanged, pending, recovery, error, unavailable, begin, change, cancel, commit, reconcile };
 }
+
+export type ContentSave<T> = ReturnType<typeof createContentSave<T>>;

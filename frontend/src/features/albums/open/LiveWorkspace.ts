@@ -79,6 +79,7 @@ export function createLiveWorkspace(
             epoch++;
             for (const chapter of chapters.values()) chapter.dirty = false;
             try {
+              const revision = metadataRevision;
               const [metadata, orderedChapters, composition, countries, photoRoot] = await Promise.all([
                 readAlbum(),
                 client.chapters(id, controller.signal),
@@ -96,6 +97,7 @@ export function createLiveWorkspace(
                   ),
                 ),
               ]);
+              if (revision !== metadataRevision) throw new AcquisitionConflict("Album content changed during workspace acquisition");
               const snapshot: Workspace = {
                 year: metadata.year,
                 chapters: orderedChapters,

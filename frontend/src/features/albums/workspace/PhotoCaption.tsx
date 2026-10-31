@@ -1,15 +1,30 @@
-import { Show, createEffect, createMemo, createRoot, createSignal, createUniqueId, on, onCleanup, onMount, untrack } from "solid-js";
-import { createContentSave } from "./ContentSave";
+import { Show, createEffect, createMemo, createRoot, createSignal, createUniqueId, onCleanup, onMount, untrack } from "solid-js";
+import { createContentSave, type ContentSave } from "./ContentSave";
 import type { Photo } from "../model/Photo";
 import type { CaptionCorner } from "../model/Placement";
+
+export interface CaptionState {
+  readonly photoId: string;
+  readonly save: ContentSave<string>;
+}
 
 export function createCaptionEditing(operations: {
   save: (photoId: string, text: string) => Promise<void>;
   read: (photoId: string) => Promise<string>;
   onBlock: (photoId: string, reason: string | undefined) => void;
 }) {
-  const [sessions, setSessions] = createSignal<readonly { photoId: string; save: ReturnType<typeof createContentSave<string>> }[]>([]);
-  const retained = new Map<string, { save: ReturnType<typeof createContentSave<string>>; dispose: () => void }>();
+  const [sessions, setSessions] = createSignal<readonly CaptionState[]>([]);
+  const [requestedFocus, setRequestedFocus] = createSignal<string>();
+  const focus = {
+    requested: requestedFocus,
+    request: (photoId: string) => {
+      setRequestedFocus(photoId);
+    },
+    clear: () => {
+      setRequestedFocus(undefined);
+    },
+  };
+  const retained = new Map<string, { save: ContentSave<string>; dispose: () => void }>();
   onCleanup(() => {
     for (const state of retained.values()) state.dispose();
   });
@@ -35,7 +50,7 @@ export function createCaptionEditing(operations: {
     setSessions((current) => [...current, { photoId, save: state.save }]);
     return state.save;
   }
-  return { getPhotoSave, sessions };
+  return { getPhotoSave, sessions, focus };
 }
 export type CaptionEditing = ReturnType<typeof createCaptionEditing>;
 
@@ -48,8 +63,9 @@ export function PhotoCaption(props: {
 }) {
   const feedback = createUniqueId();
   const photoId = untrack(() => props.photo.id);
+  const captionEditing = untrack(() => props.editing);
   let label!: HTMLDivElement;
-  const save = untrack(() => props.editing.getPhotoSave(photoId));
+  const save = captionEditing.getPhotoSave(photoId);
   const text = createMemo(() => props.photo.caption ?? "");
   const editing = createMemo(() => save.draft() !== undefined);
   const reason = createMemo(() => save.unavailable() ?? (editing() ? undefined : props.unavailable));
@@ -61,15 +77,15 @@ export function PhotoCaption(props: {
     const retained = save.draft();
     if (retained !== undefined) label.textContent = retained.value;
   });
-  createEffect(
-    on(
-      editing,
-      (active, previous) => {
-        if (previous === true && !active) label.focus();
-      },
-      { defer: true },
-    ),
-  );
+  createEffect(() => {
+    if (captionEditing.focus.requested() === photoId) {
+      label.focus();
+      captionEditing.focus.clear();
+    }
+  });
+  onCleanup(() => {
+    if (editing() && document.activeElement === label) captionEditing.focus.request(photoId);
+  });
 
   function begin() {
     if (!editable() || editing() || reason() !== undefined) return;
@@ -135,6 +151,7 @@ export function PhotoCaption(props: {
               disabled={save.pending()}
               aria-describedby={feedback}
               onClick={() => {
+                label.focus();
                 void save.commit();
               }}
             >

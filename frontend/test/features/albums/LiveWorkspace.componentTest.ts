@@ -44,36 +44,62 @@ const workspace: Workspace = {
 type ResourceClient = Parameters<typeof createLiveWorkspace>[1];
 
 describe("live workspace application coordination", () => {
-  it("should reject a stale album acquisition after publishing complete acknowledged metadata", async () => {
-    const stale = pendingRead<typeof album>();
-    const saved = { ...album, synopsis: "Acknowledged synopsis", authors: ["Mara"] as const };
-    const client = buildClient({ open: vi.fn().mockResolvedValueOnce(album).mockReturnValueOnce(stale.promise).mockResolvedValue(saved) });
-    const receive = vi.fn<(event: PhotoEvent) => void>();
-    const { live, dispose } = createRoot((release) => ({
-      live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
-      dispose: release,
-    }));
-    receive({ kind: "subscribed" });
-    await waitFor(() => {
-      expect(live.workspace()).toEqual(workspace);
-    });
-    const refreshing = live.reload();
-    await waitFor(() => {
-      expect(client.open).toHaveBeenCalledTimes(2);
-    });
+  it.each(["metadata", "spread", "inventory"] as const)(
+    "should reject stale %s acquisition after publishing complete acknowledged metadata",
+    async (stage) => {
+      const stale = pendingRead<typeof album>();
+      const spread = pendingRead<Workspace["spreads"][number]>();
+      const photos = pendingRead<PhotoInventory>();
+      const saved = { ...album, synopsis: "Acknowledged synopsis", authors: ["Mara"] as const };
+      const opening = workspace.spreads.find((member) => member.kind === "album_start");
+      if (opening === undefined) throw new Error("Expected an arranged album opening");
+      const client = buildClient({
+        open:
+          stage === "metadata"
+            ? vi.fn().mockResolvedValueOnce(album).mockReturnValueOnce(stale.promise).mockResolvedValue(saved)
+            : vi.fn().mockResolvedValueOnce(album).mockResolvedValueOnce(album).mockResolvedValue(saved),
+      });
+      const receive = vi.fn<(event: PhotoEvent) => void>();
+      const { live, dispose } = createRoot((release) => ({
+        live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
+        dispose: release,
+      }));
+      receive({ kind: "subscribed" });
+      await waitFor(() => {
+        expect(live.workspace()).toEqual(workspace);
+      });
+      if (stage === "spread") client.spread.mockReturnValueOnce(spread.promise);
+      if (stage === "inventory") client.chapterPhotos.mockReturnValueOnce(photos.promise);
+      const spreadReads = client.spread.mock.calls.length;
+      const inventoryReads = client.chapterPhotos.mock.calls.length;
+      const refreshing = live.reload();
+      await waitFor(() => {
+        expect(client.open).toHaveBeenCalledTimes(2);
+      });
+      if (stage === "spread")
+        await waitFor(() => {
+          expect(client.spread.mock.calls.length).toBeGreaterThan(spreadReads);
+        });
+      if (stage === "inventory")
+        await waitFor(() => {
+          expect(client.chapterPhotos.mock.calls.length).toBeGreaterThan(inventoryReads);
+        });
 
-    live.publishAlbum(saved);
-    expect(() => {
-      live.publishAlbum({ ...saved, id: "wrong" });
-    }).toThrow("Unexpected saved album identity");
-    stale.resolve(album);
-    await refreshing;
+      live.publishAlbum(saved);
+      expect(() => {
+        live.publishAlbum({ ...saved, id: "wrong" });
+      }).toThrow("Unexpected saved album identity");
+      stale.resolve(album);
+      spread.resolve(opening);
+      photos.resolve(inventory);
+      await refreshing;
 
-    expect(live.album()).toEqual(saved);
-    expect(live.error()).toBeUndefined();
-    expect(client.open).toHaveBeenCalledTimes(3);
-    dispose();
-  });
+      expect(live.album()).toEqual(saved);
+      expect(live.error()).toBeUndefined();
+      expect(client.open).toHaveBeenCalledTimes(3);
+      dispose();
+    },
+  );
   it("should abort acquisition after disposal without publishing late spread and inventory results", async () => {
     const photos = pendingRead<PhotoInventory>();
     const receive = vi.fn<(event: PhotoEvent) => void>();
