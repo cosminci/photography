@@ -15,6 +15,8 @@ import photography.domain.album.*
 import photography.domain.layout.*
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.domain.gear.CameraSelection
+import photography.domain.gear.GearSelection
+import photography.usecases.chapter.ChapterManager
 import photography.usecases.photo.ChapterPhotoInventory
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Scheduling, Status as ImportStatus}
@@ -454,7 +456,12 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     val metadata = new AlbumRepository.ChapterRead[IO]:
       override def chapters(id: AlbumId): IO[AlbumRepository.ChaptersResult] =
         refs.calls.update(_ :+ s"chapters:${id.value}").as(metadataResult)
-    ChapterApi.make(inventories, chapters, metadata).routes.orNotFound
+    val gear = new ChapterManager[IO]:
+      override def readGear(album: AlbumId, chapter: ChapterId): IO[ChapterManager.GearReadResult] =
+        IO.raiseError[ChapterManager.GearReadResult](new AssertionError("Unexpected gear read"))
+      override def replaceGear(album: AlbumId, chapter: ChapterId, selection: GearSelection): IO[ChapterManager.GearReplaceResult] =
+        IO.raiseError[ChapterManager.GearReplaceResult](new AssertionError("Unexpected gear replacement"))
+    ChapterApi.make(inventories, chapters, metadata, gear).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs

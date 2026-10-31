@@ -5,121 +5,384 @@
     "version": "1.0.0",
     "description": "Same-origin REST API. JSON responses use application/json. Unmatched /api requests return 404 with {\"code\":\"not_found\"}."
   },
-  "servers": [{ "url": "/" }],
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
   "paths": {
     "/api/countries": {
       "get": {
-        "operationId": "listCountries", "summary": "Read the selectable country catalog",
+        "operationId": "listCountries",
+        "summary": "Read the selectable country catalog",
         "responses": {
-          "200": { "description": "Authoritative country catalog", "content": { "application/json": { "schema": {
-            "type": "object", "required": ["countries"], "properties": { "countries": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/Country" } } }
-          } } } },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Authoritative country catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "countries"
+                  ],
+                  "properties": {
+                    "countries": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "$ref": "#/components/schemas/Country"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/photo-source": {
       "get": {
-        "operationId": "readPhotoSource", "summary": "Read the configured folder-suggestion root",
-        "responses": { "200": { "description": "Only the browser-needed photo root", "content": { "application/json": { "schema": {
-          "type": "object", "required": ["photoRoot"], "properties": { "photoRoot": { "type": "string", "minLength": 1 } }
-        } } } } }
+        "operationId": "readPhotoSource",
+        "summary": "Read the configured folder-suggestion root",
+        "responses": {
+          "200": {
+            "description": "Only the browser-needed photo root",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "photoRoot"
+                  ],
+                  "properties": {
+                    "photoRoot": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/albums/{id}/spreads/{spreadId}/placements/{placementId}": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/SpreadId" },
-        { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "$ref": "#/components/parameters/SpreadId"
+        },
+        {
+          "name": "placementId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
       ],
       "patch": {
-        "operationId": "updateSpreadPlacement", "summary": "Change a placement's slot or transform",
+        "operationId": "updateSpreadPlacement",
+        "summary": "Change a placement's slot or transform",
         "description": "Supply either slotId or transform. An occupied destination swaps placements while preserving transforms and caption corners. The current placement identity must exist. Read after uncertain writes before retrying.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlacementChanges"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Saved spread", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Saved spread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpreadPlacements"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "delete": {
-        "operationId": "deleteSpreadPlacement", "summary": "Remove one interior placement",
+        "operationId": "deleteSpreadPlacement",
+        "summary": "Remove one interior placement",
         "responses": {
-          "200": { "description": "Saved spread; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Saved spread; removed photo is available again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpreadPlacements"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/cover/placements/{placementId}": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "name": "placementId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
       ],
       "patch": {
-        "operationId": "updateCoverPlacement", "summary": "Change a cover placement's side or transform",
+        "operationId": "updateCoverPlacement",
+        "summary": "Change a cover placement's side or transform",
         "description": "Supply either slotId or transform. Movement and swaps retain transforms and spine ownership. Read after uncertain writes before retrying.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlacementChanges"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Saved cover", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Saved cover",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverPlacements"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "delete": {
-        "operationId": "deleteCoverPlacement", "summary": "Remove one cover placement",
+        "operationId": "deleteCoverPlacement",
+        "summary": "Remove one cover placement",
         "responses": {
-          "200": { "description": "Saved cover; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Saved cover; removed photo is available again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverPlacements"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/spreads/{spreadId}/placements": {
       "parameters": [
-        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Lowercase canonical album UUID." },
-        { "name": "spreadId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Current spread UUID owned by the album." }
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Lowercase canonical album UUID."
+        },
+        {
+          "name": "spreadId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Current spread UUID owned by the album."
+        }
       ],
       "post": {
         "operationId": "createSpreadPlacement",
         "summary": "Place or replace an interior photo",
         "description": "Synopsis accepts album photos; chapter openings and photo spreads accept their chapter photos. Validate current ownership and globally unique photo use in the same coordination interval as the atomic write. Place initializes centered, unmirrored zoom 1; replacement releases the old photo. Move within this spread swaps occupied destinations and carries transforms and caption corners. Geometry remains with slots. Requests use current saved state, not an editing lease. An uncertain outcome must be read before repeating a mutation.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlacementCreation"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Acknowledged saved composition; a later refresh failure must be retried as reads only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Acknowledged saved composition; a later refresh failure must be retried as reads only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpreadPlacements"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/cover": {
       "parameters": [
-        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Lowercase canonical album UUID." }
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Lowercase canonical album UUID."
+        }
       ],
       "get": {
         "operationId": "readCoverPlacements",
         "summary": "Read both saved cover sides and spine ownership",
         "responses": {
-          "200": { "description": "Back on the left, front on the right", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Back on the left, front on the right",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverPlacements"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/cover/placements": {
-      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        }
+      ],
       "post": {
         "operationId": "createCoverPlacement",
         "summary": "Place or replace a photo on either cover side",
         "description": "Uses album-wide photos and the same atomic placement, transform and recovery guarantees as interior edits. Movement and swaps are confined to the two cover sides and preserve transforms. Title, credits and spine ownership remain unchanged. Cover placements have no caption corner.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlacementCreation"
+              }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Saved cover composition", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Saved cover composition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverPlacements"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/PlacementRejected"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -147,12 +410,18 @@
             "description": "Selected six-album page",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/AlbumPage" }
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumPage"
+                }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "post": {
@@ -165,18 +434,28 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["year"],
+                "required": [
+                  "year"
+                ],
                 "properties": {
-                  "year": { "$ref": "#/components/schemas/AlbumYear" }
+                  "year": {
+                    "$ref": "#/components/schemas/AlbumYear"
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "201": { "$ref": "#/components/responses/AlbumSummary" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "201": {
+            "$ref": "#/components/responses/AlbumSummary"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -187,7 +466,10 @@
           "in": "path",
           "required": true,
           "description": "Canonical hyphenated UUID, case-insensitive on album metadata operations. Malformed and unknown IDs share the album_not_found response; returned IDs are lowercase.",
-          "schema": { "type": "string", "format": "uuid" }
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       ],
       "get": {
@@ -198,38 +480,64 @@
             "description": "Album title, synopsis and immutable metadata",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/AlbumMetadata" }
+                "schema": {
+                  "$ref": "#/components/schemas/AlbumMetadata"
+                }
               }
             }
           },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "patch": {
         "operationId": "renameAlbum",
         "summary": "Rename an album",
         "description": "Accepts any nonblank title, trimming surrounding whitespace. Changes only the title; year, identity, creation time, synopsis and composition remain unchanged.",
-        "requestBody": { "$ref": "#/components/requestBodies/Title" },
+        "requestBody": {
+          "$ref": "#/components/requestBodies/Title"
+        },
         "responses": {
-          "200": { "$ref": "#/components/responses/AlbumSummary" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "$ref": "#/components/responses/AlbumSummary"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "delete": {
         "operationId": "deleteAlbum",
         "summary": "Delete an album and its owned composition",
         "responses": {
-          "204": { "description": "Deleted; no response body" },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "204": {
+            "description": "Deleted; no response body"
+          },
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/composition": {
-      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        }
+      ],
       "get": {
         "operationId": "getAlbumComposition",
         "summary": "Read ordered composition membership",
@@ -238,29 +546,73 @@
           "200": {
             "description": "Ordered resource membership",
             "headers": {
-              "Cache-Control": { "schema": { "const": "no-store" } }
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Composition" }
+                "schema": {
+                  "$ref": "#/components/schemas/Composition"
+                }
               }
             }
           },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/chapters": {
-      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        }
+      ],
       "get": {
         "operationId": "getAlbumChapters",
         "summary": "Read authoritative ordered chapter metadata",
         "responses": {
-          "200": { "description": "Ordered chapters, including empty chapters", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
-            "content": { "application/json": { "schema": { "type": "object", "required": ["chapters"], "properties": { "chapters": { "type": "array", "items": { "$ref": "#/components/schemas/Chapter" } } } } } } },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Ordered chapters, including empty chapters",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "chapters"
+                  ],
+                  "properties": {
+                    "chapters": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Chapter"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "post": {
@@ -275,21 +627,37 @@
                 "oneOf": [
                   {
                     "allOf": [
-                      { "$ref": "#/components/schemas/VacationDetails" },
+                      {
+                        "$ref": "#/components/schemas/VacationDetails"
+                      },
                       {
                         "type": "object",
-                        "required": ["kind"],
-                        "properties": { "kind": { "const": "vacation" } }
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "vacation"
+                          }
+                        }
                       }
                     ]
                   },
                   {
                     "allOf": [
-                      { "$ref": "#/components/schemas/HomeDetails" },
+                      {
+                        "$ref": "#/components/schemas/HomeDetails"
+                      },
                       {
                         "type": "object",
-                        "required": ["kind"],
-                        "properties": { "kind": { "const": "home" } }
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "home"
+                          }
+                        }
                       }
                     ]
                   }
@@ -299,22 +667,35 @@
           }
         },
         "responses": {
-          "201": { "$ref": "#/components/responses/ChapterIdentity" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "201": {
+            "$ref": "#/components/responses/ChapterIdentity"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/chapters/{chapterId}": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
         {
           "name": "chapterId",
           "in": "path",
           "required": true,
           "description": "Lowercase canonical UUID. Malformed, missing or foreign chapter targets return chapter_not_found.",
-          "schema": { "type": "string", "format": "uuid" }
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       ],
       "put": {
@@ -327,8 +708,42 @@
             "application/json": {
               "schema": {
                 "oneOf": [
-                  { "allOf": [{ "$ref": "#/components/schemas/VacationDetails" }, { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "vacation" } } }] },
-                  { "allOf": [{ "$ref": "#/components/schemas/HomeDetails" }, { "type": "object", "required": ["kind"], "properties": { "kind": { "const": "home" } } }] }
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/VacationDetails"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "vacation"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/HomeDetails"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "home"
+                          }
+                        }
+                      }
+                    ]
+                  }
                 ],
                 "description": "Submit the complete resource metadata in its current kind; the chapter program validates ownership and preserves type under shared coordination."
               }
@@ -336,31 +751,48 @@
           }
         },
         "responses": {
-          "200": { "$ref": "#/components/responses/ChapterIdentity" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "200": {
+            "$ref": "#/components/responses/ChapterIdentity"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
           "404": {
             "description": "Malformed or missing album, or malformed, missing or foreign chapter",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["code"],
+                  "required": [
+                    "code"
+                  ],
                   "properties": {
-                    "code": { "enum": ["album_not_found", "chapter_not_found"] }
+                    "code": {
+                      "enum": [
+                        "album_not_found",
+                        "chapter_not_found"
+                      ]
+                    }
                   },
                   "additionalProperties": false
                 }
               }
             }
           },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/chapters/{chapterId}/spreads": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "$ref": "#/components/parameters/PhotoChapterId" }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "$ref": "#/components/parameters/PhotoChapterId"
+        }
       ],
       "post": {
         "operationId": "addSpread",
@@ -372,7 +804,9 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["afterSpreadId"],
+                "required": [
+                  "afterSpreadId"
+                ],
                 "properties": {
                   "afterSpreadId": {
                     "type": "string",
@@ -385,17 +819,29 @@
           }
         },
         "responses": {
-          "201": { "$ref": "#/components/responses/SpreadIdentity" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/AddSpreadTargetNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "201": {
+            "$ref": "#/components/responses/SpreadIdentity"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/AddSpreadTargetNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/chapters/{chapterId}/composition": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "$ref": "#/components/parameters/PhotoChapterId" }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "$ref": "#/components/parameters/PhotoChapterId"
+        }
       ],
       "put": {
         "operationId": "replaceChapterComposition",
@@ -407,29 +853,96 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["expectedSpreadIds", "spreadIds"],
+                "required": [
+                  "expectedSpreadIds",
+                  "spreadIds"
+                ],
                 "properties": {
-                  "expectedSpreadIds": { "type": "array", "minItems": 1, "items": { "type": "string", "format": "uuid" } },
-                  "spreadIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "format": "uuid" } }
+                  "expectedSpreadIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "spreadIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "204": { "description": "Saved order" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/ChapterNotFound" },
-          "409": { "description": "Composition changed since the supplied expected order", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "const": "composition_changed" } } } } } },
-          "500": { "description": "Pre-write acquisition failed, or write acknowledgement is uncertain; uncertain writes require rereading before retrying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["service_failure", "write_uncertain"] } } } } } }
+          "204": {
+            "description": "Saved order"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/ChapterNotFound"
+          },
+          "409": {
+            "description": "Composition changed since the supplied expected order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "const": "composition_changed"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Pre-write acquisition failed, or write acknowledgement is uncertain; uncertain writes require rereading before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "service_failure",
+                        "write_uncertain"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
     "/api/albums/{id}/spreads/{spreadId}/template": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "$ref": "#/components/parameters/SpreadId" },
-        { "$ref": "#/components/parameters/ConfirmPlacements" }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "$ref": "#/components/parameters/SpreadId"
+        },
+        {
+          "$ref": "#/components/parameters/ConfirmPlacements"
+        }
       ],
       "put": {
         "operationId": "changeSpreadTemplate",
@@ -441,7 +954,9 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["templateId"],
+                "required": [
+                  "templateId"
+                ],
                 "properties": {
                   "templateId": {
                     "type": "string",
@@ -460,36 +975,79 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["id", "templateId"],
+                  "required": [
+                    "id",
+                    "templateId"
+                  ],
                   "properties": {
-                    "id": { "type": "string", "format": "uuid" },
-                    "templateId": { "type": "string", "format": "uuid" }
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "templateId": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
                   },
                   "additionalProperties": false
                 }
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/SpreadTargetNotFound" },
-          "409": { "$ref": "#/components/responses/SpreadOccupied" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/SpreadTargetNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SpreadOccupied"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/spreads/{spreadId}": {
       "parameters": [
-        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
-        { "$ref": "#/components/parameters/SpreadId" },
-        { "$ref": "#/components/parameters/ConfirmPlacements" }
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        },
+        {
+          "$ref": "#/components/parameters/SpreadId"
+        },
+        {
+          "$ref": "#/components/parameters/ConfirmPlacements"
+        }
       ],
       "get": {
         "operationId": "readSpread",
         "summary": "Read one spread's saved geometry and placements",
         "responses": {
-          "200": { "description": "Current spread resource", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "description": "Current spread resource",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpreadPlacements"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/PlacementNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "delete": {
@@ -497,16 +1055,30 @@
         "summary": "Delete a photo spread and its placements",
         "description": "Openings return 400. Occupied spreads return 409 without mutation until explicitly confirmed. Removes placements, retains photos in their chapter as unplaced and renumbers remaining photo spreads. Confirmation and mutation share the chapter-mutation lock and persistence transaction.",
         "responses": {
-          "204": { "description": "Deleted; no response body" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
-          "404": { "$ref": "#/components/responses/SpreadTargetNotFound" },
-          "409": { "$ref": "#/components/responses/SpreadOccupied" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "204": {
+            "description": "Deleted; no response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/SpreadTargetNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/SpreadOccupied"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/chapters/{chapterId}/photos": {
-      "parameters": [{ "$ref": "#/components/parameters/PhotoChapterId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/PhotoChapterId"
+        }
+      ],
       "get": {
         "operationId": "getChapterPhotos",
         "summary": "Read complete photos, authoritative counts and runtime processing feedback",
@@ -515,21 +1087,35 @@
           "200": {
             "description": "Current chapter inventory",
             "headers": {
-              "Cache-Control": { "schema": { "const": "no-store" } }
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
             },
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/PhotoInventory" }
+                "schema": {
+                  "$ref": "#/components/schemas/PhotoInventory"
+                }
               }
             }
           },
-          "404": { "$ref": "#/components/responses/ChapterNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": {
+            "$ref": "#/components/responses/ChapterNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/chapters/{chapterId}/photo-import": {
-      "parameters": [{ "$ref": "#/components/parameters/PhotoChapterId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/PhotoChapterId"
+        }
+      ],
       "put": {
         "operationId": "requestChapterPhotoImport",
         "summary": "Schedule chapter photo reconciliation",
@@ -541,22 +1127,37 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["scheduling"],
+                  "required": [
+                    "scheduling"
+                  ],
                   "properties": {
-                    "scheduling": { "enum": ["queued", "coalesced"] }
+                    "scheduling": {
+                      "enum": [
+                        "queued",
+                        "coalesced"
+                      ]
+                    }
                   },
                   "additionalProperties": false
                 }
               }
             }
           },
-          "404": { "$ref": "#/components/responses/ChapterNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": {
+            "$ref": "#/components/responses/ChapterNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
     "/api/albums/{id}/photo-events": {
-      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceAlbumId"
+        }
+      ],
       "get": {
         "operationId": "subscribeAlbumPhotoEvents",
         "summary": "Subscribe to chapter inventory and processing invalidations",
@@ -565,18 +1166,32 @@
           "200": {
             "description": "Named Server-Sent Events with JSON data",
             "headers": {
-              "Cache-Control": { "schema": { "const": "no-store" } },
-              "X-Accel-Buffering": { "schema": { "const": "no" } }
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "X-Accel-Buffering": {
+                "schema": {
+                  "const": "no"
+                }
+              }
             },
             "content": {
               "text/event-stream": {
-                "schema": { "type": "string" },
+                "schema": {
+                  "type": "string"
+                },
                 "example": "event: subscribed\ndata: {}\n\nevent: inventory-changed\ndata: {\"chapterId\":\"6518a51c-bc7a-4015-b899-245c73a2103e\"}\n\n: heartbeat\n\n"
               }
             }
           },
-          "404": { "$ref": "#/components/responses/AlbumNotFound" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "404": {
+            "$ref": "#/components/responses/AlbumNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -587,18 +1202,26 @@
           "in": "path",
           "required": true,
           "description": "Lowercase canonical UUID naming an exclusive managed publication, not a photo lookup.",
-          "schema": { "type": "string", "format": "uuid" }
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
         },
         {
           "name": "version",
           "in": "path",
           "required": true,
-          "schema": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          "schema": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
         },
         {
           "name": "If-None-Match",
           "in": "header",
-          "schema": { "type": "string" }
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "get": {
@@ -610,24 +1233,35 @@
             "description": "One JPEG within its selected preset; globally at most 2048px longest edge and 300,000 bytes",
             "headers": {
               "Cache-Control": {
-                "schema": { "const": "private, max-age=31536000, immutable" }
+                "schema": {
+                  "const": "private, max-age=31536000, immutable"
+                }
               },
               "ETag": {
-                "schema": { "type": "string" },
+                "schema": {
+                  "type": "string"
+                },
                 "description": "Quoted content-version hash"
               }
             },
             "content": {
               "image/jpeg": {
-                "schema": { "type": "string", "format": "binary" }
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             }
           },
-          "304": { "$ref": "#/components/responses/ThumbnailNotModified" },
+          "304": {
+            "$ref": "#/components/responses/ThumbnailNotModified"
+          },
           "404": {
             "description": "Managed thumbnail not found; no regeneration"
           },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       },
       "head": {
@@ -637,18 +1271,32 @@
           "200": {
             "description": "JPEG headers; no response body",
             "headers": {
-              "Content-Type": { "schema": { "const": "image/jpeg" } },
-              "Cache-Control": {
-                "schema": { "const": "private, max-age=31536000, immutable" }
+              "Content-Type": {
+                "schema": {
+                  "const": "image/jpeg"
+                }
               },
-              "ETag": { "schema": { "type": "string" } }
+              "Cache-Control": {
+                "schema": {
+                  "const": "private, max-age=31536000, immutable"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
             }
           },
-          "304": { "$ref": "#/components/responses/ThumbnailNotModified" },
+          "304": {
+            "$ref": "#/components/responses/ThumbnailNotModified"
+          },
           "404": {
             "description": "Malformed URL or managed thumbnail not found"
           },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -658,8 +1306,12 @@
         "summary": "List the complete photo-spread template catalog",
         "description": "Ascending template-ID order; photo slots in template order. Geometry is percentages of the full spread axes. The reference seeds own names, identities and geometry.",
         "responses": {
-          "200": { "$ref": "#/components/responses/SpreadTemplates" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "$ref": "#/components/responses/SpreadTemplates"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -669,8 +1321,12 @@
         "summary": "List the complete chapter-opening template catalog",
         "description": "Ascending template-ID order; photo slots followed by one owner-text slot. Geometry is percentages of the full spread axes. The reference seeds own names, identities and geometry.",
         "responses": {
-          "200": { "$ref": "#/components/responses/SpreadTemplates" },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "200": {
+            "$ref": "#/components/responses/SpreadTemplates"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
         }
       }
     },
@@ -686,7 +1342,9 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["templates"],
+                  "required": [
+                    "templates"
+                  ],
                   "properties": {
                     "templates": {
                       "type": "array",
@@ -700,7 +1358,314 @@
               }
             }
           },
-          "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
+        }
+      }
+    },
+    "/api/gear": {
+      "get": {
+        "operationId": "readGearCatalog",
+        "summary": "Read the coherent shared camera and lens catalogs",
+        "description": "Returns complete catalogs in saved entry order, including empty catalogs. Failed acquisition returns 500, never partial or successful empty data. Lenses have independent identities and may be selected for multiple compatible bodies.",
+        "responses": {
+          "200": {
+            "description": "Current catalog snapshot",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GearCatalog"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
+        }
+      }
+    },
+    "/api/cameras": {
+      "post": {
+        "operationId": "createCamera",
+        "summary": "Create an independent camera catalog entry",
+        "description": "The server assigns identity. Code and name are nonempty strings preserved as supplied. Interchangeable optics require an explicitly supported mount and sensor format; fixed optics reject mount and sensorFormat fields. No hardware facts are inferred.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/CameraDetails"
+        },
+        "responses": {
+          "201": {
+            "description": "Acknowledged created camera",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Camera"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/cameras/{cameraId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CameraId"
+        }
+      ],
+      "put": {
+        "operationId": "updateCamera",
+        "summary": "Replace camera details while preserving identity",
+        "description": "Checks current catalog and actual saved chapter selections under the same single-backend coordination as selection replacement. Rejects compatibility or kind changes that invalidate saved selections; unused combinations do not constrain edits. Acknowledged writes require only authoritative reads after a failed refresh, never repeated mutations.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/CameraDetails"
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged updated camera; no response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/CameraNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogEditConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCamera",
+        "summary": "Delete an unused camera without deleting lenses",
+        "responses": {
+          "204": {
+            "description": "Acknowledged deletion; no response body"
+          },
+          "404": {
+            "$ref": "#/components/responses/CameraNotFound"
+          },
+          "409": {
+            "description": "Saved chapter selection uses this camera; no mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "const": "camera_used"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/lenses": {
+      "post": {
+        "operationId": "createLens",
+        "summary": "Create a shared lens catalog entry",
+        "description": "The server assigns identity. Code and name are nonempty strings preserved as supplied. Mount and coverage are required known facts; no owning camera is supplied.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/LensDetails"
+        },
+        "responses": {
+          "201": {
+            "description": "Acknowledged created lens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lens"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/lenses/{lensId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/LensId"
+        }
+      ],
+      "put": {
+        "operationId": "updateLens",
+        "summary": "Replace shared lens details while preserving identity",
+        "description": "Checks actual saved selections under the same coordination as chapter gear replacement. Rejects changes that invalidate a saved camera/lens pair; unrelated unused catalog combinations do not constrain edits.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/LensDetails"
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged updated lens; no response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/LensNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogEditConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteLens",
+        "summary": "Delete an unused shared lens",
+        "responses": {
+          "204": {
+            "description": "Acknowledged deletion; no response body"
+          },
+          "404": {
+            "$ref": "#/components/responses/LensNotFound"
+          },
+          "409": {
+            "description": "Saved chapter selection uses this lens; no mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "const": "lens_used"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/albums/{id}/chapters/{chapterId}/gear": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Lowercase canonical album UUID. Malformed IDs return album_not_found; a canonical missing album or foreign chapter returns chapter_not_found.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "chapterId",
+          "in": "path",
+          "required": true,
+          "description": "Lowercase canonical chapter UUID scoped to the album. Malformed, missing or foreign targets return chapter_not_found.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "readChapterGear",
+        "summary": "Read the complete ordered saved chapter selection",
+        "responses": {
+          "200": {
+            "description": "Current saved selection, including empty gear",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChapterGear"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/GearTargetNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceChapterGear",
+        "summary": "Atomically replace the complete chapter gear selection",
+        "description": "Validates current catalog entries, distinct cameras and per-body distinct lenses under shared mutation coordination. Fixed cameras require empty lensIds; interchangeable cameras require at least one lens. Matching mounts are required; full-frame bodies require full-frame coverage, while APS-C bodies accept either coverage. The same lens may appear on multiple compatible bodies. Empty cameras clears gear. Rejected replacement retains the complete saved selection. Metadata, source/import lifecycle, description and photo composition remain independent and unchanged.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterGear"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged complete replacement; no response body. Retry a later failed refresh as reads only."
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/GearTargetNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
         }
       }
     }
@@ -712,27 +1677,59 @@
         "in": "path",
         "required": true,
         "description": "Lowercase canonical UUID. Stale, missing or foreign spread identities return spread_not_found. Noncanonical spread-action path segments do not match these routes and use the unmatched API 404 response.",
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "ConfirmPlacements": {
         "name": "confirmPlacements",
         "in": "query",
         "description": "Explicitly confirm an occupied mutation. Omitted or false returns 409 when occupied, without changing state. Values other than the literal true or false return 400.",
-        "schema": { "type": "boolean", "default": false }
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
       },
       "PhotoChapterId": {
         "name": "chapterId",
         "in": "path",
         "required": true,
         "description": "Lowercase canonical UUID. Photo inventory/Refresh routes return chapter_not_found for malformed or missing targets. Spread insertion requires a canonical path segment: noncanonical segments use the unmatched API 404 not_found response; a canonical missing or foreign chapter returns chapter_not_found.",
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       },
       "WorkspaceAlbumId": {
         "name": "id",
         "in": "path",
         "required": true,
         "description": "Lowercase canonical UUID. Album metadata, chapter collection and composition reads return album_not_found for malformed or missing IDs. Spread mutation routes require a canonical path segment: noncanonical segments use the unmatched API 404 not_found response; a canonical missing album returns album_not_found.",
-        "schema": { "type": "string", "format": "uuid" }
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "CameraId": {
+        "name": "cameraId",
+        "in": "path",
+        "required": true,
+        "description": "Lowercase canonical UUID. Malformed and missing IDs return camera_not_found.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "LensId": {
+        "name": "lensId",
+        "in": "path",
+        "required": true,
+        "description": "Lowercase canonical UUID. Malformed and missing IDs return lens_not_found.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
       }
     },
     "requestBodies": {
@@ -743,8 +1740,35 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["title"],
-              "properties": { "title": { "type": "string", "minLength": 1 } }
+              "required": [
+                "title"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "CameraDetails": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CameraDetails"
+            }
+          }
+        }
+      },
+      "LensDetails": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LensDetails"
             }
           }
         }
@@ -753,11 +1777,50 @@
     "responses": {
       "PlacementNotFound": {
         "description": "Current target is missing or belongs elsewhere. Reload authoritative composition. Noncanonical path IDs fall through to the API's not_found response.",
-        "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["album_not_found", "spread_not_found", "cover_not_found", "not_found"] } } } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "album_not_found",
+                    "spread_not_found",
+                    "cover_not_found",
+                    "not_found"
+                  ]
+                }
+              }
+            }
+          }
+        }
       },
       "PlacementRejected": {
         "description": "Current ownership or identity validation rejected the edit without partial writes. Reload authoritative state before choosing another action.",
-        "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["photo_not_in_collection", "photo_already_used", "slot_not_found", "placement_not_found", "invalid_transform"] } } } } }
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "photo_not_in_collection",
+                    "photo_already_used",
+                    "slot_not_found",
+                    "placement_not_found",
+                    "invalid_transform"
+                  ]
+                }
+              }
+            }
+          }
+        }
       },
       "SpreadIdentity": {
         "description": "Saved spread identity",
@@ -765,8 +1828,15 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["id"],
-              "properties": { "id": { "type": "string", "format": "uuid" } },
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
               "additionalProperties": false
             }
           }
@@ -778,9 +1848,16 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["code"],
+              "required": [
+                "code"
+              ],
               "properties": {
-                "code": { "enum": ["album_not_found", "spread_not_found"] }
+                "code": {
+                  "enum": [
+                    "album_not_found",
+                    "spread_not_found"
+                  ]
+                }
               },
               "additionalProperties": false
             }
@@ -793,7 +1870,9 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["code"],
+              "required": [
+                "code"
+              ],
               "properties": {
                 "code": {
                   "enum": [
@@ -812,7 +1891,9 @@
         "description": "No mutation; repeat the action with confirmPlacements=true only after explicit confirmation",
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/SpreadOccupied" }
+            "schema": {
+              "$ref": "#/components/schemas/SpreadOccupied"
+            }
           }
         }
       },
@@ -822,12 +1903,16 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["templates"],
+              "required": [
+                "templates"
+              ],
               "properties": {
                 "templates": {
                   "type": "array",
                   "minItems": 1,
-                  "items": { "$ref": "#/components/schemas/AlbumStartTemplate" }
+                  "items": {
+                    "$ref": "#/components/schemas/AlbumStartTemplate"
+                  }
                 }
               }
             }
@@ -840,11 +1925,22 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["id", "scheduling"],
+              "required": [
+                "id",
+                "scheduling"
+              ],
               "properties": {
-                "id": { "type": "string", "format": "uuid" },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
                 "scheduling": {
-                  "enum": ["queued", "coalesced", "not-requested", "failed"]
+                  "enum": [
+                    "queued",
+                    "coalesced",
+                    "not-requested",
+                    "failed"
+                  ]
                 }
               },
               "additionalProperties": false
@@ -858,8 +1954,14 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["code"],
-              "properties": { "code": { "const": "chapter_not_found" } },
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "chapter_not_found"
+                }
+              },
               "additionalProperties": false
             }
           }
@@ -869,16 +1971,24 @@
         "description": "Matching content version; no response body",
         "headers": {
           "Cache-Control": {
-            "schema": { "const": "private, max-age=31536000, immutable" }
+            "schema": {
+              "const": "private, max-age=31536000, immutable"
+            }
           },
-          "ETag": { "schema": { "type": "string" } }
+          "ETag": {
+            "schema": {
+              "type": "string"
+            }
+          }
         }
       },
       "AlbumSummary": {
         "description": "Album identity, required immutable year, title and immutable creation time",
         "content": {
           "application/json": {
-            "schema": { "$ref": "#/components/schemas/AlbumSummary" }
+            "schema": {
+              "$ref": "#/components/schemas/AlbumSummary"
+            }
           }
         }
       },
@@ -888,8 +1998,15 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["message"],
-              "properties": { "message": { "type": "string", "minLength": 1 } },
+              "required": [
+                "message"
+              ],
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
               "additionalProperties": false
             }
           }
@@ -901,8 +2018,14 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["code"],
-              "properties": { "code": { "const": "album_not_found" } },
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "album_not_found"
+                }
+              },
               "additionalProperties": false
             }
           }
@@ -914,8 +2037,137 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "required": ["code"],
-              "properties": { "code": { "const": "service_failure" } },
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "service_failure"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "CameraNotFound": {
+        "description": "Malformed camera UUID or camera not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "camera_not_found"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "CatalogConflict": {
+        "description": "Catalog identity or EXIF code is already used; no mutation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "catalog_conflict"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "CatalogEditConflict": {
+        "description": "Code conflict or proposed optics invalidate an actual saved selection; no mutation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "catalog_conflict",
+                    "invalidates_selection"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "GearMutationFailure": {
+        "description": "service_failure reports an unsuccessful operation. mutation_uncertain means commit acknowledgement was lost: the operation may have committed. Read the authoritative catalog or scoped chapter gear before deciding whether to retry; never treat uncertainty as rejection or empty success.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "service_failure",
+                    "mutation_uncertain"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "GearTargetNotFound": {
+        "description": "Malformed album UUID, or malformed, missing or foreign chapter. Reload authoritative state.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "album_not_found",
+                    "chapter_not_found"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "LensNotFound": {
+        "description": "Malformed lens UUID or lens not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "lens_not_found"
+                }
+              },
               "additionalProperties": false
             }
           }
@@ -925,75 +2177,225 @@
     "schemas": {
       "PhotoTransform": {
         "type": "object",
-        "required": ["x", "y", "zoom", "mirrored"],
+        "required": [
+          "x",
+          "y",
+          "zoom",
+          "mirrored"
+        ],
         "description": "Finite pan in InDesign points and zoom relative to centered scale-to-fill. Displayed pan is bounded to keep the destination slot covered; stored transforms survive movement to different geometry. Horizontal mirroring preserves the crop.",
         "properties": {
-          "x": { "type": "number" },
-          "y": { "type": "number" },
-          "zoom": { "type": "number", "minimum": 1, "maximum": 5 },
-          "mirrored": { "type": "boolean" }
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "zoom": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "mirrored": {
+            "type": "boolean"
+          }
         }
       },
       "PlacementCreation": {
-        "type": "object", "required": ["slotId", "photoId"],
-        "properties": { "slotId": { "type": "string", "format": "uuid" }, "photoId": { "type": "string", "format": "uuid" } }, "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "slotId",
+          "photoId"
+        ],
+        "properties": {
+          "slotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "photoId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "additionalProperties": false,
         "description": "All IDs are lowercase canonical UUIDs. The target slot and eligible photo must exist; the backend allocates the placement identity."
       },
       "PlacementChanges": {
         "oneOf": [
-          { "type": "object", "required": ["slotId"], "properties": { "slotId": { "type": "string", "format": "uuid" } }, "additionalProperties": false },
-          { "type": "object", "required": ["transform"], "properties": { "transform": { "$ref": "#/components/schemas/PhotoTransform" } }, "additionalProperties": false }
+          {
+            "type": "object",
+            "required": [
+              "slotId"
+            ],
+            "properties": {
+              "slotId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "transform"
+            ],
+            "properties": {
+              "transform": {
+                "$ref": "#/components/schemas/PhotoTransform"
+              }
+            },
+            "additionalProperties": false
+          }
         ]
       },
       "PhotoPlacement": {
         "type": "object",
-        "required": ["id", "slotId", "photoId", "transform"],
+        "required": [
+          "id",
+          "slotId",
+          "photoId",
+          "transform"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "slotId": { "type": "string", "format": "uuid" },
-          "photoId": { "type": "string", "format": "uuid" },
-          "transform": { "$ref": "#/components/schemas/PhotoTransform" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "photoId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "transform": {
+            "$ref": "#/components/schemas/PhotoTransform"
+          }
         }
       },
       "SpreadPlacements": {
         "type": "object",
-        "required": ["id", "kind", "templateId", "slots", "placements"],
+        "required": [
+          "id",
+          "kind",
+          "templateId",
+          "slots",
+          "placements"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "kind": { "enum": ["album_start", "chapter_start", "photos_only"] },
-          "templateId": { "type": "string", "format": "uuid" },
-          "slots": { "type": "array", "items": { "$ref": "#/components/schemas/SpreadSlot" } },
-          "placements": { "type": "array", "items": { "allOf": [
-            { "$ref": "#/components/schemas/PhotoPlacement" },
-            { "type": "object", "required": ["captionCorner"], "properties": { "captionCorner": { "enum": ["top_left", "top_right", "bottom_left", "bottom_right"] } } }
-          ] } }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "enum": [
+              "album_start",
+              "chapter_start",
+              "photos_only"
+            ]
+          },
+          "templateId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "slots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SpreadSlot"
+            }
+          },
+          "placements": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/PhotoPlacement"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "captionCorner"
+                  ],
+                  "properties": {
+                    "captionCorner": {
+                      "enum": [
+                        "top_left",
+                        "top_right",
+                        "bottom_left",
+                        "bottom_right"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
         }
       },
       "CoverPlacements": {
         "type": "object",
-        "required": ["frontSlotId", "backSlotId", "spineOwner", "placements"],
+        "required": [
+          "frontSlotId",
+          "backSlotId",
+          "spineOwner",
+          "placements"
+        ],
         "properties": {
-          "frontSlotId": { "type": "string", "format": "uuid" },
-          "backSlotId": { "type": "string", "format": "uuid" },
-          "spineOwner": { "enum": ["front", "back"] },
-          "placements": { "type": "array", "maxItems": 2, "items": { "$ref": "#/components/schemas/PhotoPlacement" } }
+          "frontSlotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "backSlotId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "spineOwner": {
+            "enum": [
+              "front",
+              "back"
+            ]
+          },
+          "placements": {
+            "type": "array",
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/PhotoPlacement"
+            }
+          }
         }
       },
       "SpreadOccupied": {
         "type": "object",
-        "required": ["code", "placements"],
+        "required": [
+          "code",
+          "placements"
+        ],
         "properties": {
-          "code": { "const": "spread_occupied" },
-          "placements": { "type": "integer", "minimum": 1 }
+          "code": {
+            "const": "spread_occupied"
+          },
+          "placements": {
+            "type": "integer",
+            "minimum": 1
+          }
         },
         "additionalProperties": false
       },
-      "AlbumYear": { "type": "integer", "minimum": 1900, "maximum": 2100 },
+      "AlbumYear": {
+        "type": "integer",
+        "minimum": 1900,
+        "maximum": 2100
+      },
       "CountryIds": {
         "type": "array",
         "minItems": 1,
         "uniqueItems": true,
-        "items": { "type": "string", "format": "uuid" },
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        },
         "description": "Distinct lowercase canonical UUIDs identifying records in the selectable country catalog."
       },
       "SourceFolder": {
@@ -1004,18 +2406,31 @@
       },
       "HomeDetails": {
         "type": "object",
-        "required": ["countries", "sourceFolder"],
+        "required": [
+          "countries",
+          "sourceFolder"
+        ],
         "properties": {
-          "countries": { "$ref": "#/components/schemas/CountryIds" },
-          "sourceFolder": { "$ref": "#/components/schemas/SourceFolder" }
+          "countries": {
+            "$ref": "#/components/schemas/CountryIds"
+          },
+          "sourceFolder": {
+            "$ref": "#/components/schemas/SourceFolder"
+          }
         }
       },
       "VacationDetails": {
         "allOf": [
-          { "$ref": "#/components/schemas/HomeDetails" },
+          {
+            "$ref": "#/components/schemas/HomeDetails"
+          },
           {
             "type": "object",
-            "required": ["name", "start", "end"],
+            "required": [
+              "name",
+              "start",
+              "end"
+            ],
             "properties": {
               "name": {
                 "type": "string",
@@ -1040,44 +2455,84 @@
       },
       "Composition": {
         "type": "object",
-        "required": ["spreads"],
+        "required": [
+          "spreads"
+        ],
         "properties": {
           "spreads": {
             "type": "array",
             "minItems": 1,
             "maxItems": 65,
-            "items": { "type": "object", "required": ["id", "chapter"], "properties": {
-              "id": { "type": "string", "format": "uuid" },
-              "chapter": { "type": ["string", "null"], "format": "uuid", "description": "Null only for the album opening." }
-            } }
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "chapter"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "chapter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid",
+                  "description": "Null only for the album opening."
+                }
+              }
+            }
           }
         }
       },
       "PhotoInventory": {
         "type": "object",
-        "required": ["photos", "placedPhotoIds", "counts", "processing"],
+        "required": [
+          "photos",
+          "placedPhotoIds",
+          "counts",
+          "processing"
+        ],
         "properties": {
           "placedPhotoIds": {
             "type": "array",
             "uniqueItems": true,
-            "items": { "type": "string", "format": "uuid" },
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
             "description": "Authoritative used identities among this chapter's complete canonical photos, including use elsewhere in the album or on Cover. Filter selection by these IDs; retain canonical metadata for rendering. total minus this length equals unplaced."
           },
           "photos": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/Photo" },
+            "items": {
+              "$ref": "#/components/schemas/Photo"
+            },
             "description": "Complete photos with unique identities in chronological order."
           },
           "counts": {
             "type": "object",
-            "required": ["unplaced", "total"],
+            "required": [
+              "unplaced",
+              "total"
+            ],
             "description": "total equals photos.length; unplaced is derived from authoritative placements and never exceeds total.",
             "properties": {
-              "unplaced": { "type": "integer", "minimum": 0 },
-              "total": { "type": "integer", "minimum": 0 }
+              "unplaced": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              }
             }
           },
-          "processing": { "$ref": "#/components/schemas/PhotoProcessing" }
+          "processing": {
+            "$ref": "#/components/schemas/PhotoProcessing"
+          }
         }
       },
       "Photo": {
@@ -1092,46 +2547,99 @@
           "thumbnail"
         ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "filename": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1
+          },
           "capturedLocal": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Camera-local EXIF date/time, without timezone. Missing/invalid dates are null; never filesystem time.",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d{1,9})?)?$"
           },
-          "width": { "type": "integer", "minimum": 1 },
-          "height": { "type": "integer", "minimum": 1 },
-          "caption": { "type": ["string", "null"] },
+          "width": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "thumbnail": {
             "type": "object",
-            "required": ["url", "width", "height"],
+            "required": [
+              "url",
+              "width",
+              "height"
+            ],
             "properties": {
               "url": {
                 "type": "string",
                 "description": "Supplied versioned application URL. Use unchanged for lazy loading/cache reuse; never add cache-busting parameters.",
                 "pattern": "^/thumbnails/[0-9a-f-]{36}/[0-9a-f]{64}\\.jpg$"
               },
-              "width": { "type": "integer", "minimum": 1, "maximum": 2048 },
-              "height": { "type": "integer", "minimum": 1, "maximum": 2048 }
+              "width": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2048
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2048
+              }
             }
           }
         }
       },
       "PhotoProcessing": {
         "type": "object",
-        "required": ["state", "unsupportedCount", "skippedCount", "issues"],
+        "required": [
+          "state",
+          "unsupportedCount",
+          "skippedCount",
+          "issues"
+        ],
         "description": "Transient chapter-local feedback resets to idle on restart, independently of saved photos. completed may include unsupported/undecodable/unstable skips; directory/read/encoding/storage/database/cleanup/scheduling failures are explicit.",
         "properties": {
           "state": {
-            "enum": ["idle", "queued", "running", "completed", "failed"]
+            "enum": [
+              "idle",
+              "queued",
+              "running",
+              "completed",
+              "failed"
+            ]
           },
-          "unsupportedCount": { "type": "integer", "minimum": 0 },
-          "skippedCount": { "type": "integer", "minimum": 0 },
+          "unsupportedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skippedCount": {
+            "type": "integer",
+            "minimum": 0
+          },
           "issues": {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["stage", "code", "filename"],
+              "required": [
+                "stage",
+                "code",
+                "filename"
+              ],
               "properties": {
                 "stage": {
                   "enum": [
@@ -1157,7 +2665,10 @@
                   ]
                 },
                 "filename": {
-                  "type": ["string", "null"],
+                  "type": [
+                    "string",
+                    "null"
+                  ],
                   "description": "Immediate source filename, or null for a chapter-wide issue. Codes never expose internal paths or exception details."
                 }
               }
@@ -1167,11 +2678,24 @@
       },
       "Country": {
         "type": "object",
-        "required": ["id", "name", "code"],
+        "required": [
+          "id",
+          "name",
+          "code"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "name": { "type": "string", "minLength": 1 },
-          "code": { "type": "string", "pattern": "^[A-Z]{2}$" }
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          }
         }
       },
       "Chapter": {
@@ -1187,14 +2711,24 @@
           "description"
         ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "kind": { "enum": ["vacation", "home"] },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "enum": [
+              "vacation",
+              "home"
+            ]
+          },
           "name": {
             "type": "string",
             "minLength": 1,
             "description": "Destination name; Home for a Home chapter."
           },
-          "countries": { "$ref": "#/components/schemas/CountryIds" },
+          "countries": {
+            "$ref": "#/components/schemas/CountryIds"
+          },
           "start": {
             "type": "string",
             "format": "date",
@@ -1205,7 +2739,9 @@
             "format": "date",
             "description": "Inclusive last day; December 31 of the album year for Home."
           },
-          "sourceFolder": { "$ref": "#/components/schemas/SourceFolder" },
+          "sourceFolder": {
+            "$ref": "#/components/schemas/SourceFolder"
+          },
           "description": {
             "type": "string",
             "description": "Persisted chapter owner text, including the empty string."
@@ -1214,21 +2750,43 @@
       },
       "SpreadSlot": {
         "allOf": [
-          { "$ref": "#/components/schemas/TemplateSlot" },
+          {
+            "$ref": "#/components/schemas/TemplateSlot"
+          },
           {
             "type": "object",
-            "required": ["id"],
-            "properties": { "id": { "type": "string", "format": "uuid" } }
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
           }
         ]
       },
       "AlbumSummary": {
         "type": "object",
-        "required": ["id", "year", "title", "createdAt"],
+        "required": [
+          "id",
+          "year",
+          "title",
+          "createdAt"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "year": { "$ref": "#/components/schemas/AlbumYear" },
-          "title": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "year": {
+            "$ref": "#/components/schemas/AlbumYear"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time",
@@ -1238,53 +2796,317 @@
       },
       "AlbumMetadata": {
         "allOf": [
-          { "$ref": "#/components/schemas/AlbumSummary" },
+          {
+            "$ref": "#/components/schemas/AlbumSummary"
+          },
           {
             "type": "object",
-            "required": ["synopsis"],
-            "properties": { "synopsis": { "type": "string" } }
+            "required": [
+              "synopsis"
+            ],
+            "properties": {
+              "synopsis": {
+                "type": "string"
+              }
+            }
           }
         ],
         "unevaluatedProperties": false
       },
       "AlbumPage": {
         "type": "object",
-        "required": ["albums", "page", "pageSize", "totalAlbums", "totalPages"],
+        "required": [
+          "albums",
+          "page",
+          "pageSize",
+          "totalAlbums",
+          "totalPages"
+        ],
         "properties": {
           "albums": {
             "type": "array",
             "maxItems": 6,
-            "items": { "$ref": "#/components/schemas/AlbumSummary" }
+            "items": {
+              "$ref": "#/components/schemas/AlbumSummary"
+            }
           },
-          "page": { "type": "integer", "minimum": 1 },
-          "pageSize": { "const": 6 },
-          "totalAlbums": { "type": "integer", "minimum": 0 },
-          "totalPages": { "type": "integer", "minimum": 0 }
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "pageSize": {
+            "const": 6
+          },
+          "totalAlbums": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "totalPages": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
       "AlbumStartTemplate": {
         "type": "object",
-        "required": ["id", "name", "slots"],
+        "required": [
+          "id",
+          "name",
+          "slots"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "name": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
           "slots": {
             "type": "array",
             "minItems": 1,
-            "items": { "$ref": "#/components/schemas/TemplateSlot" }
+            "items": {
+              "$ref": "#/components/schemas/TemplateSlot"
+            }
           }
         }
       },
       "TemplateSlot": {
         "type": "object",
-        "required": ["kind", "x", "y", "width", "height"],
+        "required": [
+          "kind",
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
         "properties": {
-          "kind": { "enum": ["photo", "text"] },
-          "x": { "type": "number", "minimum": 0 },
-          "y": { "type": "number", "minimum": 0 },
-          "width": { "type": "number", "exclusiveMinimum": 0 },
-          "height": { "type": "number", "exclusiveMinimum": 0 }
+          "kind": {
+            "enum": [
+              "photo",
+              "text"
+            ]
+          },
+          "x": {
+            "type": "number",
+            "minimum": 0
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
         }
+      },
+      "Camera": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CameraDetails"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
+      },
+      "CameraDetails": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "fixed_lens"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "mount"
+                  ]
+                },
+                {
+                  "required": [
+                    "sensorFormat"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "name",
+              "kind",
+              "mount",
+              "sensorFormat"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "interchangeable_lens"
+              },
+              "mount": {
+                "$ref": "#/components/schemas/LensMount"
+              },
+              "sensorFormat": {
+                "$ref": "#/components/schemas/SensorFormat"
+              }
+            }
+          }
+        ],
+        "description": "Code/name retain whitespace and Unicode as supplied. Identity is server-assigned on create and route-owned on update."
+      },
+      "ChapterGear": {
+        "type": "object",
+        "required": [
+          "cameras"
+        ],
+        "properties": {
+          "cameras": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "cameraId",
+                "lensIds"
+              ],
+              "properties": {
+                "cameraId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lensIds": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Camera rows and lens IDs retain supplied order. Camera IDs are distinct; lens IDs are distinct per camera but may be shared across rows. All IDs are lowercase canonical UUIDs. lensIds is required: empty encodes fixed use, nonempty encodes interchangeable use; current catalog kind and compatibility are application-validated."
+      },
+      "GearCatalog": {
+        "type": "object",
+        "required": [
+          "cameras",
+          "lenses"
+        ],
+        "properties": {
+          "cameras": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Camera"
+            }
+          },
+          "lenses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lens"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Lens": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LensDetails"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
+      },
+      "LensDetails": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "mount",
+          "coverage"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mount": {
+            "$ref": "#/components/schemas/LensMount"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/SensorFormat"
+          }
+        },
+        "description": "Shared independent entry. Code/name retain whitespace and Unicode as supplied; no camera owner."
+      },
+      "LensMount": {
+        "type": "string",
+        "enum": [
+          "sony_e",
+          "nikon_z"
+        ]
+      },
+      "SensorFormat": {
+        "type": "string",
+        "enum": [
+          "aps_c",
+          "full_frame"
+        ]
       }
     }
   }
