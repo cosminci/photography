@@ -98,8 +98,8 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       val server = buildApi(Refs(), unexpectedCaption, scenario.result.pure[IO])
 
       for
-        read    <- send(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
-        missing <- send(server, Method.GET, "/api/chapters/bad/photos")
+        read    <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
+        missing <- sendJson(server, Method.GET, "/api/chapters/bad/photos")
       yield
         assertEquals(read.status, scenario.status)
         assertEquals(missing, ApiResponse(Status.NotFound, json("""{"code":"chapter_not_found"}""")))
@@ -137,7 +137,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       )
 
       for
-        response <- send(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
+        response <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
       yield assertEquals(response, ApiResponse(Status.Ok, expectedInventory))
     }
 
@@ -223,7 +223,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         )
 
         for
-          read <- send(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
+          read <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
         yield
           assertEquals(read, ApiResponse(Status.Ok, expectedInventory))
           assert(!read.body.noSpaces.contains("/private") && !read.body.noSpaces.contains(intent.value.toString))
@@ -248,7 +248,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       override def read(chapter: ChapterId): IO[ChapterPhotoInventory.Result] = inventoryResult
     PhotosApi.mount(PhotosApi.make(inventories, photos)).orNotFound
 
-  private def send(server: HttpApp[IO], method: Method, path: String) =
+  private def sendJson(server: HttpApp[IO], method: Method, path: String) =
     sendRaw(server, method, path = path, body = "").map { response =>
       assertEquals(response.maybeMediaType, MediaType.application.json.some)
       if method === Method.GET && response.status === Status.Ok then assertEquals(response.maybeCacheControl, "no-store".some)
