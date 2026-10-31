@@ -30,10 +30,15 @@ import photography.ports.spread.SpreadTemplateRepository
 import photography.usecases.spread.SpreadManager
 import photography.usecases.cover.CoverManager
 import photography.adapters.imageio.ImageIoPhotoThumbnailGenerator
+import photography.adapters.sqlite.gear.SqliteGearRepository
+import photography.usecases.gear.GearManager
+import photography.usecases.chapter.ChapterManager
 
 final case class Programs[F[_]](
     albums: AlbumManager[F],
     chapters: ChapterMetadataManager[F],
+    gear: GearManager[F],
+    chapterGear: ChapterManager[F],
     templates: SpreadTemplateRepository[F],
     inventories: ChapterPhotoInventory[F],
     metadata: AlbumRepository.MetadataRead[F],
@@ -78,6 +83,7 @@ object ProgramsBuilder:
     private val coverRepository   = SqliteCoverRepository.make
     private val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
     private val planning          = ChapterPlanning.make(templates)
+    private val gearRepository    = SqliteGearRepository.make[F](sqlite)
 
     override def build: Resource[F, Programs[F]] =
       for
@@ -86,9 +92,12 @@ object ProgramsBuilder:
         imports <- buildImports(events)(using mutex)
       yield
         given Mutex[F] = mutex
+        val gear       = GearManager.make(gearRepository, chapterRepository)
         Programs(
           albums = AlbumManager.make(albumRepository, templates, pageSize),
           chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
+          gear = gear,
+          chapterGear = ChapterManager.make(chapterRepository, gear),
           templates = templates,
           inventories = ChapterPhotoInventory.make(inventory, imports),
           metadata = albumRepository,

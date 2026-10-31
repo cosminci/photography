@@ -7,6 +7,311 @@
   },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/gear": {
+      "get": {
+        "operationId": "readGearCatalog",
+        "summary": "Read the coherent shared camera and lens catalogs",
+        "description": "Returns complete catalogs in saved entry order, including empty catalogs. Failed acquisition returns 500, never partial or successful empty data. Lenses have independent identities and may be selected for multiple compatible bodies.",
+        "responses": {
+          "200": {
+            "description": "Current catalog snapshot",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GearCatalog"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
+        }
+      }
+    },
+    "/api/cameras": {
+      "post": {
+        "operationId": "createCamera",
+        "summary": "Create an independent camera catalog entry",
+        "description": "The server assigns identity. Code and name are nonempty strings preserved as supplied. Interchangeable optics require an explicitly supported mount and sensor format; fixed optics reject mount and sensorFormat fields. No hardware facts are inferred.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/CameraDetails"
+        },
+        "responses": {
+          "201": {
+            "description": "Acknowledged created camera",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Camera"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/cameras/{cameraId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CameraId"
+        }
+      ],
+      "put": {
+        "operationId": "updateCamera",
+        "summary": "Replace camera details while preserving identity",
+        "description": "Checks current catalog and actual saved chapter selections under the same single-backend coordination as selection replacement. Rejects compatibility or kind changes that invalidate saved selections; unused combinations do not constrain edits. Acknowledged writes require only authoritative reads after a failed refresh, never repeated mutations.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/CameraDetails"
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged updated camera; no response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/CameraNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogEditConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCamera",
+        "summary": "Delete an unused camera without deleting lenses",
+        "responses": {
+          "204": {
+            "description": "Acknowledged deletion; no response body"
+          },
+          "404": {
+            "$ref": "#/components/responses/CameraNotFound"
+          },
+          "409": {
+            "description": "Saved chapter selection uses this camera; no mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "const": "camera_used"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/lenses": {
+      "post": {
+        "operationId": "createLens",
+        "summary": "Create a shared lens catalog entry",
+        "description": "The server assigns identity. Code and name are nonempty strings preserved as supplied. Mount and coverage are required known facts; no owning camera is supplied.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/LensDetails"
+        },
+        "responses": {
+          "201": {
+            "description": "Acknowledged created lens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lens"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/lenses/{lensId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/LensId"
+        }
+      ],
+      "put": {
+        "operationId": "updateLens",
+        "summary": "Replace shared lens details while preserving identity",
+        "description": "Checks actual saved selections under the same coordination as chapter gear replacement. Rejects changes that invalidate a saved camera/lens pair; unrelated unused catalog combinations do not constrain edits.",
+        "requestBody": {
+          "$ref": "#/components/requestBodies/LensDetails"
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged updated lens; no response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/LensNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/CatalogEditConflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteLens",
+        "summary": "Delete an unused shared lens",
+        "responses": {
+          "204": {
+            "description": "Acknowledged deletion; no response body"
+          },
+          "404": {
+            "$ref": "#/components/responses/LensNotFound"
+          },
+          "409": {
+            "description": "Saved chapter selection uses this lens; no mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code"
+                  ],
+                  "properties": {
+                    "code": {
+                      "const": "lens_used"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
+    "/api/albums/{id}/chapters/{chapterId}/gear": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Lowercase canonical album UUID. Malformed IDs return album_not_found; a canonical missing album or foreign chapter returns chapter_not_found.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "chapterId",
+          "in": "path",
+          "required": true,
+          "description": "Lowercase canonical chapter UUID scoped to the album. Malformed, missing or foreign targets return chapter_not_found.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "readChapterGear",
+        "summary": "Read the complete ordered saved chapter selection",
+        "responses": {
+          "200": {
+            "description": "Current saved selection, including empty gear",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChapterGear"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/GearTargetNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServiceFailure"
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceChapterGear",
+        "summary": "Atomically replace the complete chapter gear selection",
+        "description": "Validates current catalog entries, distinct cameras and per-body distinct lenses under shared mutation coordination. Fixed cameras require empty lensIds; interchangeable cameras require at least one lens. Matching mounts are required; full-frame bodies require full-frame coverage, while APS-C bodies accept either coverage. The same lens may appear on multiple compatible bodies. Empty cameras clears gear. Rejected replacement retains the complete saved selection. Metadata, source/import lifecycle, description and photo composition remain independent and unchanged.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChapterGear"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Acknowledged complete replacement; no response body. Retry a later failed refresh as reads only."
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/GearTargetNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/GearMutationFailure"
+          }
+        }
+      }
+    },
     "/api/countries": {
       "get": {
         "operationId": "listCountries", "summary": "Read the selectable country catalog",
@@ -707,6 +1012,26 @@
   },
   "components": {
     "parameters": {
+      "CameraId": {
+        "name": "cameraId",
+        "in": "path",
+        "required": true,
+        "description": "Lowercase canonical UUID. Malformed and missing IDs return camera_not_found.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "LensId": {
+        "name": "lensId",
+        "in": "path",
+        "required": true,
+        "description": "Lowercase canonical UUID. Malformed and missing IDs return lens_not_found.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
       "SpreadId": {
         "name": "spreadId",
         "in": "path",
@@ -736,6 +1061,26 @@
       }
     },
     "requestBodies": {
+      "CameraDetails": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/CameraDetails"
+            }
+          }
+        }
+      },
+      "LensDetails": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LensDetails"
+            }
+          }
+        }
+      },
       "Title": {
         "required": true,
         "description": "A string title, trimmed before nonblank validation. Malformed JSON, missing or non-string titles, and blank trimmed titles return validation feedback.",
@@ -751,6 +1096,129 @@
       }
     },
     "responses": {
+      "CameraNotFound": {
+        "description": "Malformed camera UUID or camera not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "camera_not_found"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "CatalogConflict": {
+        "description": "Catalog identity or EXIF code is already used; no mutation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "catalog_conflict"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "CatalogEditConflict": {
+        "description": "Code conflict or proposed optics invalidate an actual saved selection; no mutation",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "catalog_conflict",
+                    "invalidates_selection"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "GearMutationFailure": {
+        "description": "service_failure reports an unsuccessful operation. mutation_uncertain means commit acknowledgement was lost: the operation may have committed. Read the authoritative catalog or scoped chapter gear before deciding whether to retry; never treat uncertainty as rejection or empty success.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "service_failure",
+                    "mutation_uncertain"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "GearTargetNotFound": {
+        "description": "Malformed album UUID, or malformed, missing or foreign chapter. Reload authoritative state.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "album_not_found",
+                    "chapter_not_found"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "LensNotFound": {
+        "description": "Malformed lens UUID or lens not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "const": "lens_not_found"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      },
       "PlacementNotFound": {
         "description": "Current target is missing or belongs elsewhere. Reload authoritative composition. Noncanonical path IDs fall through to the API's not_found response.",
         "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["album_not_found", "spread_not_found", "cover_not_found", "not_found"] } } } } }
@@ -923,6 +1391,208 @@
       }
     },
     "schemas": {
+      "Camera": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CameraDetails"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
+      },
+      "CameraDetails": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "fixed_lens"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "mount"
+                  ]
+                },
+                {
+                  "required": [
+                    "sensorFormat"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "code",
+              "name",
+              "kind",
+              "mount",
+              "sensorFormat"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "interchangeable_lens"
+              },
+              "mount": {
+                "$ref": "#/components/schemas/LensMount"
+              },
+              "sensorFormat": {
+                "$ref": "#/components/schemas/SensorFormat"
+              }
+            }
+          }
+        ],
+        "description": "Code/name retain whitespace and Unicode as supplied. Identity is server-assigned on create and route-owned on update."
+      },
+      "ChapterGear": {
+        "type": "object",
+        "required": [
+          "cameras"
+        ],
+        "properties": {
+          "cameras": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "cameraId",
+                "lensIds"
+              ],
+              "properties": {
+                "cameraId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lensIds": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Camera rows and lens IDs retain supplied order. Camera IDs are distinct; lens IDs are distinct per camera but may be shared across rows. All IDs are lowercase canonical UUIDs. lensIds is required: empty encodes fixed use, nonempty encodes interchangeable use; current catalog kind and compatibility are application-validated."
+      },
+      "GearCatalog": {
+        "type": "object",
+        "required": [
+          "cameras",
+          "lenses"
+        ],
+        "properties": {
+          "cameras": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Camera"
+            }
+          },
+          "lenses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lens"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Lens": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LensDetails"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
+      },
+      "LensDetails": {
+        "type": "object",
+        "required": [
+          "code",
+          "name",
+          "mount",
+          "coverage"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mount": {
+            "$ref": "#/components/schemas/LensMount"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/SensorFormat"
+          }
+        },
+        "description": "Shared independent entry. Code/name retain whitespace and Unicode as supplied; no camera owner."
+      },
+      "LensMount": {
+        "type": "string",
+        "enum": [
+          "sony_e",
+          "nikon_z"
+        ]
+      },
+      "SensorFormat": {
+        "type": "string",
+        "enum": [
+          "aps_c",
+          "full_frame"
+        ]
+      },
       "PhotoTransform": {
         "type": "object",
         "required": ["x", "y", "zoom", "mirrored"],
