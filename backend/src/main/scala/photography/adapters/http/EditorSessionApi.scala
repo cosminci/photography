@@ -5,7 +5,7 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.circe.{Decoder, Json}
 import io.github.iltotore.iron.*
-import org.http4s.{HttpRoutes, Request, ServerSentEvent}
+import org.http4s.{HttpRoutes, Request, Response, ServerSentEvent}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.typelevel.ci.CIString
@@ -25,7 +25,7 @@ object EditorSessionApi:
         register(request)
       case request @ GET -> Root / "api" / "editor-session" / "events" =>
         (requiredId(request, "X-Editor-Session"), requiredId(request, "X-Editor-Tab")).tupled match
-          case Left(message)         => BadRequest(code(message))
+          case Left(message)         => BadRequest(code(message)).map(_.putHeaders("Cache-Control" -> "no-store"))
           case Right((session, tab)) =>
             Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("Cache-Control" -> "no-store", "X-Accel-Buffering" -> "no"))
       case request @ GET -> Root / "api" / "editor-session" =>
@@ -56,7 +56,7 @@ object EditorSessionApi:
               }
       }.map(_.putHeaders("Cache-Control" -> "no-store"))
 
-    private def withConnection(request: Request[F])(run: EditorConnection => F[org.http4s.Response[F]]) =
+    private def withConnection(request: Request[F])(run: EditorConnection => F[Response[F]]) =
       val parsed = (
         requiredId(request, "X-Editor-Session"),
         requiredId(request, "X-Editor-Tab"),
@@ -88,18 +88,10 @@ object EditorSessionApi:
         case ReadResult.Rejected(reason) => (event("session_lost", code(encodeFailure(reason))), true)
       }.takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
 
-    private val registration = Decoder.instance[(EditorId, EditorAlias)] { cursor =>
-      for
-        _ <-
-          Either.cond(cursor.keys.exists(_.toSet === Set("editorId", "alias")), (), io.circe.DecodingFailure("Invalid registration", cursor.history))
-        owner <- cursor.get[String]("editorId").flatMap(value =>
-          parseId(value).leftMap(message => io.circe.DecodingFailure(message, cursor.history))
-        )
-        alias <- cursor.get[String]("alias").flatMap(value =>
-          value.refineEither[EditorAliasConstraint].leftMap(message => io.circe.DecodingFailure(message, cursor.history))
-        )
-      yield (EditorId(owner), alias)
-    }
+    private val registration = Decoder.forProduct2("editorId", "alias")((owner: String, alias: String) => (owner, alias))
+      .emap { case (owner, alias) =>
+        (parseId(owner), alias.refineEither[EditorAliasConstraint]).mapN((id, label) => (EditorId(id), label))
+      }.validate(_.keys.exists(_.toSet === Set("editorId", "alias")), "Invalid registration")
 
     private def requiredId(request: Request[F], name: String) =
       optionalId(request, name).flatMap(_.toRight("missing_credentials"))
