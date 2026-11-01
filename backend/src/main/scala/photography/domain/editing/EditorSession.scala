@@ -34,17 +34,30 @@ object ConnectionGeneration:
 
 final case class EditorConnection(session: SessionId, tab: TabId, generation: ConnectionGeneration)
 
+opaque type TargetRevision = BigInt
+object TargetRevision:
+  val initial: TargetRevision = BigInt(0)
+  extension (revision: TargetRevision)
+    def next: TargetRevision = revision + 1
+    def value: BigInt        = revision
+
+opaque type GrantId = UUID
+object GrantId:
+  def apply(value: UUID): GrantId            = value
+  extension (grant: GrantId) def value: UUID = grant
+
 final case class EditorSession(
     id: SessionId,
     owner: EditorId,
     alias: EditorAlias,
     lastHeartbeat: FiniteDuration,
     expiresAt: FiniteDuration,
-    maybeConnection: Option[EditorConnection]
+    maybeConnection: Option[EditorConnection],
+    targetRevision: TargetRevision
 )
 
 enum EditingTarget:
   case Spread(id: SpreadId)
   case Cover(album: AlbumId)
 
-final case class EditingLock(target: EditingTarget, session: SessionId)
+final case class EditingLock(target: EditingTarget, session: SessionId, grant: GrantId, expiresAt: FiniteDuration)
