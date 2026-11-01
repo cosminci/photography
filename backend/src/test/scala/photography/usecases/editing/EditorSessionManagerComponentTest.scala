@@ -9,6 +9,8 @@ import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
 import photography.capabilities.IdGenerator
 import photography.domain.editing.*
+import photography.domain.album.AlbumId
+import photography.domain.layout.SpreadId
 import photography.usecases.editing.EditorSessionManager.*
 
 import java.util.UUID
@@ -365,6 +367,352 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(recovered, RegisterResult.Ready(session.copy(maybeConnection = None)))
       assertEquals(lateRelease, UnbindResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(reloaded))))
+
+  Vector(
+    EditingTarget.Spread(SpreadId(new UUID(0L, 10L))),
+    EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+  ).foreach { target =>
+    test(s"should grant exactly one owner of $target and expose only public contender facts"):
+      for
+        manager <- buildManager()
+        first   <- registerConnection(manager, owner, tab)
+        second  <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
+        results <- (
+          manager.select(first, TargetRevision.initial, target),
+          manager.select(second, TargetRevision.initial, target)
+        ).parTupled
+        firstState  <- manager.readTarget(first)
+        secondState <- manager.readTarget(second)
+      yield
+        val revision = TargetRevision.initial.next
+        (results, firstState, secondState) match
+          case (
+                (SelectResult.Owned(lock, `revision`), SelectResult.Blocked(`owner`, `alias`, deadline, `revision`)),
+                ReadTargetResult.Current(`revision`, Some(saved)),
+                ReadTargetResult.Current(`revision`, None)
+              ) =>
+            assertEquals(lock, saved)
+            assertEquals(lock.target, target)
+            assertEquals(lock.session, first.session)
+            assertEquals(deadline, lock.expiresAt)
+          case (
+                (SelectResult.Blocked(_, `alias`, deadline, `revision`), SelectResult.Owned(lock, `revision`)),
+                ReadTargetResult.Current(`revision`, None),
+                ReadTargetResult.Current(`revision`, Some(saved))
+              ) =>
+            assertEquals(lock, saved)
+            assertEquals(lock.target, target)
+            assertEquals(lock.session, second.session)
+            assertEquals(deadline, lock.expiresAt)
+          case _ => fail(s"Expected one exact owner and one public contender: $results, $firstState, $secondState")
+  }
+
+  test("should release the previous target on contention and fence late navigation retries"):
+    val firstTarget = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+    val destination = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+    val otherOwner  = EditorId(new UUID(0L, 4L))
+
+    for
+      manager     <- buildManager()
+      first       <- registerConnection(manager, owner, tab)
+      second      <- registerConnection(manager, otherOwner, duplicate)
+      original    <- manager.select(first, TargetRevision.initial, firstTarget).flatMap(requireLock)
+      busy        <- manager.select(second, TargetRevision.initial, destination).flatMap(requireLock)
+      blocked     <- manager.select(first, TargetRevision.initial.next, destination)
+      lateSelect  <- manager.select(first, TargetRevision.initial, firstTarget)
+      lateRelease <- manager.release(first, TargetRevision.initial.next, original.grant)
+      oldRenewal  <- manager.renewTarget(first, original.grant)
+      current     <- manager.readTarget(first)
+      acquired    <- manager.select(second, TargetRevision.initial.next, firstTarget).flatMap(requireLock)
+    yield
+      val revision = TargetRevision.initial.next.next
+      assertEquals(blocked, SelectResult.Blocked(otherOwner, alias, busy.expiresAt, revision))
+      assertEquals(lateSelect, SelectResult.Rejected(Failure.StaleTransition))
+      assertEquals(lateRelease, ReleaseResult.Rejected(Failure.StaleTransition))
+      assertEquals(oldRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
+      assertEquals(current, ReadTargetResult.Current(revision, None))
+      assertEquals(acquired.target, firstTarget)
+      assertNotEquals(original.grant, acquired.grant)
+
+  test("should expire a target independently of session heartbeat and fence old grants after reacquisition"):
+    TestControl.executeEmbed {
+      val target = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+
+      for
+        manager    <- buildManager()
+        connection <- registerConnection(manager, owner, tab)
+        original   <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _          <- IO.sleep(20.seconds)
+        _          <- manager.heartbeat(connection)
+        _          <- IO.sleep(10.seconds)
+        expired    <- manager.readTarget(connection)
+        late       <- manager.select(connection, TargetRevision.initial.next, target)
+        renewed    <- manager.renewTarget(connection, original.grant)
+        fresh      <- manager.select(connection, TargetRevision.initial.next.next, target).flatMap(requireLock)
+        oldRelease <- manager.release(connection, TargetRevision.initial.next.next.next, original.grant)
+        oldRenewal <- manager.renewTarget(connection, original.grant)
+        current    <- manager.readTarget(connection)
+      yield
+        val expiredRevision = TargetRevision.initial.next.next
+        val freshRevision   = expiredRevision.next
+        assertEquals(expired, ReadTargetResult.Current(expiredRevision, None))
+        assertEquals(late, SelectResult.Rejected(Failure.StaleTransition))
+        assertEquals(renewed, RenewTargetResult.Rejected(Failure.StaleGrant))
+        assertNotEquals(original.grant, fresh.grant)
+        assertEquals(fresh.expiresAt, 60.seconds)
+        assertEquals(oldRelease, ReleaseResult.Rejected(Failure.StaleGrant))
+        assertEquals(oldRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
+        assertEquals(current, ReadTargetResult.Current(freshRevision, Some(fresh)))
+    }
+
+  test("should renew only the target and remove it when its session expires"):
+    TestControl.executeEmbed {
+      val target = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+      for
+        manager      <- buildManager()
+        connection   <- registerConnection(manager, owner, tab)
+        lock         <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _            <- IO.sleep(29.seconds)
+        renewed      <- manager.renewTarget(connection, lock.grant)
+        _            <- IO.sleep(1.second)
+        expired      <- manager.readTarget(connection)
+        staleRelease <- manager.release(connection, TargetRevision.initial.next, lock.grant)
+        replacement  <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
+        acquired     <- manager.select(replacement, TargetRevision.initial, target).flatMap(requireLock)
+      yield
+        assertEquals(renewed, RenewTargetResult.Renewed(lock.copy(expiresAt = 59.seconds)))
+        assertEquals(expired, ReadTargetResult.Rejected(Failure.StaleSession))
+        assertEquals(staleRelease, ReleaseResult.Rejected(Failure.StaleSession))
+        assertEquals(acquired.target, target)
+        assertNotEquals(acquired.grant, lock.grant)
+    }
+
+  test("should retain a live grant across reload while fencing obsolete connection operations"):
+    val target = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+    for
+      manager     <- buildManager()
+      first       <- registerConnection(manager, owner, tab)
+      lock        <- manager.select(first, TargetRevision.initial, target).flatMap(requireLock)
+      _           <- manager.unbind(first)
+      second      <- manager.bind(first.session, duplicate).flatMap(requireConnection)
+      lateSelect  <- manager.select(first, TargetRevision.initial.next, target)
+      lateRenewal <- manager.renewTarget(first, lock.grant)
+      lateRelease <- manager.release(first, TargetRevision.initial.next, lock.grant)
+      lateRead    <- manager.readTarget(first)
+      current     <- manager.readTarget(second)
+      released    <- manager.release(second, TargetRevision.initial.next, lock.grant)
+      replay      <- manager.release(second, TargetRevision.initial.next, lock.grant)
+      retained    <- manager.readTarget(second)
+    yield
+      assertEquals(lateSelect, SelectResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(lateRenewal, RenewTargetResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(lateRelease, ReleaseResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(lateRead, ReadTargetResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+      assertEquals(released, ReleaseResult.Released(TargetRevision.initial.next.next))
+      assertEquals(replay, ReleaseResult.Rejected(Failure.StaleTransition))
+      assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+
+  test("should reconcile lost target acknowledgements without replaying obsolete transitions"):
+    val target              = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+    val lostAcknowledgement = new RuntimeException("Target acknowledgement lost")
+
+    for
+      manager    <- buildManager()
+      connection <- registerConnection(manager, owner, tab)
+      uncertain  <- (manager.select(connection, TargetRevision.initial, target) *> IO.raiseError[SelectResult](lostAcknowledgement)).attempt
+      reconciled <- manager.readTarget(connection)
+      lock       <- reconciled match
+        case ReadTargetResult.Current(_, Some(lock)) => IO.pure(lock)
+        case _                                       => IO.raiseError[EditingLock](new AssertionError("Expected retained acquisition"))
+      replay         <- manager.select(connection, TargetRevision.initial, target)
+      unknownRelease <-
+      (manager.release(connection, TargetRevision.initial.next, lock.grant) *> IO.raiseError[ReleaseResult](lostAcknowledgement)).attempt
+      released    <- manager.readTarget(connection)
+      replacement <- manager.select(connection, TargetRevision.initial.next.next, target).flatMap(requireLock)
+      lateRelease <- manager.release(connection, TargetRevision.initial.next, lock.grant)
+      current     <- manager.readTarget(connection)
+    yield
+      assertEquals(uncertain, lostAcknowledgement.asLeft[SelectResult])
+      assertEquals(reconciled, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+      assertEquals(replay, SelectResult.Rejected(Failure.StaleTransition))
+      assertEquals(unknownRelease, lostAcknowledgement.asLeft[ReleaseResult])
+      assertEquals(released, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+      assertNotEquals(lock.grant, replacement.grant)
+      assertEquals(lateRelease, ReleaseResult.Rejected(Failure.StaleTransition))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, Some(replacement)))
+
+  test("should replace even a same-target acquisition and reject another session's grant"):
+    val target      = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+    val destination = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+    for
+      manager       <- buildManager()
+      connection    <- registerConnection(manager, owner, tab)
+      other         <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
+      original      <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+      replacement   <- manager.select(connection, TargetRevision.initial.next, target).flatMap(requireLock)
+      stolenRenewal <- manager.renewTarget(other, replacement.grant)
+      stolenRelease <- manager.release(other, TargetRevision.initial, replacement.grant)
+      switched      <- manager.select(connection, TargetRevision.initial.next.next, destination).flatMap(requireLock)
+      staleRenewal  <- manager.renewTarget(connection, replacement.grant)
+      current       <- manager.readTarget(connection)
+    yield
+      assertNotEquals(original.grant, replacement.grant)
+      assertEquals(stolenRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
+      assertEquals(stolenRelease, ReleaseResult.Rejected(Failure.StaleGrant))
+      assertEquals(staleRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, Some(switched)))
+      assertEquals(switched.target, destination)
+
+  test("should reject restarted authority and never retain a former target grant"):
+    val target = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+    for
+      original   <- buildManager()
+      connection <- registerConnection(original, owner, tab)
+      lock       <- original.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+      restarted  <- buildManager()
+      selection  <- restarted.select(connection, TargetRevision.initial.next, target)
+      renewal    <- restarted.renewTarget(connection, lock.grant)
+      released   <- restarted.release(connection, TargetRevision.initial.next, lock.grant)
+      current    <- restarted.readTarget(connection)
+      fresh      <- registerConnection(restarted, owner, tab)
+      acquired   <- restarted.select(fresh, TargetRevision.initial, target).flatMap(requireLock)
+    yield
+      assertEquals(selection, SelectResult.Rejected(Failure.StaleSession))
+      assertEquals(renewal, RenewTargetResult.Rejected(Failure.StaleSession))
+      assertEquals(released, ReleaseResult.Rejected(Failure.StaleSession))
+      assertEquals(current, ReadTargetResult.Rejected(Failure.StaleSession))
+      assertNotEquals(lock.grant, acquired.grant)
+      assertNotEquals(connection.session, acquired.session)
+
+  test("should retain the previous grant if canceled while generating its replacement"):
+    TestControl.executeEmbed {
+      val target      = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+      val destination = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+      for
+        mutex      <- Mutex[IO]
+        generating <- Deferred[IO, Unit]
+        calls      <- Ref.of[IO, Int](0)
+        identity = new IdGenerator[IO]:
+          override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
+            case 3     => generating.complete(()).void *> IO.never[UUID]
+            case index => IO.pure(new UUID(0L, index.toLong + 100L))
+          }
+        manager    <- buildCoordinatedManager(mutex, identity)
+        connection <- registerConnection(manager, owner, tab)
+        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        pending    <- manager.select(connection, TargetRevision.initial.next, destination).start
+        _          <- generating.get
+        _          <- pending.cancel
+        canceled   <- pending.join
+        _          <- mutex.lock.use(_ => IO.unit)
+        current    <- manager.readTarget(connection)
+        accepted   <- manager.select(connection, TargetRevision.initial.next, destination).flatMap(requireLock)
+      yield
+        assertEquals(canceled, Outcome.Canceled[IO, Throwable, SelectResult]())
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(accepted.target, destination)
+        assertNotEquals(accepted.grant, lock.grant)
+    }
+
+  test("should sample target renewal and acquisition after waiting coordination crosses expiry"):
+    TestControl.executeEmbed {
+      val target = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+
+      for
+        mutex     <- Mutex[IO]
+        submitted <- Deferred[IO, Unit]
+        manager   <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        first     <- registerConnection(manager, owner, tab)
+        second    <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
+        lock      <- manager.select(first, TargetRevision.initial, target).flatMap(requireLock)
+        _         <- IO.sleep(20.seconds)
+        _         <- manager.heartbeat(first)
+        _         <- manager.heartbeat(second)
+        pending   <- mutex.lock.use { _ =>
+          for
+            waiting <-
+            (submitted.complete(()).void *> (
+              manager.renewTarget(first, lock.grant),
+              manager.select(second, TargetRevision.initial, target)
+            ).parTupled).start
+            _ <- submitted.get
+            _ <- IO.cede
+            _ <- IO.sleep(10.seconds)
+          yield waiting
+        }
+        results <- pending.joinWithNever
+        current <- manager.readTarget(first)
+      yield
+        results match
+          case (RenewTargetResult.Rejected(Failure.StaleGrant), SelectResult.Owned(acquired, revision)) =>
+            assertEquals(acquired.target, target)
+            assertEquals(acquired.expiresAt, 60.seconds)
+            assertEquals(revision, TargetRevision.initial.next)
+            assertNotEquals(acquired.grant, lock.grant)
+          case _ => fail(s"Expected expired renewal and a fresh acquisition: $results")
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+    }
+
+  test("should reject acquisition when identity generation crosses the live session deadline"):
+    TestControl.executeEmbed {
+      val target = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+      for
+        mutex <- Mutex[IO]
+        calls <- Ref.of[IO, Int](0)
+        identity = new IdGenerator[IO]:
+          override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap { index =>
+            val id = new UUID(0L, index.toLong + 100L)
+            if index === 2 then IO.sleep(30.seconds).as(id) else IO.pure(id)
+          }
+        manager    <- buildCoordinatedManager(mutex, identity)
+        connection <- registerConnection(manager, owner, tab)
+        result     <- manager.select(connection, TargetRevision.initial, target)
+        current    <- manager.readTarget(connection)
+      yield
+        assertEquals(result, SelectResult.Rejected(Failure.StaleSession))
+        assertEquals(current, ReadTargetResult.Rejected(Failure.StaleSession))
+    }
+
+  test("should fence a pending target switch if its prior grant expires during identity generation"):
+    TestControl.executeEmbed {
+      val target      = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+      val destination = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+
+      for
+        mutex <- Mutex[IO]
+        calls <- Ref.of[IO, Int](0)
+        identity = new IdGenerator[IO]:
+          override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap { index =>
+            val id = new UUID(0L, index.toLong + 100L)
+            if index === 3 then IO.sleep(10.seconds).as(id) else IO.pure(id)
+          }
+        manager    <- buildCoordinatedManager(mutex, identity)
+        connection <- registerConnection(manager, owner, tab)
+        _          <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _          <- IO.sleep(20.seconds)
+        _          <- manager.heartbeat(connection)
+        result     <- manager.select(connection, TargetRevision.initial.next, destination)
+        current    <- manager.readTarget(connection)
+      yield
+        assertEquals(result, SelectResult.Rejected(Failure.StaleTransition))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+    }
+
+  private def registerConnection(manager: EditorSessionManager[IO], editor: EditorId, document: TabId) =
+    manager.register(editor, alias, maybeSession = None).flatMap(requireSession).flatMap(session =>
+      manager.bind(session.id, document).flatMap(requireConnection)
+    )
+
+  private def requireLock(result: SelectResult) = result match
+    case SelectResult.Owned(lock, _) => IO.pure(lock)
+    case _                           => IO.raiseError[EditingLock](new AssertionError("Expected target ownership"))
 
   private def buildManager() =
     Mutex[IO].flatMap(mutex => buildCoordinatedManager(mutex, IdGenerator.make[IO]))
