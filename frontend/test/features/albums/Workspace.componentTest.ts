@@ -11,6 +11,7 @@ import {
   isCalendarDay,
   suggestFolder,
   validateChapter,
+  matchesChapterDetails,
 } from "../../../src/features/albums/workspace/ChapterDetails";
 import {
   findSelection,
@@ -29,6 +30,118 @@ import { readSpread } from "../../../src/features/albums/api/PlacementWire";
 import { readPhotoInventory, readScheduling } from "../../../src/features/albums/api/PhotoWire";
 
 describe("chapter detail feedback", () => {
+  it.each([false, true])(
+    "should stop after acknowledged metadata when the editor scope ends before the gear phase with changedGear=%s",
+    async (changedGear) => {
+      const nativeShow = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal");
+      const nativeClose = Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close");
+      Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+        configurable: true,
+        value(this: HTMLDialogElement) {
+          this.open = true;
+        },
+      });
+      Object.defineProperty(HTMLDialogElement.prototype, "close", {
+        configurable: true,
+        value(this: HTMLDialogElement) {
+          this.open = false;
+        },
+      });
+      const chapter = {
+        id: "chapter",
+        kind: "vacation" as const,
+        name: "Kyoto",
+        countries: ["jp"],
+        start: "2026-04-02",
+        end: "2026-04-14",
+        sourceFolder: "/photos/Kyoto",
+      };
+      const camera = { id: "camera", code: "Camera", name: "Camera", kind: "fixed_lens" as const };
+      const save = vi.fn().mockResolvedValue({ id: chapter.id, scheduling: "not-requested" });
+      const saveGear = vi.fn();
+      const onSaved = vi.fn();
+      const onReconciled = vi.fn();
+      const view = render(() =>
+        createComponent(ChapterDialog, {
+          chapter,
+          countries: [{ id: "jp", name: "Japan", code: "JP" }],
+          year: 2026,
+          photoRoot: "/photos",
+          homeAvailable: false,
+          save,
+          onSaved,
+          onReconciled,
+          onClose: vi.fn(),
+          returnFocus: vi.fn(),
+          resources: {
+            albumId: "album",
+            maybeChapterId: chapter.id,
+            client: {
+              chapters: vi.fn(),
+              gearCatalog: vi.fn().mockResolvedValue({ cameras: [camera], lenses: [] }),
+              chapterGear: vi.fn().mockResolvedValue([]),
+              saveChapterGear: saveGear,
+              createCamera: vi.fn(),
+              updateCamera: vi.fn(),
+              deleteCamera: vi.fn(),
+              createLens: vi.fn(),
+              updateLens: vi.fn(),
+              deleteLens: vi.fn(),
+            },
+          },
+          onBlock: (reason) => {
+            if (reason === "Finish the chapter edit before leaving." && save.mock.calls.length === 1) view.unmount();
+          },
+        }),
+      );
+      try {
+        await vi.waitUntil(() => !screen.getByRole<HTMLButtonElement>("button", { name: "Save chapter" }).disabled);
+        if (changedGear) fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
+        fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
+        await vi.waitUntil(() => screen.queryByRole("dialog") === null);
+        await Promise.resolve();
+        expect(save).toHaveBeenCalledOnce();
+        expect(saveGear).not.toHaveBeenCalled();
+        expect(onSaved).not.toHaveBeenCalled();
+        expect(onReconciled).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+        if (nativeShow === undefined) Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+        else Object.defineProperty(HTMLDialogElement.prototype, "showModal", nativeShow);
+        if (nativeClose === undefined) Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
+        else Object.defineProperty(HTMLDialogElement.prototype, "close", nativeClose);
+      }
+    },
+  );
+  it("should reconcile complete chapter details while preserving saved source, countries and date years", () => {
+    const chapter = {
+      id: "chapter",
+      kind: "vacation" as const,
+      name: "Kyoto",
+      countries: ["jp"],
+      start: "2025-12-31",
+      end: "2026-01-01",
+      sourceFolder: "/photos/Kyoto",
+      description: "",
+    };
+    const details = {
+      kind: chapter.kind,
+      name: chapter.name,
+      countries: chapter.countries,
+      start: chapter.start,
+      end: chapter.end,
+      sourceFolder: chapter.sourceFolder,
+    };
+    expect(matchesChapterDetails(chapter, details)).toBe(true);
+    expect(matchesChapterDetails(undefined, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, sourceFolder: "/elsewhere" }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, countries: ["ro"] }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, countries: ["ro", "jp"] }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, name: "Other" }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, start: "2026-12-31" }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, end: "2026-01-02" }, details)).toBe(false);
+    expect(matchesChapterDetails({ ...chapter, kind: "home" }, { kind: "home", countries: ["jp"], sourceFolder: chapter.sourceFolder })).toBe(true);
+  });
   it("should require both resolved spread positions in the metadata contract", () => {
     expectTypeOf<ComponentProps<typeof ChapterMetadata>["position"]>().toEqualTypeOf<{
       chapter: { position: number; total: number };
@@ -55,7 +168,7 @@ describe("chapter detail feedback", () => {
     expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled();
   });
 
-  it("should edit full day-first dates through typing and native calendars without changing saved years", () => {
+  it("should edit day/month through typing and native calendars without changing saved years", async () => {
     Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
       configurable: true,
       value(this: HTMLDialogElement) {
@@ -90,16 +203,41 @@ describe("chapter detail feedback", () => {
         onSaved: vi.fn(),
         onClose: vi.fn(),
         returnFocus: vi.fn(),
+        resources: {
+          albumId: "album",
+          maybeChapterId: "chapter",
+          client: {
+            chapters: vi.fn(),
+            gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
+            chapterGear: vi.fn().mockResolvedValue([]),
+            saveChapterGear: vi.fn(),
+            createCamera: vi.fn(),
+            updateCamera: vi.fn(),
+            deleteCamera: vi.fn(),
+            createLens: vi.fn(),
+            updateLens: vi.fn(),
+            deleteLens: vi.fn(),
+          },
+        },
+        onReconciled: vi.fn(),
+        onBlock: vi.fn(),
       }),
     );
+    await vi.waitUntil(() => !screen.getByRole<HTMLButtonElement>("button", { name: "Save chapter" }).disabled);
     const first = screen.getByRole("textbox", { name: "First day" });
     const last = screen.getByRole("textbox", { name: "Last day" });
     const firstCalendar = screen.getByLabelText("Choose first day from calendar");
     const lastCalendar = screen.getByLabelText("Choose last day from calendar");
     Object.defineProperty(firstCalendar, "showPicker", { configurable: true, value: picker });
 
-    expect(first).toHaveValue("31/12/2025");
-    expect(last).toHaveValue("01/01/2026");
+    expect(first).toHaveValue("31/12");
+    expect(last).toHaveValue("01/01");
+    fireEvent.input(firstCalendar, { target: { value: "2026-01-01" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose dates within 2025.");
+    expect(first).toHaveValue("31/12");
+    fireEvent.input(lastCalendar, { target: { value: "2025-12-31" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose dates within 2026.");
+    expect(last).toHaveValue("01/01");
 
     fireEvent.click(firstCalendar);
     fireEvent.keyDown(firstCalendar, { key: "Enter" });
@@ -117,18 +255,18 @@ describe("chapter detail feedback", () => {
 
     fireEvent.input(firstCalendar, { target: { value: "2025-12-29" } });
 
-    expect(first).toHaveValue("29/12/2025");
+    expect(first).toHaveValue("29/12");
 
-    fireEvent.input(first, { target: { value: "30/12/2025" } });
+    fireEvent.input(first, { target: { value: "30/12" } });
     fireEvent.input(lastCalendar, { target: { value: "2026-01-02" } });
     fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
 
     expect(picker).toHaveBeenCalledTimes(3);
-    expect(last).toHaveValue("02/01/2026");
+    expect(last).toHaveValue("02/01");
     expect(firstCalendar).toBeDisabled();
     expect(lastCalendar).toBeDisabled();
-    expect(firstCalendar).toHaveAccessibleDescription("Saving chapter. Please wait.");
-    expect(lastCalendar).toHaveAccessibleDescription("Saving chapter. Please wait.");
+    expect(firstCalendar).toHaveAccessibleDescription("Saving content. Please wait.");
+    expect(lastCalendar).toHaveAccessibleDescription("Saving content. Please wait.");
     expect(save).toHaveBeenCalledWith(expectedDetails);
 
     view.unmount();

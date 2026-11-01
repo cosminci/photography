@@ -1,11 +1,12 @@
-import { For, Show, createMemo } from "solid-js";
-import type { Slot } from "../model/Workspace";
+import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
+import type { Country, Slot } from "../model/Workspace";
 import type { Photo } from "../model/Photo";
 import type { PlacementSession } from "./PlacementSession";
 import { PhotoSlot } from "./PhotoSlot";
 import type { PhotoChoice } from "./PhotoDrag";
 import { albumAuthors, type Author } from "../model/Album";
 import type { CaptionEditing } from "./PhotoCaption";
+import { EditorialText } from "./EditorialText";
 
 export interface CanvasPhotos {
   readonly session: PlacementSession;
@@ -15,6 +16,8 @@ export interface CanvasPhotos {
   readonly unavailable: string | undefined;
   readonly reader: boolean;
   readonly captions?: CaptionEditing;
+  readonly onEditText?: (opener: HTMLButtonElement) => void;
+  readonly textUnavailable?: string | undefined;
 }
 
 const spreadWidth = 2381.102;
@@ -22,7 +25,22 @@ const spreadHeight = 765.354;
 export const spreadAspectRatio = spreadWidth / spreadHeight;
 export const coverAspectRatio = 3;
 
-export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; text: string; label: string; editing?: CanvasPhotos }) {
+export function SpreadCanvas(props: {
+  slots: readonly Slot[];
+  title: string;
+  text: string;
+  label: string;
+  gear?: string | undefined;
+  synopsisCountries?: readonly Country[] | undefined;
+  editing?: CanvasPhotos;
+}) {
+  const [failedFlags, setFailedFlags] = createSignal<readonly string[]>([]);
+  createEffect(
+    on(
+      () => props.synopsisCountries?.map((country) => country.id).join(","),
+      () => setFailedFlags([]),
+    ),
+  );
   return (
     <div class="canvas-frame">
       <div
@@ -38,6 +56,21 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
           style={{ "aspect-ratio": spreadAspectRatio }}
         >
           <rect width={spreadWidth} height={spreadHeight} fill="white" />
+          <Show when={props.synopsisCountries !== undefined}>
+            <For each={props.slots.filter((slot) => slot.kind === "text")}>
+              {(slot) => (
+                <rect
+                  x={`${String(slot.x + slot.width / 2 - 20)}%`}
+                  y="0"
+                  width="40%"
+                  height="100%"
+                  fill="#282828"
+                  role="img"
+                  aria-label="Synopsis background"
+                />
+              )}
+            </For>
+          </Show>
           <For each={props.slots}>
             {(slot) => (
               <svg x={`${String(slot.x)}%`} y={`${String(slot.y)}%`} width={`${String(slot.width)}%`} height={`${String(slot.height)}%`}>
@@ -45,10 +78,13 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
                   when={slot.kind === "photo"}
                   fallback={
                     <foreignObject width="100%" height="100%">
-                      <div class="spread-owner-text">
-                        <div class="spread-owner-title">{props.title}</div>
-                        <p>{props.text}</p>
-                      </div>
+                      <EditorialText
+                        title={props.title}
+                        text={props.text}
+                        gear={props.gear}
+                        synopsis={props.synopsisCountries !== undefined}
+                        textWidth={props.synopsisCountries === undefined ? undefined : (20 / slot.width) * 100}
+                      />
                     </foreignObject>
                   }
                 >
@@ -57,7 +93,61 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
               </svg>
             )}
           </For>
+          <Show when={props.synopsisCountries}>
+            {(flags) => (
+              <For each={props.slots.filter((slot) => slot.kind === "text")}>
+                {(slot) => {
+                  const stripY = () => ((slot.y + slot.height) / 100) * spreadHeight - 116;
+                  const startX = () => ((slot.x + slot.width / 2) / 100) * spreadWidth - (flags().length * 46 - 4) / 2;
+                  return (
+                    <Show when={flags().length > 0}>
+                      <g role="group" aria-label="Synopsis country flags">
+                        <rect x={`${String(slot.x + slot.width / 2 - 20)}%`} y={stripY()} width="40%" height="44" fill="white" />
+                        <For each={flags()}>
+                          {(country, index) => (
+                            <Show when={!failedFlags().includes(country.name)}>
+                              <image
+                                href={`/flags/${encodeURIComponent(country.code.toLowerCase())}.png`}
+                                x={startX() + index() * 46}
+                                y={stripY() + 8}
+                                width="42"
+                                height="28"
+                                preserveAspectRatio="xMidYMid meet"
+                                role="img"
+                                aria-label={`${country.name} flag`}
+                                onError={() => setFailedFlags((current) => [...current, country.name])}
+                              />
+                            </Show>
+                          )}
+                        </For>
+                      </g>
+                    </Show>
+                  );
+                }}
+              </For>
+            )}
+          </Show>
         </svg>
+        <Show when={props.editing !== undefined && !props.editing.reader && props.editing.onEditText !== undefined}>
+          <For each={props.slots.filter((slot) => slot.kind === "text")}>
+            {(slot) => (
+              <button
+                type="button"
+                class="icon-button content-text-edit"
+                aria-label={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
+                title={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
+                style={{ left: `${String(slot.x + slot.width)}%`, top: `${String(slot.y)}%` }}
+                disabled={props.editing?.textUnavailable !== undefined}
+                aria-describedby={props.editing?.textUnavailable === undefined ? undefined : "content-edit-reason"}
+                onClick={(event) => props.editing?.onEditText?.(event.currentTarget)}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
+                </svg>
+              </button>
+            )}
+          </For>
+        </Show>
         <Show when={props.editing}>
           {(editing) => (
             <For each={props.slots.filter((slot) => slot.kind === "photo").map((slot) => slot.id)}>
@@ -88,6 +178,9 @@ export function SpreadCanvas(props: { slots: readonly Slot[]; title: string; tex
           )}
         </Show>
       </div>
+      <Show when={failedFlags().length > 0}>
+        <p role="alert">Flag artwork is unavailable for {failedFlags().join(", ")}.</p>
+      </Show>
     </div>
   );
 }

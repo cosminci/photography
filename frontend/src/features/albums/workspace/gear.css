@@ -1,0 +1,189 @@
+.album-dialog.chapter-dialog.has-gear,
+.album-dialog.gear-catalog-dialog {
+  width: min(880px, calc(100vw - 32px));
+}
+.chapter-editor-columns,
+.gear-catalog-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+.chapter-editor-columns > section,
+.gear-catalog-columns > section {
+  min-width: 0;
+}
+.chapter-gear-column,
+.gear-catalog-columns > section + section {
+  border-left: 1px solid var(--line);
+  padding-left: 24px;
+}
+.chapter-details-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+.chapter-dialog .chapter-gear-fields {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.chapter-gear-fields legend {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.chapter-camera {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+}
+.chapter-camera:focus-visible {
+  outline: 2px solid #70b8c1;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.chapter-camera-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.chapter-lens-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 6px 0;
+}
+.chapter-lens-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+}
+.chapter-gear-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chapter-dialog .chapter-gear-fields select {
+  font-size: 12px;
+  min-height: 30px;
+  font-weight: 400;
+}
+button.gear-remove,
+button.gear-manage-link {
+  min-height: 24px;
+  padding: 2px 5px;
+  border: 0;
+  background: transparent;
+  color: #37636b;
+  font-size: 11px;
+  font-weight: 400;
+}
+button.gear-remove:hover,
+button.gear-manage-link:hover {
+  background: #e8f1f1;
+}
+.gear-manage-link {
+  white-space: nowrap;
+}
+.gear-compatibility,
+.gear-catalog-row small {
+  display: block;
+  margin: 3px 0 0;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: left;
+}
+.album-dialog.gear-catalog-dialog {
+  font-size: 12px;
+}
+.gear-catalog-dialog h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.gear-catalog-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+.gear-catalog-row button {
+  min-height: 28px;
+}
+.gear-catalog-row small {
+  margin-top: 3px;
+}
+.album-dialog.gear-catalog-dialog > .dialog-heading {
+  margin-bottom: 20px;
+}
+.gear-catalog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.gear-compatibility-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.album-dialog.chapter-dialog label,
+.album-dialog.chapter-dialog input,
+.album-dialog.chapter-dialog select,
+.album-dialog.gear-catalog-dialog label,
+.album-dialog.gear-catalog-dialog input,
+.album-dialog.gear-catalog-dialog select {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+}
+.album-dialog.chapter-dialog input,
+.album-dialog.gear-catalog-dialog input {
+  min-height: 34px;
+}
+.album-dialog.chapter-dialog .country-selections button,
+.album-dialog.chapter-dialog .country-options button {
+  font-size: 11px;
+  font-weight: 400;
+}
+.album-dialog.chapter-dialog .dialog-actions button,
+.album-dialog.content-dialog .dialog-actions button {
+  min-height: 32px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.gear-catalog-dialog select {
+  width: 100%;
+  margin: 6px 0 12px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: white;
+  color: inherit;
+}
+.content-help {
+  font-size: 12px;
+}
+@media (max-width: 720px) {
+  .chapter-editor-columns,
+  .gear-catalog-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chapter-gear-column,
+  .gear-catalog-columns > section + section {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 16px;
+  }
+}

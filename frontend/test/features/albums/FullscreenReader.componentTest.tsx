@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSignal } from "solid-js";
 import { FullscreenReader } from "../../../src/features/albums/workspace/FullscreenReader";
 
 describe("fullscreen reader browser boundary", () => {
@@ -188,6 +189,30 @@ describe("fullscreen reader browser boundary", () => {
 
     expect(screen.getByRole("button", { name: "Reader mode" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reader mode" })).toHaveAccessibleDescription("Choose an available album part.");
+  });
+  it.each([true, false])("should preserve owned Reader return focus across pending acquisition with retainedFocus=%s", async (retainedFocus) => {
+    const [unavailable, change] = createSignal<string>();
+    render(() => (
+      <>
+        <FullscreenReader aspectRatio={3} canPrevious={true} canNext={true} unavailable={unavailable()} onNavigate={vi.fn()} label="Kyoto">
+          <div role="img" aria-label="Saved book" />
+        </FullscreenReader>
+        <button type="button">Other control</button>
+      </>
+    ));
+    const reader = screen.getByRole("button", { name: "Reader mode" });
+    fireEvent.click(reader);
+    await screen.findByRole("button", { name: "Exit reader" });
+    change("Loading saved content.");
+    fireEvent.click(screen.getByRole("button", { name: "Exit reader" }));
+    await waitFor(() => expect(screen.getByText("Loading saved content.")).toHaveFocus());
+    const other = screen.getByRole("button", { name: "Other control" });
+    if (!retainedFocus) other.focus();
+    change(undefined);
+
+    await waitFor(() => expect(retainedFocus ? reader : other).toHaveFocus());
+    expect(reader).toBeEnabled();
+    expect(screen.getByRole("img", { name: "Saved book" })).toBeInTheDocument();
   });
 
   it("should prevent duplicate requests while fullscreen entry is pending", async () => {

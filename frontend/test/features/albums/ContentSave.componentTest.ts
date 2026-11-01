@@ -4,6 +4,44 @@ import { AcknowledgedWriteError, AlbumRequestError } from "../../../src/features
 import { createContentSave } from "../../../src/features/albums/workspace/ContentSave";
 
 describe("content save lifecycle", () => {
+  it("should not start another write or reconciliation after its owning scope is disposed", async () => {
+    const save = vi.fn();
+    const read = vi.fn();
+    const { session, dispose } = createRoot((release) => ({
+      session: createContentSave<string>({ save, read, onSaved: vi.fn(), equal: (left, right) => left === right }),
+      dispose: release,
+    }));
+    session.begin("Retained");
+    dispose();
+    await session.commit();
+    await session.reconcile();
+    expect(save).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(session.draft()).toEqual({ original: "Retained", value: "Retained" });
+  });
+  it.each(["acknowledged", "uncertain"] as const)("should retain %s publication failures and retry reads without replaying writes", async (phase) => {
+    const save = phase === "acknowledged" ? vi.fn().mockResolvedValue("Saved") : vi.fn().mockRejectedValue(new Error("offline"));
+    const read = vi.fn().mockResolvedValue("Saved");
+    const onSaved = vi.fn().mockImplementationOnce(() => {
+      throw new Error("Publication failed");
+    });
+    if (phase === "acknowledged")
+      onSaved.mockImplementationOnce(() => {
+        throw new Error("Publication still failed");
+      });
+    const session = createRoot(() => createContentSave<string>({ save, read, onSaved, equal: (left, right) => left === right }));
+    session.begin("Saved");
+    await session.commit();
+    if (phase === "uncertain") await session.reconcile();
+
+    expect(session.recovery()).toBe("acknowledged");
+    expect(session.draft()).toEqual({ original: "Saved", value: "Saved" });
+    await session.commit();
+
+    expect(save).toHaveBeenCalledOnce();
+    expect(session.draft()).toBeUndefined();
+    expect(onSaved).toHaveBeenCalledWith("Saved", "Saved");
+  });
   it("should retain pending drafts and ignore duplicate commit, cancel and reconciliation", async () => {
     let acknowledge!: (value: string) => void;
     const pending = new Promise<string>((resolve) => {
@@ -31,7 +69,7 @@ describe("content save lifecycle", () => {
     acknowledge("  山\n\n ");
     await writing;
 
-    expect(onSaved).toHaveBeenCalledExactlyOnceWith("  山\n\n ");
+    expect(onSaved).toHaveBeenCalledExactlyOnceWith("  山\n\n ", "  山\n\n ");
     expect(session.draft()).toBeUndefined();
     expect(read).not.toHaveBeenCalled();
   });
@@ -56,7 +94,7 @@ describe("content save lifecycle", () => {
 
       expect(save).toHaveBeenCalledExactlyOnceWith("");
       expect(read).toHaveBeenCalledTimes(2);
-      expect(onSaved).toHaveBeenCalledExactlyOnceWith("");
+      expect(onSaved).toHaveBeenCalledExactlyOnceWith("", "");
       expect(session.draft()).toBeUndefined();
     },
   );
@@ -79,13 +117,13 @@ describe("content save lifecycle", () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledOnce();
     expect(session.recovery()).toBeUndefined();
-    if (confirmed) expect(onSaved).toHaveBeenCalledExactlyOnceWith("Draft");
+    if (confirmed) expect(onSaved).toHaveBeenCalledExactlyOnceWith("Draft", "Draft");
     else {
       expect(session.draft()).toEqual({ original: "Draft", value: "Draft" });
       expect(session.error()).toBe("The draft is not saved. Review it before saving again.");
       await session.commit();
       expect(save).toHaveBeenCalledTimes(2);
-      expect(onSaved).toHaveBeenCalledExactlyOnceWith("Draft");
+      expect(onSaved).toHaveBeenCalledExactlyOnceWith("Draft", "Draft");
     }
   });
 

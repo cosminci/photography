@@ -410,6 +410,15 @@ describe("album dashboard and open", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
   return {
+    gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
+    chapterGear: vi.fn().mockResolvedValue([]),
+    saveChapterGear: vi.fn(),
+    createCamera: vi.fn(),
+    updateCamera: vi.fn(),
+    deleteCamera: vi.fn(),
+    createLens: vi.fn(),
+    updateLens: vi.fn(),
+    deleteLens: vi.fn(),
     readPlacements: vi
       .fn()
       .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>

@@ -7,6 +7,13 @@ import { photoDragFeedback, photoDragType, readPhotoChoice, startPhotoDrag, type
 import type { PlacementSession } from "./PlacementSession";
 import "./placement.css";
 
+const cornerIcons = {
+  top_left: { label: "Top left", path: "M5 5h6v3H5z" },
+  top_right: { label: "Top right", path: "M13 5h6v3h-6z" },
+  bottom_left: { label: "Bottom left", path: "M5 16h6v3H5z" },
+  bottom_right: { label: "Bottom right", path: "M13 16h6v3h-6z" },
+};
+
 export function PhotoSlot(props: {
   slotId: string;
   label: string;
@@ -308,35 +315,28 @@ export function PhotoSlot(props: {
                 </svg>
               </button>
               <Show when={row().kind === "spread"}>
-                <For each={alternativeCorners()}>
-                  {(corner) => (
-                    <button
-                      type="button"
-                      class="photo-slot-action"
-                      aria-label={`Caption ${corner.replace("_", " ")}`}
-                      title={`Caption ${corner.replace("_", " ")}`}
-                      disabled={actionReason() !== undefined}
-                      aria-describedby={actionReason() === undefined ? undefined : `${reasonId}-action`}
-                      onClick={() => {
-                        void edit({ operation: "captionCorner", placementId: row().id, captionCorner: corner });
-                      }}
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d={
-                            corner === "top_left"
-                              ? "M4 10V4h6M4 7h10M4 10h7"
-                              : corner === "top_right"
-                                ? "M14 4h6v6M10 7h10M13 10h7"
-                                : corner === "bottom_left"
-                                  ? "M4 14v6h6M4 14h7M4 17h10"
-                                  : "M14 20h6v-6M13 14h7M10 17h10"
-                          }
-                        />
-                      </svg>
-                    </button>
-                  )}
-                </For>
+                <div class="photo-caption-actions" role="group" aria-label="Move caption">
+                  <For each={alternativeCorners()}>
+                    {(corner) => (
+                      <button
+                        type="button"
+                        class="photo-slot-action"
+                        aria-label={`Move caption to ${cornerIcons[corner].label.toLowerCase()}`}
+                        title={cornerIcons[corner].label}
+                        disabled={actionReason() !== undefined}
+                        aria-describedby={actionReason() === undefined ? undefined : `${reasonId}-action`}
+                        onClick={() => {
+                          void edit({ operation: "captionCorner", placementId: row().id, captionCorner: corner });
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <rect x="3" y="3" width="18" height="18" rx="1" />
+                          <path d={cornerIcons[corner].path} />
+                        </svg>
+                      </button>
+                    )}
+                  </For>
+                </div>
               </Show>
             </div>
           )}

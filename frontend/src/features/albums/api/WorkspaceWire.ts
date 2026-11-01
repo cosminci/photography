@@ -4,7 +4,9 @@ import { readScheduling } from "./PhotoWire";
 import type { ChapterSave } from "../model/Photo";
 
 export function readChapterIdentity(value: unknown): ChapterSave {
-  return { id: readText(readRecord(value)["id"]), scheduling: readScheduling(value) };
+  const id = readText(readRecord(value)["id"]);
+  if (id === "") throw new Error("Missing saved chapter identity");
+  return { id, scheduling: readScheduling(value) };
 }
 
 export function readChapter(value: unknown): Chapter {

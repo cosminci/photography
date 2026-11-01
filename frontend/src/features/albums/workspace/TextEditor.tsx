@@ -27,6 +27,8 @@ export function TextEditor(props: {
     save.begin(props.text);
     dialog.showModal();
     input.focus();
+    input.setSelectionRange(0, 0);
+    input.scrollTop = 0;
   });
   createEffect(() => {
     props.onBlock(save.unavailable() ?? "Finish the content edit before leaving.");
@@ -67,6 +69,9 @@ export function TextEditor(props: {
         cancel();
       }}
     >
+      <header class="dialog-heading">
+        <h2>{props.heading}</h2>
+      </header>
       <form
         aria-label={props.heading}
         onSubmit={(event) => {
@@ -74,41 +79,12 @@ export function TextEditor(props: {
           void save.commit();
         }}
       >
-        <header class="dialog-heading">
-          <h2>{props.heading}</h2>
-          <div class="content-actions" role="group" aria-label="Text actions">
-            <button
-              type="submit"
-              class="content-action"
-              aria-label="Save"
-              title="Save"
-              disabled={save.unavailable() !== undefined}
-              aria-describedby={save.unavailable() === undefined ? undefined : feedback}
-            >
-              <svg class="workspace-action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 3h13l4 4v14H3V3ZM7 3v6h10V3M7 21v-8h10v8" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="content-action content-cancel"
-              aria-label="Cancel"
-              title="Cancel"
-              disabled={save.unavailable() !== undefined}
-              aria-describedby={save.unavailable() === undefined ? undefined : feedback}
-              onClick={cancel}
-            >
-              <svg class="workspace-action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m5 5 14 14M5 19 19 5" />
-              </svg>
-            </button>
-          </div>
-        </header>
         <textarea
           ref={(element) => {
             input = element;
           }}
           aria-label={props.label}
+          rows={14}
           value={save.draft()?.value ?? props.text}
           disabled={save.unavailable() !== undefined}
           aria-describedby={feedback}
@@ -137,6 +113,33 @@ export function TextEditor(props: {
               Read saved content
             </button>
           </Show>
+        </div>
+        <div class="dialog-actions" role="group" aria-label="Text actions">
+          <button
+            type="button"
+            class="editor-icon-action editor-cancel"
+            aria-label="Cancel"
+            title="Cancel"
+            disabled={save.unavailable() !== undefined}
+            aria-describedby={save.unavailable() === undefined ? undefined : feedback}
+            onClick={cancel}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 6 12 12M6 18 18 6" />
+            </svg>
+          </button>
+          <button
+            type="submit"
+            class="editor-icon-action"
+            aria-label="Save"
+            title="Save"
+            disabled={save.unavailable() !== undefined}
+            aria-describedby={save.unavailable() === undefined ? undefined : feedback}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 3h12l4 4v14H3V3ZM7 3v6h10V3M7 21v-8h10v8M14 4v3" />
+            </svg>
+          </button>
         </div>
       </form>
     </dialog>

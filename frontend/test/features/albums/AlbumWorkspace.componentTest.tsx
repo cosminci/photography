@@ -2,7 +2,14 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import { createSignal } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
-import { AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient, type Author } from "../../../src/features/albums/model/Album";
+import {
+  AcknowledgedWriteError,
+  AlbumRequestError,
+  SpreadOccupiedError,
+  type Album,
+  type AlbumClient,
+  type Author,
+} from "../../../src/features/albums/model/Album";
 import type { Chapter, Spread, Workspace } from "../../../src/features/albums/model/Workspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
 import type { PlacementContext, PlacementSnapshot, SpreadPlacement, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
@@ -97,6 +104,341 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it("should reconcile an acknowledged album publication failure without replaying synopsis", async () => {
+    const text = "  Saved 山\n\n ";
+    const client = buildClient({
+      saveSynopsis: vi.fn().mockResolvedValue({ ...album, id: "unexpected", synopsis: text }),
+      open: vi
+        .fn()
+        .mockResolvedValueOnce(album)
+        .mockResolvedValue({ ...album, synopsis: text }),
+    });
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
+    fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: text } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Album synopsis" })).not.toBeInTheDocument());
+    expect(client.saveSynopsis).toHaveBeenCalledExactlyOnceWith(album.id, text);
+    expect(client.open).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent("Saved 山");
+  });
+  it("should return reconciled author focus to the group when the initiating author becomes the final saved selection", async () => {
+    const client = buildClient({
+      saveAuthors: vi.fn().mockRejectedValue(new AcknowledgedWriteError("Malformed saved metadata")),
+      open: vi
+        .fn()
+        .mockResolvedValueOnce(album)
+        .mockRejectedValueOnce(new Error("Read offline"))
+        .mockResolvedValue({ ...album, authors: ["Iacob"] }),
+    });
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    const author = await screen.findByRole("button", { name: "Iacob" });
+    author.focus();
+    fireEvent.click(author);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Read saved authors" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Read saved authors" }));
+    const group = screen.getByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(group).toHaveAccessibleDescription("Choose at least one author."));
+    await waitFor(() => expect(group).toHaveFocus());
+    await waitFor(() => expect(author).toBeDisabled());
+    expect(client.saveAuthors).toHaveBeenCalledOnce();
+  });
+  it("should deliver ordered country artwork, report a missing image explicitly and restore artwork after navigation", async () => {
+    const client = buildClient();
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    const japan = await screen.findByRole("img", { name: "Japan flag" });
+    expect(screen.getAllByRole("img", { name: / flag$/ }).map((image) => image.getAttribute("aria-label"))).toEqual(["Japan flag", "Romania flag"]);
+    expect(japan).toHaveAttribute("href", "/flags/jp.png");
+    fireEvent.error(japan);
+    expect(screen.getByRole("alert")).toHaveTextContent("Flag artwork is unavailable for Japan.");
+    expect(screen.queryByRole("img", { name: "Japan flag" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
+    fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
+    expect(await screen.findByRole("img", { name: "Japan flag" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(client.updateChapter).not.toHaveBeenCalled();
+  });
+  it.each(["current", "stale", "disposed"] as const)(
+    "should keep %s failed gear acquisition explicit without publishing stale or disposed feedback",
+    async (phase) => {
+      let fail!: (error: Error) => void;
+      const delayed = new Promise<never>((_resolve, reject) => {
+        fail = reject;
+      });
+      const client = buildClient({ gearCatalog: vi.fn().mockReturnValueOnce(delayed).mockResolvedValue({ cameras: [], lenses: [] }) });
+      window.history.replaceState(null, "", "?part=vacation");
+      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      await screen.findByRole("button", { name: "Edit chapter details" });
+      if (phase === "stale") fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
+      if (phase === "disposed") view.unmount();
+      fail(new Error("Catalog offline"));
+      await expect(delayed).rejects.toThrow("Catalog offline");
+      if (phase === "current") {
+        expect(await screen.findByRole("alert")).toHaveTextContent("The request could not be completed.");
+        fireEvent.click(screen.getByRole("button", { name: "Read chapter gear" }));
+        await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+      } else {
+        await Promise.resolve();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+    },
+  );
+  it.each(["resolve", "reject"] as const)("should cancel pending initial gear acquisition and ignore its late %s", async (outcome) => {
+    let complete!: (value: { cameras: []; lenses: [] }) => void;
+    let fail!: (error: Error) => void;
+    const pending = new Promise<{ cameras: []; lenses: [] }>((resolve, reject) => {
+      complete = resolve;
+      fail = reject;
+    });
+    const client = buildClient({ gearCatalog: vi.fn().mockResolvedValueOnce({ cameras: [], lenses: [] }).mockReturnValue(pending) });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    await waitFor(() => {
+      expect(client.gearCatalog).toHaveBeenCalledTimes(2);
+    });
+    fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
+    expect(client.updateChapter).not.toHaveBeenCalled();
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+    const signal = vi.mocked(client.gearCatalog).mock.calls[1]?.[0];
+    expect(signal?.aborted).toBe(true);
+    if (outcome === "resolve") {
+      complete({ cameras: [], lenses: [] });
+      await pending;
+    } else {
+      fail(new Error("Offline after closing"));
+      await expect(pending).rejects.toThrow("Offline after closing");
+    }
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter details" })).toHaveFocus());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(client.updateChapter).not.toHaveBeenCalled();
+  });
+  it.each(["uncertain", "acknowledged"] as const)(
+    "should reconcile a created chapter identity after %s metadata and retain a missing-read draft",
+    async (phase) => {
+      const failure = phase === "uncertain" ? new Error("Lost metadata acknowledgement") : new AcknowledgedWriteError("Malformed saved identity");
+      const client = buildClient({
+        chapters: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue(workspace.chapters),
+        composition: vi
+          .fn()
+          .mockResolvedValueOnce(membership([opening]))
+          .mockResolvedValue(membership(workspace.spreads)),
+        createChapter: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ id: home.id, scheduling: "queued" }),
+      });
+      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
+      await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
+      fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
+      fireEvent.input(screen.getByRole("textbox", { name: "Photo folder" }), { target: { value: home.sourceFolder } });
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" }));
+      await screen.findByRole("alert");
+      fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+      if (phase === "uncertain") {
+        await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
+        expect(screen.getByRole("textbox", { name: "Photo folder" })).toHaveValue(home.sourceFolder);
+        fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" }));
+      }
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add a chapter" })).not.toBeInTheDocument());
+
+      expect(client.createChapter).toHaveBeenCalledTimes(phase === "uncertain" ? 2 : 1);
+      expect(client.saveChapterGear).not.toHaveBeenCalled();
+      expect(await screen.findByRole("heading", { name: "Home" })).toBeInTheDocument();
+    },
+  );
+  it("should validate an unsaved interchangeable body before writing metadata and permit closing a rejected gear phase", async () => {
+    const camera = {
+      id: "body",
+      name: "Body",
+      code: "body",
+      kind: "interchangeable_lens" as const,
+      mount: "sony_e" as const,
+      sensorFormat: "aps_c" as const,
+    };
+    const lens = { id: "lens", name: "Lens", code: "lens", mount: "sony_e" as const, coverage: "aps_c" as const };
+    const client = buildClient({
+      gearCatalog: vi.fn().mockResolvedValue({ cameras: [camera], lenses: [lens] }),
+      saveChapterGear: vi.fn().mockRejectedValue(new AlbumRequestError(400, "Gear rejected")),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose at least one lens");
+    expect(client.updateChapter).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: lens.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await screen.findByText(/gear remains unresolved/);
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Chapter details" })).not.toBeInTheDocument());
+    expect(client.updateChapter).toHaveBeenCalledOnce();
+    expect(client.saveChapterGear).toHaveBeenCalledOnce();
+  });
+  it.each(["stale", "disposed", "invalid"] as const)(
+    "should discard %s gear acquisition and retain explicit retryable presentation failures",
+    async (phase) => {
+      let finish!: (catalog: { cameras: []; lenses: [] }) => void;
+      const delayed = new Promise<{ cameras: []; lenses: [] }>((resolve) => {
+        finish = resolve;
+      });
+      const client = buildClient({
+        gearCatalog: vi
+          .fn()
+          .mockReturnValueOnce(phase === "invalid" ? Promise.resolve({ cameras: [], lenses: [] }) : delayed)
+          .mockResolvedValue({ cameras: [], lenses: [] }),
+        chapterGear: vi.fn().mockResolvedValue(phase === "invalid" ? [{ cameraId: "missing", lensIds: [] }] : []),
+      });
+      window.history.replaceState(null, "", "?part=vacation");
+      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      await screen.findByRole("button", { name: "Edit chapter details" });
+      if (phase === "invalid") {
+        expect(await screen.findByRole("alert")).toHaveTextContent("A selected camera is no longer available.");
+        expect(screen.getByRole("button", { name: "Reader mode" })).toBeDisabled();
+        vi.mocked(client.chapterGear).mockResolvedValue([]);
+        fireEvent.click(screen.getByRole("button", { name: "Read chapter gear" }));
+        await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+      } else {
+        if (phase === "stale") fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
+        else view.unmount();
+        finish({ cameras: [], lenses: [] });
+        await delayed;
+        expect(screen.queryByRole("group", { name: "Chapter gear" })).not.toBeInTheDocument();
+      }
+    },
+  );
+  it.each([
+    { failure: new AlbumRequestError(400, "Rejected gear"), saved: false, acknowledged: false },
+    { failure: new Error("Lost gear acknowledgement"), saved: true, acknowledged: false },
+    { failure: new Error("Lost gear acknowledgement"), saved: false, acknowledged: false },
+    { failure: new AcknowledgedWriteError("Saved gear refresh failed"), saved: true, acknowledged: true },
+  ])("should retain saved metadata through gear failure $failure with saved=$saved", async ({ failure, saved, acknowledged }) => {
+    const camera = { id: "phone", code: "phone", name: "Phone", kind: "fixed_lens" as const };
+    const selected = [{ cameraId: camera.id, lensIds: [] }];
+    const client = buildClient({
+      gearCatalog: vi.fn().mockResolvedValue({ cameras: [camera], lenses: [] }),
+      chapterGear: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce(saved ? selected : [])
+        .mockResolvedValue(selected),
+      saveChapterGear: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    if (acknowledged) await waitFor(() => expect(screen.queryByRole("dialog", { name: "Chapter details" })).not.toBeInTheDocument());
+    else {
+      await screen.findByRole("alert");
+      expect(screen.getByRole("textbox", { name: "Location / name" })).toBeDisabled();
+      expect(screen.getByRole("textbox", { name: "Location / name" })).toHaveValue(vacation.name);
+      if (failure instanceof AlbumRequestError) {
+        fireEvent.click(screen.getByRole("button", { name: "Save gear" }));
+      } else {
+        expect(screen.getByRole("button", { name: "Save gear" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+        if (!saved) {
+          await waitFor(() => expect(screen.getByRole("button", { name: "Save gear" })).toBeEnabled());
+          fireEvent.click(screen.getByRole("button", { name: "Save gear" }));
+        }
+      }
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Chapter details" })).not.toBeInTheDocument());
+    }
+
+    expect(client.updateChapter).toHaveBeenCalledOnce();
+    expect(client.saveChapterGear).toHaveBeenCalledTimes(saved ? 1 : 2);
+    expect(client.saveChapterGear).toHaveBeenCalledWith(album.id, vacation.id, selected);
+  });
+  it.each([
+    { failure: new Error("Lost metadata acknowledgement"), found: true },
+    { failure: new Error("Lost metadata acknowledgement"), found: false },
+    { failure: new AcknowledgedWriteError("Malformed metadata response"), found: true },
+  ])("should reconcile metadata $failure before another write with found=$found", async ({ failure, found }) => {
+    const renamed = { ...vacation, name: "Renamed" };
+    const client = buildClient({
+      updateChapter: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ id: vacation.id, scheduling: "not-requested" }),
+      chapters: vi
+        .fn()
+        .mockResolvedValueOnce(workspace.chapters)
+        .mockResolvedValueOnce(found ? [renamed, home] : workspace.chapters)
+        .mockResolvedValue([renamed, home]),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+    fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: renamed.name } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    if (!(failure instanceof AcknowledgedWriteError)) {
+      await screen.findByRole("alert");
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+      fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+      expect(screen.getByRole("dialog", { name: "Chapter details" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+      if (!found) {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+        fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+      }
+    }
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Chapter details" })).not.toBeInTheDocument());
+
+    expect(client.updateChapter).toHaveBeenCalledTimes(found ? 1 : 2);
+    expect(client.saveChapterGear).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: renamed.name })).toBeInTheDocument();
+  });
+  it("should retain failed gear acquisition and the metadata draft until a successful resource retry", async () => {
+    const client = buildClient({
+      gearCatalog: vi
+        .fn()
+        .mockResolvedValueOnce({ cameras: [], lenses: [] })
+        .mockRejectedValueOnce(new Error("Catalog offline"))
+        .mockResolvedValue({ cameras: [], lenses: [] }),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    await waitFor(() => expect(screen.queryByText("Loading saved chapter gear.")).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "Save chapter" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save chapter" })).toHaveAccessibleDescription(
+      expect.stringContaining("Load saved chapter gear before saving."),
+    );
+    fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Load saved chapter gear before saving.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry gear" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "Location / name" })).toHaveValue(vacation.name);
+    fireEvent.click(screen.getByRole("button", { name: "Manage catalog" }));
+    await screen.findByRole("dialog", { name: "Gear catalog" });
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Gear catalog" })).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage catalog" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(client.updateChapter).not.toHaveBeenCalled();
+  });
+  it("should select gear inside the confirmed chapter editor and save it without another metadata write", async () => {
+    const camera = { id: "camera", code: "Camera code", name: "Saved camera", kind: "fixed_lens" as const };
+    const selected = [{ cameraId: camera.id, lensIds: [] }];
+    const client = buildClient({
+      gearCatalog: vi.fn().mockResolvedValue({ cameras: [camera], lenses: [] }),
+      chapterGear: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue(selected),
+      saveChapterGear: vi.fn().mockResolvedValue(undefined),
+    });
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
+    fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
+    expect(screen.getByRole("region", { name: "Chapter metadata" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Chapter gear selection" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Chapter details" })).not.toBeInTheDocument();
+    });
+
+    expect(client.updateChapter).toHaveBeenCalledOnce();
+    expect(client.saveChapterGear).toHaveBeenCalledExactlyOnceWith(album.id, vacation.id, selected);
+  });
   it.each(["refresh", "spread save"] as const)("should explain content editing disabled during %s", async (phase) => {
     let finishWrite!: (id: string) => void;
     let finishRead!: (chapters: readonly Chapter[]) => void;
@@ -118,6 +460,7 @@ describe("album workspace browser boundary", () => {
     await screen.findByRole("button", { name: "Edit chapter description" });
     if (phase === "refresh") {
       fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
       fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
       await waitFor(() => {
         expect(client.chapters).toHaveBeenCalledTimes(2);
@@ -188,10 +531,9 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add caption for Mountain.jpg" }));
     const editor = screen.getByRole("textbox", { name: "Caption for Mountain.jpg" });
     editor.textContent = "Draft";
-    Object.defineProperty(editor, "innerText", { configurable: true, value: "Draft" });
     fireEvent.input(editor);
     if (uncertain) {
-      fireEvent.pointerLeave(editor);
+      fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
       await screen.findByRole("button", { name: "Read saved caption" });
     }
     vi.mocked(client.spread).mockImplementation((_album, id) => {
@@ -294,9 +636,8 @@ describe("album workspace browser boundary", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Edit caption for Mountain.jpg" }));
       const editor = screen.getByRole("textbox", { name: "Caption for Mountain.jpg" });
       editor.textContent = text;
-      Object.defineProperty(editor, "innerText", { configurable: true, value: text });
       fireEvent.input(editor);
-      fireEvent.pointerLeave(editor);
+      fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
       await screen.findByRole("button", { name: "Read saved caption" });
       expect(screen.getByRole("button", { name: "Remove photo from Photo slot 1" })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name: "Read saved caption" }));
@@ -323,7 +664,7 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(opener);
     fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: text } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Synopsis" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Album synopsis" })).not.toBeInTheDocument());
 
     expect(client.saveSynopsis).toHaveBeenCalledExactlyOnceWith(album.id, text);
     expect(client.open).toHaveBeenCalledTimes(acquired);
@@ -373,7 +714,7 @@ describe("album workspace browser boundary", () => {
     const client = buildClient({ saveSynopsis: vi.fn().mockRejectedValueOnce(new Error("Connection lost")) });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
-    const dialog = screen.getByRole("dialog", { name: "Synopsis" });
+    const dialog = screen.getByRole("dialog", { name: "Album synopsis" });
     const editor = within(dialog).getByRole("textbox", { name: "Synopsis" });
     fireEvent.input(editor, { target: { value: text } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -405,17 +746,36 @@ describe("album workspace browser boundary", () => {
     expect(screen.queryByRole("textbox", { name: "Synopsis" })).not.toBeInTheDocument();
     expect(client.saveSynopsis).not.toHaveBeenCalled();
   });
-  it("should save grouped authors immediately and explain the final selected author", async () => {
-    const client = buildClient();
+  it.each([true, false])("should save grouped authors immediately and preserve owned focus with retainedFocus=%s", async (retainedFocus) => {
+    let acknowledge!: (saved: Album) => void;
+    const pending = new Promise<Album>((resolve) => {
+      acknowledge = resolve;
+    });
+    const client = buildClient({
+      saveAuthors: vi
+        .fn()
+        .mockReturnValueOnce(pending)
+        .mockImplementation((_id: string, authors: readonly Author[]) => Promise.resolve({ ...album, authors })),
+    });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     const group = await screen.findByRole("group", { name: "Album authors" });
+    const opener = within(group).getByRole("button", { name: "Iacob" });
+    const other = screen.getByRole("link", { name: "Back to album catalog" });
 
-    fireEvent.click(within(group).getByRole("button", { name: "Iacob" }));
+    opener.focus();
+    fireEvent.click(opener);
 
+    expect(within(group).getByRole("button", { name: "Iacob" })).toHaveAttribute("aria-pressed", "false");
+    expect(group).toHaveAttribute("aria-busy", "true");
+    expect(within(group).getByRole("button", { name: "Mara" })).toBeDisabled();
+    if (!retainedFocus) other.focus();
+    acknowledge({ ...album, authors: ["Cosmin", "Mara"] });
+    await waitFor(() => expect(within(group).getByRole("button", { name: "Mara" })).toBeEnabled());
     await waitFor(() => expect(within(group).getByRole("button", { name: "Iacob" })).toHaveAttribute("aria-pressed", "false"));
+    await waitFor(() => expect(retainedFocus ? opener : other).toHaveFocus());
     expect(client.saveAuthors).toHaveBeenCalledWith(album.id, ["Cosmin", "Mara"]);
     fireEvent.click(within(group).getByRole("button", { name: "Mara" }));
-    await waitFor(() => expect(within(group).getByRole("button", { name: "Cosmin" })).toHaveAccessibleDescription("Select at least one author."));
+    await waitFor(() => expect(within(group).getByRole("button", { name: "Cosmin" })).toHaveAccessibleDescription("Choose at least one author."));
     expect(within(group).getByRole("button", { name: "Cosmin" })).toBeDisabled();
     expect(client.saveAuthors).toHaveBeenCalledTimes(2);
   });
@@ -1173,6 +1533,7 @@ describe("album workspace browser boundary", () => {
       const view = render(() => <AlbumOpen id={album.id} client={buildClient()} events={events} />);
 
       try {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
         fireEvent.click(await screen.findByRole("button", { name: "Reader mode" }));
         const exit = await screen.findByRole("button", { name: "Exit reader" });
         const readerControls = within(screen.getByRole("group", { name: "Reader controls" }));
@@ -1238,8 +1599,8 @@ describe("album workspace browser boundary", () => {
       id: "missed",
       name: "Rome",
       countries: ["ro", "it"],
-      start: "2025-12-31",
-      end: "2026-01-01",
+      start: "2026-12-31",
+      end: "2026-12-31",
       sourceFolder: "/nas/custom",
     };
     const saved = {
@@ -1259,6 +1620,7 @@ describe("album workspace browser boundary", () => {
     const add = await screen.findByRole("button", { name: "Add chapter" });
 
     fireEvent.click(add);
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     expect(screen.queryByRole("textbox", { name: "Location / name" })).not.toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a chapter type.");
@@ -1267,7 +1629,7 @@ describe("album workspace browser boundary", () => {
     expect(screen.queryByRole("textbox", { name: "Location / name" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "vacation" } });
     expect(screen.getByRole("button", { name: "Remove Romania" })).toBeInTheDocument();
-    expect(screen.getByLabelText("First day")).toHaveValue("01/01/2026");
+    expect(screen.getByLabelText("First day")).toHaveValue("01/01");
     fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "Rome" } });
     expect(screen.getByRole("textbox", { name: "Photo folder" })).toHaveValue("/mnt/photos/2026/selection/Rome");
     fireEvent.input(screen.getByRole("textbox", { name: "Photo folder" }), { target: { value: "/nas/custom" } });
@@ -1287,8 +1649,8 @@ describe("album workspace browser boundary", () => {
     fireEvent.keyDown(search, { key: "Tab" });
     fireEvent.keyDown(search, { key: "Enter" });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    fireEvent.input(screen.getByLabelText("First day"), { target: { value: "31/12/2025" } });
-    fireEvent.input(screen.getByLabelText("Last day"), { target: { value: "01/01/2026" } });
+    fireEvent.input(screen.getByLabelText("First day"), { target: { value: "31/12" } });
+    fireEvent.input(screen.getByLabelText("Last day"), { target: { value: "31/12" } });
     expect(screen.getByRole("textbox", { name: "Photo folder" })).toHaveValue("/nas/custom");
     fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
     await waitFor(() => {
@@ -1299,15 +1661,15 @@ describe("album workspace browser boundary", () => {
       kind: "vacation",
       name: "Rome",
       countries: ["ro", "it"],
-      start: "2025-12-31",
-      end: "2026-01-01",
+      start: "2026-12-31",
+      end: "2026-12-31",
       sourceFolder: "/nas/custom",
     };
     expect(client.createChapter).toHaveBeenCalledWith(album.id, expectedDetails);
     expect(window.location.search).toBe("?part=missed");
     expect(screen.getByRole("group", { name: "Rome composition" })).toBeInTheDocument();
     expect(screen.getByText("Countries", { exact: true })).toBeInTheDocument();
-    expect(add).toHaveFocus();
+    await waitFor(() => expect(add).toHaveFocus());
   });
 
   it("should retain failed inputs, prevent duplicate submission, then keep a successful save distinct from a failed refresh", async () => {
@@ -1331,21 +1693,22 @@ describe("album workspace browser boundary", () => {
     const edit = await screen.findByRole("button", { name: "Edit chapter details" });
 
     fireEvent.click(edit);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
     expect(screen.queryByRole("combobox", { name: "Chapter type" })).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Photo folder" })).toHaveValue(vacation.sourceFolder);
     expect(screen.getByRole("button", { name: "Remove Japan" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove Romania" })).not.toBeInTheDocument();
     fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: changed.name } });
-    fireEvent.input(screen.getByLabelText("First day"), { target: { value: "01/01/2026" } });
-    fireEvent.input(screen.getByLabelText("Last day"), { target: { value: "01/01/2026" } });
+    fireEvent.input(screen.getByLabelText("First day"), { target: { value: "01/01" } });
+    fireEvent.input(screen.getByLabelText("Last day"), { target: { value: "01/01" } });
     const countrySearch = screen.getByRole("combobox", { name: "Search countries" });
     fireEvent.focus(countrySearch);
     fireEvent.input(countrySearch, { target: { value: "Romania" } });
     fireEvent.blur(countrySearch, { relatedTarget: screen.getByRole("button", { name: "Remove Japan" }) });
     fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
     expect(screen.getByRole("option", { name: "Romania (RO)" })).toBeDisabled();
-    expect(screen.getByRole("option", { name: "Romania (RO)" })).toHaveAccessibleDescription("Saving chapter. Please wait.");
-    expect(screen.getByRole("button", { name: "Save chapter" })).toHaveAccessibleDescription("Saving chapter. Please wait.");
+    expect(screen.getByRole("option", { name: "Romania (RO)" })).toHaveAccessibleDescription("Saving content. Please wait.");
+    expect(screen.getByRole("button", { name: "Save chapter" })).toHaveAccessibleDescription("Saving content. Please wait.");
     expect(screen.getByRole("button", { name: "Save chapter" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
     expect(client.updateChapter).toHaveBeenCalledTimes(1);
@@ -1373,6 +1736,7 @@ describe("album workspace browser boundary", () => {
     });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
     expect(screen.queryByRole("textbox", { name: "Location / name" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("First day")).not.toBeInTheDocument();
@@ -1408,7 +1772,7 @@ describe("album workspace browser boundary", () => {
     expect(screen.queryByLabelText("First day")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Photo folder" })).toHaveValue(home.sourceFolder);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("button", { name: "Edit chapter details" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter details" })).toHaveFocus());
     fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
@@ -1419,48 +1783,77 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   });
 
-  it.each([64, 65])("should expose chapter creation capacity at %i persisted interior spreads", async (count) => {
-    const spreads = [
-      opening,
-      vacationOpening,
-      ...Array.from({ length: count - 3 }, (_, index) => ({ ...vacationPhoto, id: `spread-${String(index)}` })),
-      ...workspace.spreads.slice(3),
-    ];
-    const finalChapter = { ...vacation, id: "final-chapter", name: "Final chapter" };
-    const finalOpening = { ...opening, id: "final-opening", chapter: finalChapter.id, kind: "chapter_start" as const };
-    const savedWorkspace = {
-      ...workspace,
-      chapters: [vacation, finalChapter, home],
-      spreads: [...spreads.slice(0, -1), finalOpening, ...spreads.slice(-1)],
-    };
-    const client = buildClient(
-      {
-        chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue(savedWorkspace.chapters),
-        composition: vi.fn().mockResolvedValueOnce(membership(spreads)).mockResolvedValue(membership(savedWorkspace.spreads)),
-        createChapter: vi.fn().mockResolvedValue({ id: finalChapter.id }),
-      },
-      { ...savedWorkspace, photoInventories: { ...workspace.photoInventories, [finalChapter.id]: inventory } },
-    );
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
-    const add = await screen.findByRole("button", { name: "Add chapter" });
+  it.each([
+    { count: 64, lostAcknowledgement: false },
+    { count: 65, lostAcknowledgement: false },
+    { count: 64, lostAcknowledgement: true },
+  ])(
+    "should expose chapter creation capacity at $count persisted spreads with lostAcknowledgement=$lostAcknowledgement",
+    async ({ count, lostAcknowledgement }) => {
+      const spreads = [
+        opening,
+        vacationOpening,
+        ...Array.from({ length: count - 3 }, (_, index) => ({ ...vacationPhoto, id: `spread-${String(index)}` })),
+        ...workspace.spreads.slice(3),
+      ];
+      const finalChapter = {
+        ...vacation,
+        id: "final-chapter",
+        name: "Final chapter",
+        countries: ["ro"],
+        start: "2026-01-01",
+        end: "2026-01-01",
+        sourceFolder: "/mnt/photos/2026/selection/Final chapter",
+        description: "",
+      };
+      const finalOpening = { ...opening, id: "final-opening", chapter: finalChapter.id, kind: "chapter_start" as const };
+      const savedWorkspace = {
+        ...workspace,
+        chapters: [vacation, finalChapter, home],
+        spreads: [...spreads.slice(0, -1), finalOpening, ...spreads.slice(-1)],
+      };
+      const client = buildClient(
+        {
+          chapters: lostAcknowledgement
+            ? vi
+                .fn()
+                .mockResolvedValueOnce(workspace.chapters)
+                .mockRejectedValueOnce(new Error("Saved metadata offline"))
+                .mockResolvedValue(savedWorkspace.chapters)
+            : vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue(savedWorkspace.chapters),
+          composition: vi.fn().mockResolvedValueOnce(membership(spreads)).mockResolvedValue(membership(savedWorkspace.spreads)),
+          createChapter: lostAcknowledgement
+            ? vi.fn().mockRejectedValue(new AcknowledgedWriteError("Malformed created identity"))
+            : vi.fn().mockResolvedValue({ id: finalChapter.id }),
+        },
+        { ...savedWorkspace, photoInventories: { ...workspace.photoInventories, [finalChapter.id]: inventory } },
+      );
+      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      const add = await screen.findByRole("button", { name: "Add chapter" });
 
-    if (count === 65) {
-      expect(add).toBeDisabled();
-      expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
-    } else {
-      expect(add).toBeEnabled();
-      fireEvent.click(add);
-      expect(screen.getByRole("dialog")).toBeInTheDocument();
-      fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: finalChapter.name } });
-      fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
-      expect(await screen.findByRole("heading", { name: finalChapter.name })).toBeInTheDocument();
-      await waitFor(() => {
-        expect(screen.getByRole("region", { name: "Album workspace" })).toHaveFocus();
-      });
-      expect(add).toBeDisabled();
-      expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
-    }
-  });
+      if (count === 65) {
+        expect(add).toBeDisabled();
+        expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
+      } else {
+        expect(add).toBeEnabled();
+        fireEvent.click(add);
+        await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+        fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: finalChapter.name } });
+        fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
+        if (lostAcknowledgement) {
+          await screen.findByRole("alert");
+          fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+        }
+        expect(await screen.findByRole("heading", { name: finalChapter.name })).toBeInTheDocument();
+        await waitFor(() => {
+          expect(screen.getByRole("region", { name: "Album workspace" })).toHaveFocus();
+        });
+        expect(add).toBeDisabled();
+        expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
+      }
+    },
+  );
 
   it("should browse canonical chapter and album photos, apply unselected live changes and Refresh the selected scope", async () => {
     const photo = {
@@ -1557,6 +1950,7 @@ describe("album workspace browser boundary", () => {
     );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
     fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
     fireEvent.click(await screen.findByRole("button", { name: "Retry refresh for Home" }));
@@ -1589,6 +1983,7 @@ describe("album workspace browser boundary", () => {
     const [id, changeAlbum] = createSignal(album.id);
     render(() => <AlbumOpen id={id()} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
+    await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
     fireEvent.submit(screen.getByRole("form", { name: "Chapter details" }));
     await waitFor(() => {
@@ -1677,6 +2072,15 @@ describe("album workspace browser boundary", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = workspace): AlbumClient {
   return {
+    gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
+    chapterGear: vi.fn().mockResolvedValue([]),
+    saveChapterGear: vi.fn().mockResolvedValue(undefined),
+    createCamera: vi.fn(),
+    updateCamera: vi.fn(),
+    deleteCamera: vi.fn(),
+    createLens: vi.fn(),
+    updateLens: vi.fn(),
+    deleteLens: vi.fn(),
     readPlacements: vi
       .fn()
       .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>

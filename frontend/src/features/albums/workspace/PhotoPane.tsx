@@ -319,7 +319,7 @@ export function PhotoPane(props: {
           </Show>
           <Show when={props.unavailable}>
             {(reason) => (
-              <p id="photo-placement-unavailable" role="status">
+              <p id="photo-placement-unavailable" class="control-help" role="status">
                 {reason()}
               </p>
             )}

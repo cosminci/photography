@@ -105,7 +105,7 @@
   overflow: hidden;
   padding: 0;
   border: 0;
-  border-radius: 3px;
+  border-radius: 5px;
   background: #fcfefe;
 }
 .workspace-mode button {
@@ -120,64 +120,78 @@
   background: transparent;
 }
 .workspace-mode button[aria-pressed="true"] {
-  background: #e8f4f4;
+  background: #c7dfe2;
   color: #145d66;
 }
-.workspace-mode button:hover:not(:disabled),
+.workspace-mode button:hover,
 .workspace-mode button:focus-visible {
-  background: #e8f4f4;
+  background: #c7dfe2;
   color: #145d66;
 }
 .workspace-authors button {
   flex: none;
   min-width: 0;
   padding-inline: 8px;
+  font: inherit;
 }
-.content-actions {
-  display: flex;
-  gap: 4px;
+.album-author-selector {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
 }
-button.content-action {
-  display: inline-grid;
-  place-items: center;
-  min-height: 26px;
-  min-width: 26px;
-  padding: 4px;
-  border: 0;
-  border-radius: 3px;
-  color: #25444c;
-  background: transparent;
-  font-weight: 400;
+.author-inline-feedback {
+  display: block;
+  font-size: 11px;
 }
-button.content-action:hover:not(:disabled),
-button.content-action:focus-visible {
-  background: #e8f4f4;
-}
-button.content-cancel {
-  color: #a03a42;
-}
-.content-dialog {
-  width: min(640px, calc(100% - 24px));
+.album-dialog.content-dialog:not(.gear-catalog-dialog) {
+  width: min(720px, calc(100vw - 32px));
   max-height: calc(100dvh - 24px);
   overflow: auto;
 }
 .content-dialog textarea {
   display: block;
   width: 100%;
-  min-height: 240px;
-  padding: 8px;
+  margin: 6px 0 12px;
+  padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 3px;
+  border-radius: 4px;
   resize: vertical;
   color: inherit;
   background: white;
-  font:
-    400 14px/1.5 Georgia,
-    serif;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
 }
 .content-dialog textarea:focus-visible {
   outline: 3px solid #70b8c1;
   outline-offset: 2px;
+}
+.content-dialog .dialog-actions .editor-icon-action {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 3px;
+  border: 0;
+  background: transparent;
+  color: #145d66;
+}
+.editor-icon-action svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.content-dialog .dialog-actions .editor-cancel {
+  color: #b13640;
+}
+.content-dialog .dialog-actions .editor-icon-action:hover {
+  background: #e8f4f4;
 }
 .workspace-preview {
   min-width: 0;
@@ -317,7 +331,7 @@ button.content-cancel {
   text-align: center;
   overflow-wrap: anywhere;
   font:
-    400 40px/1.2 Georgia,
+    500 calc(30px * var(--editorial-scale, 1)) / 1.4 Georgia,
     serif;
 }
 .spread-owner-title {
@@ -327,8 +341,40 @@ button.content-cancel {
 .spread-owner-text p {
   margin: 1em 0 0;
   color: inherit;
-  font-size: 14.6667px;
+  font-size: calc(11px * var(--editorial-scale, 1));
   white-space: pre-wrap;
+}
+.spread-owner-gear {
+  white-space: pre-wrap;
+  margin-top: 1em;
+  font-size: calc(11px * var(--editorial-scale, 1));
+}
+.spread-owner-copy {
+  min-height: 0;
+}
+.spread-owner-text.synopsis-owner-text {
+  height: calc(100% - 120px);
+  margin: 0 auto;
+  padding: 20px 0;
+  color: white;
+}
+.spread-owner-text.synopsis-owner-text p {
+  font-size: calc(12px * var(--editorial-scale, 1));
+}
+.content-text-edit {
+  position: absolute;
+  z-index: 3;
+  transform: translate(-120%, 4px);
+  opacity: 0;
+}
+.spread-canvas-stage:hover .content-text-edit,
+.content-text-edit:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .content-text-edit {
+    opacity: 1;
+  }
 }
 .spread-owner-text p:empty {
   display: none;
@@ -468,7 +514,15 @@ button.metadata-edit {
   min-width: 0;
 }
 .date-fields input[type="text"] {
-  padding-right: 42px;
+  padding-right: 82px;
+}
+.date-fixed-year {
+  position: absolute;
+  right: 40px;
+  bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
 }
 .date-fields input[type="date"] {
   position: absolute;

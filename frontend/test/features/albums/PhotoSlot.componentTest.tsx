@@ -9,6 +9,135 @@ import { createCaptionEditing } from "../../../src/features/albums/workspace/Pho
 import { RetainedCaption } from "../../../src/features/albums/workspace/RetainedCaption";
 
 describe("on-slot photo editing", () => {
+  it.each([
+    { edge: "left", x: 5, y: 20 },
+    { edge: "right", x: 35, y: 20 },
+    { edge: "top", x: 20, y: 5 },
+    { edge: "bottom", x: 20, y: 35 },
+  ])("should preserve native text selection and commit only real pointer movement past the $edge edge", async ({ x, y }) => {
+    const text = "  山\n\n ";
+    const save = vi.fn().mockResolvedValue(undefined);
+    const captions = createRoot(() => createCaptionEditing({ save, read: vi.fn().mockResolvedValue(text), onBlock: vi.fn() }));
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: vi.fn() }, vi.fn()),
+    );
+    await session.load("album", { kind: "spread", id: "spread" });
+    render(() => (
+      <PhotoSlot
+        slotId="s"
+        label="Photo slot 1"
+        width={200}
+        height={200}
+        placement={session.placements()[0]}
+        photo={{ ...photo, caption: "Saved" }}
+        session={session}
+        choice={undefined}
+        onChoose={vi.fn()}
+        unavailable={undefined}
+        reader={false}
+        captions={captions}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption for Mountains.jpg" }));
+    const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
+    editor.textContent = text;
+    const selection = window.getSelection();
+    if (selection === null) throw new Error("Native selection unavailable");
+    selection.selectAllChildren(editor);
+    selection.collapseToEnd();
+    const before = selection.getRangeAt(0).cloneRange();
+    vi.spyOn(editor, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 20, 20));
+    fireEvent.input(editor);
+    const after = selection.getRangeAt(0);
+
+    expect(after.collapsed).toBe(true);
+    expect(after.startContainer).toBe(before.startContainer);
+    expect(after.startOffset).toBe(before.startOffset);
+    fireEvent.pointerLeave(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: 20, clientY: 20 }));
+    expect(save).not.toHaveBeenCalled();
+    fireEvent(window, new MouseEvent("pointermove", { clientX: x, clientY: y }));
+    fireEvent.blur(editor);
+    await vi.waitUntil(() => screen.queryByRole("textbox") === null);
+    expect(save).toHaveBeenCalledExactlyOnceWith(photo.id, text);
+  });
+  it.each(["pointer", "blur", "none", "Escape"] as const)(
+    "should retain composed Unicode and handle %s departure without partial or duplicate writes",
+    async (departure) => {
+      const save = vi.fn().mockResolvedValue(undefined);
+      const captions = createRoot(() => createCaptionEditing({ save, read: vi.fn().mockResolvedValue("桜"), onBlock: vi.fn() }));
+      const session = createRoot(() =>
+        createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: vi.fn() }, vi.fn()),
+      );
+      await session.load("album", { kind: "spread", id: "spread" });
+      render(() => (
+        <PhotoSlot
+          slotId="s"
+          label="Photo slot 1"
+          width={200}
+          height={200}
+          placement={session.placements()[0]}
+          photo={{ ...photo, caption: "Saved" }}
+          session={session}
+          choice={undefined}
+          onChoose={vi.fn()}
+          unavailable={undefined}
+          reader={false}
+          captions={captions}
+        />
+      ));
+      fireEvent.click(screen.getByRole("button", { name: "Edit caption for Mountains.jpg" }));
+      const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
+      fireEvent.compositionStart(editor);
+      editor.textContent = "桜";
+      fireEvent.input(editor);
+      if (departure === "blur") fireEvent.blur(editor);
+      if (departure === "pointer" || departure === "Escape") fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
+      expect(save).not.toHaveBeenCalled();
+      if (departure === "Escape") fireEvent.keyDown(editor, { key: "Escape" });
+      fireEvent.compositionEnd(editor);
+      if (departure === "none") {
+        expect(save).not.toHaveBeenCalled();
+        fireEvent.blur(editor);
+      }
+      await vi.waitUntil(() => screen.queryByRole("textbox") === null);
+      if (departure === "Escape") expect(save).not.toHaveBeenCalled();
+      else expect(save).toHaveBeenCalledExactlyOnceWith(photo.id, "桜");
+    },
+  );
+  it("should explain unavailable native caption editing without presenting an empty saved caption or sending a write", async () => {
+    vi.spyOn(window, "getSelection").mockReturnValue(null);
+    const save = vi.fn();
+    const captions = createRoot(() => createCaptionEditing({ save, read: vi.fn(), onBlock: vi.fn() }));
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: vi.fn() }, vi.fn()),
+    );
+    await session.load("album", { kind: "spread", id: "spread" });
+    render(() => (
+      <PhotoSlot
+        slotId="s"
+        label="Photo slot 1"
+        width={200}
+        height={200}
+        placement={session.placements()[0]}
+        photo={{ ...photo, caption: "Saved" }}
+        session={session}
+        choice={undefined}
+        onChoose={vi.fn()}
+        unavailable={undefined}
+        reader={false}
+        captions={captions}
+      />
+    ));
+    const caption = screen.getByRole("button", { name: "Edit caption for Mountains.jpg" });
+    expect(caption).toHaveTextContent("Saved");
+    expect(caption).toHaveAttribute("aria-disabled", "true");
+    expect(caption).toHaveAccessibleDescription("Caption editing is not supported by this browser.");
+    fireEvent.click(caption);
+    fireEvent.input(caption);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
+  });
   it("should bind caption writes to the current photo after replacement in the same slot", async () => {
     const replacement = { ...photo, id: "replacement", filename: "Replacement.jpg", caption: "Replacement caption" };
     const save = vi.fn().mockResolvedValue(undefined);
@@ -37,7 +166,6 @@ describe("on-slot photo editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit caption for Replacement.jpg" }));
     const editor = screen.getByRole("textbox", { name: "Caption for Replacement.jpg" });
     editor.textContent = "Changed replacement";
-    Object.defineProperty(editor, "innerText", { configurable: true, value: "Changed replacement" });
     fireEvent.input(editor);
     fireEvent.blur(editor);
     await vi.waitUntil(() => screen.queryByRole("textbox") === null);
@@ -85,7 +213,6 @@ describe("on-slot photo editing", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add caption for Mountains.jpg" }));
       const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
       editor.textContent = "Draft";
-      Object.defineProperty(editor, "innerText", { configurable: true, value: "Draft" });
       fireEvent.input(editor);
       const other = screen.getByRole("button", { name: "Other action" });
       if (focused === "other control") other.focus();
@@ -113,6 +240,7 @@ describe("on-slot photo editing", () => {
     { trigger: "blur", text: "", original: "Saved", escape: false, writes: 1 },
     { trigger: "pointer departure", text: "Changed", original: "Saved", escape: true, writes: 0 },
     { trigger: "blur", text: "Saved", original: "Saved", escape: false, writes: 0 },
+    { trigger: "blur", text: "Saved\n", original: "Saved\n", escape: false, writes: 0 },
     { trigger: "pointer departure", text: "", original: "", escape: false, writes: 0 },
   ])("should commit caption once on $trigger with text=$text and Escape=$escape", async ({ trigger, text, original, escape, writes }) => {
     const save = vi.fn().mockResolvedValue(undefined);
@@ -155,14 +283,13 @@ describe("on-slot photo editing", () => {
     const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
     expect(editor).toHaveFocus();
     editor.textContent = text;
-    Object.defineProperty(editor, "innerText", { configurable: true, value: text });
     fireEvent.input(editor);
     expect(save).not.toHaveBeenCalled();
     if (escape) fireEvent.keyDown(editor, { key: "Escape" });
     if (trigger === "blur") fireEvent.blur(editor);
-    else fireEvent.pointerLeave(editor);
+    else fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
     fireEvent.blur(editor);
-    fireEvent.pointerLeave(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
     await vi.waitUntil(() => screen.queryByRole("textbox", { name: "Caption for Mountains.jpg" }) === null);
 
     expect(save).toHaveBeenCalledTimes(writes);
@@ -207,8 +334,8 @@ describe("on-slot photo editing", () => {
       ));
 
       expect(screen.getByRole("button", { name: "Edit caption for Mountains.jpg" })).toHaveTextContent("Saved caption");
-      expect(screen.queryByRole("button", { name: `Caption ${selected.replace("_", " ")}` })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: `Caption ${alternative.replace("_", " ")}` }));
+      expect(screen.queryByRole("button", { name: `Move caption to ${selected.replace("_", " ")}` })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: `Move caption to ${alternative.replace("_", " ")}` }));
       await vi.waitUntil(() => !session.saving());
 
       expect(edits).toHaveBeenCalledWith(
@@ -247,6 +374,7 @@ describe("on-slot photo editing", () => {
       />
     ));
     expect(screen.queryByRole("button", { name: "Edit caption for Mountains.jpg" })).not.toBeInTheDocument();
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
     fireEvent.click(screen.getByText("Saved"));
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     setReader(false);
@@ -262,7 +390,7 @@ describe("on-slot photo editing", () => {
     fireEvent.click(editor);
     fireEvent.keyDown(editor, { key: "ArrowLeft" });
     setText("New authoritative caption");
-    fireEvent.pointerLeave(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
 
     expect(save).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Edit caption for Mountains.jpg" })).toHaveTextContent("New authoritative caption");
@@ -302,7 +430,6 @@ describe("on-slot photo editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit caption for Mountains.jpg" }));
     const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
     editor.textContent = "Draft";
-    Object.defineProperty(editor, "innerText", { configurable: true, value: "Draft" });
     fireEvent.input(editor);
     fireEvent.blur(editor);
     fireEvent.click(await screen.findByRole("button", { name: "Read saved caption" }));

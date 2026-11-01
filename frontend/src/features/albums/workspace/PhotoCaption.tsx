@@ -64,18 +64,26 @@ export function PhotoCaption(props: {
   const feedback = createUniqueId();
   const photoId = untrack(() => props.photo.id);
   const captionEditing = untrack(() => props.editing);
+  const selection = window.getSelection();
   let label!: HTMLDivElement;
+  let composing = false;
+  let departureRequested = false;
   const save = captionEditing.getPhotoSave(photoId);
   const text = createMemo(() => props.photo.caption ?? "");
   const editing = createMemo(() => save.draft() !== undefined);
-  const reason = createMemo(() => save.unavailable() ?? (editing() ? undefined : props.unavailable));
   const editable = createMemo(() => !props.reader);
+  const reason = createMemo(
+    () =>
+      save.unavailable() ??
+      (editable() && selection === null ? "Caption editing is not supported by this browser." : editing() ? undefined : props.unavailable),
+  );
   createEffect(() => {
     if (!editing()) label.textContent = text() === "" && editable() ? "Add caption" : text();
   });
   onMount(() => {
     const retained = save.draft();
-    if (retained !== undefined) label.textContent = retained.value;
+    if (retained !== undefined) renderDraft(retained.value);
+    window.addEventListener("pointermove", pointerMoved);
   });
   createEffect(() => {
     if (captionEditing.focus.requested() === photoId) {
@@ -84,19 +92,50 @@ export function PhotoCaption(props: {
     }
   });
   onCleanup(() => {
+    window.removeEventListener("pointermove", pointerMoved);
     if (editing() && document.activeElement === label) captionEditing.focus.request(photoId);
   });
+  function readText() {
+    if (selection === null) return undefined;
+    const ranges = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange());
+    try {
+      selection.selectAllChildren(label);
+      return selection.toString();
+    } finally {
+      selection.removeAllRanges();
+      for (const range of ranges) selection.addRange(range);
+    }
+  }
+  function readInput() {
+    const value = readText();
+    if (value !== undefined) save.change(value);
+  }
+  function renderDraft(value: string) {
+    label.textContent = value === "" || value.endsWith("\n") ? `${value}\n` : value;
+  }
+  function pointerMoved(event: PointerEvent) {
+    if (!editable() || !editing()) return;
+    const box = label.getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) commit();
+  }
 
   function begin() {
     if (!editable() || editing() || reason() !== undefined) return;
     save.begin(text());
-    label.textContent = text();
+    composing = false;
+    departureRequested = false;
+    renderDraft(text());
     label.focus();
   }
 
   function commit() {
-    if (!editing() || save.error() !== undefined || save.unavailable() !== undefined) return;
-    if (save.isUnchanged()) save.cancel();
+    const draft = save.draft();
+    if (draft === undefined || save.error() !== undefined || reason() !== undefined) return;
+    if (composing) {
+      departureRequested = true;
+      return;
+    }
+    if (draft.value === draft.original) save.cancel();
     else void save.commit();
   }
 
@@ -121,19 +160,33 @@ export function PhotoCaption(props: {
         aria-disabled={editable() && reason() !== undefined ? true : undefined}
         aria-describedby={reason() === undefined && save.error() === undefined ? undefined : feedback}
         tabindex={editable() ? 0 : undefined}
-        contentEditable={editing() && save.unavailable() === undefined ? "plaintext-only" : false}
+        contentEditable={editable() && editing() && reason() === undefined ? "plaintext-only" : false}
         onClick={begin}
         onInput={() => {
-          save.change(label.innerText);
+          if (!composing) readInput();
         }}
-        onPointerLeave={commit}
+        onCompositionStart={() => {
+          composing = true;
+        }}
+        onCompositionEnd={() => {
+          composing = false;
+          readInput();
+          if (departureRequested) {
+            departureRequested = false;
+            commit();
+          }
+        }}
         onBlur={commit}
         onKeyDown={(event) => {
           if (editing()) {
             event.stopPropagation();
             if (event.key === "Escape") {
               event.preventDefault();
-              if (save.unavailable() === undefined) save.cancel();
+              if (save.unavailable() === undefined) {
+                composing = false;
+                departureRequested = false;
+                save.cancel();
+              }
             }
           } else if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();

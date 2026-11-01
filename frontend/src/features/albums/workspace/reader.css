@@ -61,7 +61,7 @@
 .reader-active .cover-canvas {
   border: 0;
 }
-.reader-active .spread-owner-text,
+.reader-active .spread-owner-text:not(.synopsis-owner-text),
 .reader-active .cover-canvas {
   color: #25444c;
 }

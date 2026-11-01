@@ -10,13 +10,33 @@ export function AlbumAuthors(props: {
   onBlock: (reason: string | undefined) => void;
 }) {
   const feedback = createUniqueId();
+  let group!: HTMLDivElement;
+  let opener!: HTMLButtonElement;
+  function restoreFocus() {
+    queueMicrotask(() => {
+      if (document.activeElement === document.body || group.contains(document.activeElement)) {
+        if (opener.disabled) group.focus();
+        else opener.focus();
+      }
+    });
+  }
   const save = createContentSave({
     save: (authors: readonly Author[]) => props.save(authors),
     read: () => props.read(),
     equal: (left, right) => left.length === right.length && left.every((author) => right.includes(author)),
-    onSaved: () => undefined,
+    onSaved: restoreFocus,
   });
   const reason = createMemo(() => save.unavailable() ?? props.unavailable);
+  const selection = createMemo(() => save.draft()?.value ?? props.authors);
+  const finalAuthor = createMemo(() => (selection().length === 1 ? selection()[0] : undefined));
+  const finalReasonId = createMemo(() => {
+    const author = finalAuthor();
+    return author === undefined ? undefined : `${feedback}-${author}`;
+  });
+  createEffect(() => {
+    if (save.error() !== undefined && !save.pending() && (document.activeElement === document.body || group.contains(document.activeElement)))
+      group.focus();
+  });
   createEffect(() => {
     props.onBlock(save.draft() === undefined ? undefined : (save.unavailable() ?? "Resolve the author save before leaving."));
   });
@@ -24,22 +44,33 @@ export function AlbumAuthors(props: {
     props.onBlock(undefined);
   });
   return (
-    <>
-      <div class="workspace-mode workspace-authors" role="group" aria-label="Album authors">
+    <div
+      ref={(element) => {
+        group = element;
+      }}
+      class="album-author-selector"
+      role="group"
+      aria-label="Album authors"
+      aria-busy={save.pending()}
+      tabindex="-1"
+      aria-describedby={save.error() !== undefined ? feedback : finalReasonId()}
+    >
+      <div class="workspace-mode workspace-authors">
         <For each={albumAuthors}>
           {(author) => {
-            const final = () => props.authors.length === 1 && props.authors.includes(author);
-            const unavailable = () => reason() ?? (final() ? "Select at least one author." : undefined);
+            const final = () => finalAuthor() === author;
+            const unavailable = () => reason() ?? (final() ? "Choose at least one author." : undefined);
             return (
               <button
                 type="button"
                 aria-label={author}
-                aria-pressed={props.authors.includes(author)}
+                aria-pressed={selection().includes(author)}
                 disabled={unavailable() !== undefined}
                 aria-describedby={unavailable() === undefined ? undefined : `${feedback}-${author}`}
-                onClick={() => {
+                onClick={(event) => {
+                  opener = event.currentTarget;
                   const selected = albumAuthors.filter((candidate) =>
-                    candidate === author ? !props.authors.includes(candidate) : props.authors.includes(candidate),
+                    candidate === author ? !selection().includes(candidate) : selection().includes(candidate),
                   );
                   save.begin(selected);
                   void save.commit();
@@ -60,10 +91,11 @@ export function AlbumAuthors(props: {
       </div>
       <Show when={save.error()}>
         {(message) => (
-          <div role="alert" id={feedback}>
+          <div role="alert" class="author-inline-feedback" id={feedback}>
             {message()}{" "}
             <button
               type="button"
+              class="gear-manage-link"
               disabled={save.pending()}
               aria-describedby={feedback}
               onClick={() => {
@@ -75,6 +107,6 @@ export function AlbumAuthors(props: {
           </div>
         )}
       </Show>
-    </>
+    </div>
   );
 }

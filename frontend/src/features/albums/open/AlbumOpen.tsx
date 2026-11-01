@@ -1,5 +1,6 @@
 import { Show, createMemo, untrack } from "solid-js";
 import type { AlbumClient } from "../model/Album";
+import type { GearClient } from "../model/Gear";
 import type { AlbumPhotoEvents } from "../model/Photo";
 import { isMissingAlbum } from "../model/Presentation";
 import { AlbumWorkspace } from "../workspace/AlbumWorkspace";
@@ -29,6 +30,7 @@ export function AlbumOpen(props: {
     | "saveAuthors"
     | "saveDescription"
     | "saveCaption"
+    | keyof GearClient
   >;
   events: AlbumPhotoEvents;
   id: string;
