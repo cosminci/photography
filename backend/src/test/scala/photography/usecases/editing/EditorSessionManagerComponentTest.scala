@@ -219,7 +219,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       for
         mutex      <- Mutex[IO]
         submitted  <- Deferred[IO, Unit]
-        manager    <- buildManager(maybeMutex = Some(mutex))
+        manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
         registered <- manager.register(owner, alias, maybeSession = None)
         session    <- requireSession(registered)
         canceled   <- mutex.lock.use { _ =>
@@ -252,7 +252,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
             case 1 => generating.complete(()).void *> IO.never[UUID]
             case _ => IO.pure(new UUID(0L, 102L))
           }
-        manager    <- buildManager(maybeMutex = Some(mutex), identity = identity)
+        manager    <- buildCoordinatedManager(mutex, identity)
         registered <- manager.register(owner, alias, maybeSession = None)
         session    <- requireSession(registered)
         pending    <- manager.bind(session.id, tab).start
@@ -283,7 +283,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
           case 1 => IO.raiseError[UUID](unavailable)
           case _ => IO.pure(new UUID(0L, 104L))
         }
-      manager    <- buildManager(maybeMutex = Some(mutex), identity = identity)
+      manager    <- buildCoordinatedManager(mutex, identity)
       registered <- manager.register(owner, alias, maybeSession = None)
       session    <- requireSession(registered)
       failed     <- manager.bind(session.id, tab).attempt
@@ -300,7 +300,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       for
         mutex      <- Mutex[IO]
         submitted  <- Deferred[IO, Unit]
-        manager    <- buildManager(maybeMutex = Some(mutex))
+        manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
         registered <- manager.register(owner, alias, maybeSession = None)
         session    <- requireSession(registered)
         connection <- manager.bind(session.id, tab).flatMap(requireConnection)
@@ -366,12 +366,13 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(lateRelease, UnbindResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(reloaded))))
 
-  private def buildManager(maybeMutex: Option[Mutex[IO]] = None, identity: IdGenerator[IO] = IdGenerator.make[IO]) =
-    maybeMutex.fold(Mutex[IO])(IO.pure).flatMap { mutex =>
-      given Mutex[IO]       = mutex
-      given IdGenerator[IO] = identity
-      EditorSessionManager.make[IO](lease = 30L)
-    }
+  private def buildManager() =
+    Mutex[IO].flatMap(mutex => buildCoordinatedManager(mutex, IdGenerator.make[IO]))
+
+  private def buildCoordinatedManager(mutex: Mutex[IO], identity: IdGenerator[IO]) =
+    given Mutex[IO]       = mutex
+    given IdGenerator[IO] = identity
+    EditorSessionManager.make[IO](lease = 30L)
 
   private def requireSession(result: RegisterResult) = result match
     case RegisterResult.Ready(session)     => IO.pure(session)
