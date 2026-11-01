@@ -63,7 +63,13 @@ export function ChapterMetadata(props: {
           </svg>
         </button>
       </div>
-      <Show when={props.unavailable}>{(reason) => <p id="metadata-feedback">{reason()}</p>}</Show>
+      <Show when={props.unavailable}>
+        {(reason) => (
+          <p id="metadata-feedback" class="control-help">
+            {reason()}
+          </p>
+        )}
+      </Show>
     </section>
   );
 }

@@ -43,7 +43,7 @@ export function SpreadConfirmation(props: {
       </p>
       <Show when={props.error}>{(message) => <p role="alert">{message()}</p>}</Show>
       <Show when={props.pending}>
-        <p id="spread-confirmation-pending" role="status">
+        <p id="spread-confirmation-pending" role="status" class="control-help">
           Saving spread. Please wait.
         </p>
       </Show>

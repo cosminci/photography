@@ -51,7 +51,9 @@ export function TemplateSelector(props: {
     <section class="template-selector" aria-label="Spread template selector">
       <h2>Spread template selector</h2>
       <Show when={loading()}>
-        <p role="status">Loading templates…</p>
+        <p role="status" class="control-help">
+          Loading templates…
+        </p>
       </Show>
       <Show when={error()}>
         {(message) => (

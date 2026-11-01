@@ -343,15 +343,15 @@ export function AlbumWorkspace(props: {
     if (action.chapter === undefined) select(result.id);
     void refresh(result).then(() => {
       if (active && action.chapter?.id === selectedChapterId()) void loadGearPresentation();
-      if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus();
-      else workspaceElement.focus();
+      if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+      else workspaceElement.focus({ preventScroll: true });
     });
   }
 
   function restoreFocus(opener: HTMLButtonElement) {
     queueMicrotask(() => {
-      if (opener.isConnected && !opener.disabled) opener.focus();
-      else workspaceElement.focus();
+      if (opener.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+      else workspaceElement.focus({ preventScroll: true });
     });
   }
 
@@ -774,8 +774,9 @@ export function AlbumWorkspace(props: {
               if (action.chapter === undefined) select(chapterId);
               void refresh().then(() => {
                 if (active && action.chapter?.id === chapter()?.id) void loadGearPresentation();
-                if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled)) action.opener.focus();
-                else workspaceElement.focus();
+                if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
+                  action.opener.focus({ preventScroll: true });
+                else workspaceElement.focus({ preventScroll: true });
               });
             }}
             onBlock={(reason) => {
@@ -785,8 +786,9 @@ export function AlbumWorkspace(props: {
               setDialog(undefined);
             }}
             returnFocus={() => {
-              if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled)) action.opener.focus();
-              else workspaceElement.focus();
+              if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
+                action.opener.focus({ preventScroll: true });
+              else workspaceElement.focus({ preventScroll: true });
             }}
           />
         )}

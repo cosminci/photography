@@ -369,7 +369,13 @@ export function GearCatalogDialog(props: {
         id="gear-feedback"
         tabindex="-1"
       >
-        <Show when={reason()}>{(message) => <p role="status">{message()}</p>}</Show>
+        <Show when={reason()}>
+          {(message) => (
+            <p role="status" class="control-help">
+              {message()}
+            </p>
+          )}
+        </Show>
         <Show when={error() ?? save.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
         <Show when={save.recovery() !== undefined || (catalog() === undefined && !loading())}>
           <button

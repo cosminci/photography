@@ -141,7 +141,8 @@ If retained equipment cannot be classified, the transition stops with an explici
 - The band shows deduplicated chapter countries in country-code order; flags measure 42×28pt with bottoms 80pt above the text-slot bottom.
 - Unavailable flag artwork produces explicit feedback rather than a broken image or silently missing country.
 - Reader preserves synopsis contrast, chapter typography, gear, attribution and saved captions without editing controls.
-- Routine saves preserve rendered book content and canvas geometry without document reloads, temporary save overlays or reacquiring unchanged layout/gear choices.
+- Routine saves preserve rendered book content, workspace metadata, navigation and dialog geometry without document reloads, temporary save overlays or reacquiring unchanged layout/gear choices.
+- Temporary save guards retain controls' normal visibility; accessible busy descriptions leave the layout unchanged.
 - Controls remain keyboard accessible, retain meaningful focus after changes and expose reasons for unavailable actions.
 - Malformed content or invalid selections return validation feedback; missing targets report missing/stale state.
 - Successful saves followed by failed refresh retry authoritative reads without replaying the mutation.

@@ -129,6 +129,10 @@ describe("album workspace browser boundary", () => {
       transform: { x: 0, y: 0, zoom: 1, mirrored: false },
     };
     let selectedCorner = placed.captionCorner;
+    let acknowledge!: (saved: SpreadSnapshot) => void;
+    const pending = new Promise<SpreadSnapshot>((resolve) => {
+      acknowledge = resolve;
+    });
     const saved = {
       ...workspace,
       spreads: workspace.spreads.map((spread) => (spread.id === vacationOpening.id ? { ...spread, placements: [placed] } : spread)),
@@ -149,13 +153,7 @@ describe("album workspace browser boundary", () => {
         editPlacements: vi.fn().mockImplementation((_album: string, _context: PlacementContext, command: PlacementEdit) => {
           if (command.operation !== "captionCorner") throw new Error("Expected caption corner edit");
           selectedCorner = command.captionCorner;
-          const spread = readSpread(vacationOpening.id);
-          return Promise.resolve({
-            kind: "spread",
-            id: spread.id,
-            placements: spread.placements,
-            layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
-          });
+          return pending;
         }),
       },
       saved,
@@ -166,8 +164,23 @@ describe("album workspace browser boundary", () => {
     const editorial = screen.getByRole("group", { name: "Chapter text" });
     const template = screen.getByRole("button", { name: "Applied layout" });
     const caption = screen.getByRole("button", { name: "Edit caption for Mountain.jpg" });
+    const editText = screen.getByRole("button", { name: "Edit chapter description" });
+    const metadata = screen.getByRole("region", { name: "Spread details" });
+    const navigator = screen.getByRole("complementary", { name: "Spread navigator" });
 
     fireEvent.click(screen.getByRole("button", { name: "Move caption to top right" }));
+    expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit chapter details" })).toHaveAccessibleDescription("Saving photos. Please wait.");
+    expect(screen.getByRole("button", { name: "Add chapter" })).toHaveAccessibleDescription("Saving photos. Please wait.");
+    expect(screen.getByRole("region", { name: "Spread details" })).toBe(metadata);
+    expect(screen.getByRole("complementary", { name: "Spread navigator" })).toBe(navigator);
+    const spread = readSpread(vacationOpening.id);
+    acknowledge({
+      kind: "spread",
+      id: spread.id,
+      placements: spread.placements,
+      layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
+    });
     await waitFor(() => {
       expect(client.chapters).toHaveBeenCalledTimes(2);
     });
@@ -176,6 +189,9 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("group", { name: "Chapter text" })).toBe(editorial);
     expect(screen.getByRole("button", { name: "Applied layout" })).toBe(template);
     expect(screen.getByRole("button", { name: "Edit caption for Mountain.jpg" })).toBe(caption);
+    expect(screen.getByRole("button", { name: "Edit chapter description" })).toBe(editText);
+    expect(screen.getByRole("region", { name: "Spread details" })).toBe(metadata);
+    expect(screen.getByRole("complementary", { name: "Spread navigator" })).toBe(navigator);
     expect(client.templates).toHaveBeenCalledTimes(1);
     expect(client.gearCatalog).toHaveBeenCalledTimes(1);
     expect(client.chapterGear).toHaveBeenCalledTimes(1);

@@ -404,7 +404,13 @@ export function ChapterDialog(props: {
           id="chapter-feedback"
           tabindex="-1"
         >
-          <Show when={saveReason()}>{(message) => <p role="status">{message()}</p>}</Show>
+          <Show when={saveReason()}>
+            {(message) => (
+              <p role="status" class="control-help">
+                {message()}
+              </p>
+            )}
+          </Show>
           <Show when={error() ?? metadata.error() ?? gear.error()}>
             {(message) => (
               <p role="alert">

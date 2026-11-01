@@ -153,7 +153,7 @@ export function PhotoPane(props: {
           </div>
           <Show when={refreshReason()}>
             {(reason) => (
-              <p id="photo-refresh-reason" role="status">
+              <p id="photo-refresh-reason" role="status" class="control-help">
                 {reason()}
               </p>
             )}

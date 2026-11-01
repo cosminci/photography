@@ -133,22 +133,26 @@ export function SpreadCanvas(props: {
           </Show>
         </svg>
         <Show when={props.editing !== undefined && !props.editing.reader && props.editing.onEditText !== undefined}>
-          <For each={props.slots.filter((slot) => slot.kind === "text")}>
-            {(slot) => (
-              <button
-                type="button"
-                class="icon-button content-text-edit"
-                aria-label={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
-                title={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
-                style={{ left: `${String(slot.x + slot.width)}%`, top: `${String(slot.y)}%` }}
-                disabled={props.editing?.textUnavailable !== undefined}
-                aria-describedby={props.editing?.textUnavailable === undefined ? undefined : "content-edit-reason"}
-                onClick={(event) => props.editing?.onEditText?.(event.currentTarget)}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
-                </svg>
-              </button>
+          <For each={props.slots.filter((slot) => slot.kind === "text").map((slot) => slot.id)}>
+            {(slotId) => (
+              <Show when={props.slots.find((slot) => slot.id === slotId)}>
+                {(slot) => (
+                  <button
+                    type="button"
+                    class="icon-button content-text-edit"
+                    aria-label={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
+                    title={props.label === "Synopsis" ? "Edit synopsis" : "Edit chapter description"}
+                    style={{ left: `${String(slot().x + slot().width)}%`, top: `${String(slot().y)}%` }}
+                    disabled={props.editing?.textUnavailable !== undefined}
+                    aria-describedby={props.editing?.textUnavailable === undefined ? undefined : "content-edit-reason"}
+                    onClick={(event) => props.editing?.onEditText?.(event.currentTarget)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
+                    </svg>
+                  </button>
+                )}
+              </Show>
             )}
           </For>
         </Show>

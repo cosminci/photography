@@ -99,7 +99,13 @@ export function TextEditor(props: {
           id={feedback}
           tabindex="-1"
         >
-          <Show when={save.unavailable()}>{(reason) => <p role="status">{reason()}</p>}</Show>
+          <Show when={save.unavailable()}>
+            {(reason) => (
+              <p role="status" class="control-help">
+                {reason()}
+              </p>
+            )}
+          </Show>
           <Show when={save.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
           <Show when={save.recovery() !== undefined}>
             <button
