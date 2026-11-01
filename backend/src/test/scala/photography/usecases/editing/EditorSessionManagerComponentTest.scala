@@ -373,38 +373,38 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
     EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
   ).foreach { target =>
     test(s"should grant exactly one owner of $target and expose only public contender facts"):
-      for
-        manager <- buildManager()
-        first   <- registerConnection(manager, owner, tab)
-        second  <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
-        results <- (
-          manager.select(first, TargetRevision.initial, target),
-          manager.select(second, TargetRevision.initial, target)
-        ).parTupled
-        firstState  <- manager.readTarget(first)
-        secondState <- manager.readTarget(second)
-      yield
-        val revision = TargetRevision.initial.next
-        (results, firstState, secondState) match
-          case (
-                (SelectResult.Owned(lock, `revision`), SelectResult.Blocked(`owner`, `alias`, deadline, `revision`)),
-                ReadTargetResult.Current(`revision`, Some(saved)),
-                ReadTargetResult.Current(`revision`, None)
-              ) =>
-            assertEquals(lock, saved)
-            assertEquals(lock.target, target)
-            assertEquals(lock.session, first.session)
-            assertEquals(deadline, lock.expiresAt)
-          case (
-                (SelectResult.Blocked(_, `alias`, deadline, `revision`), SelectResult.Owned(lock, `revision`)),
-                ReadTargetResult.Current(`revision`, None),
-                ReadTargetResult.Current(`revision`, Some(saved))
-              ) =>
-            assertEquals(lock, saved)
-            assertEquals(lock.target, target)
-            assertEquals(lock.session, second.session)
-            assertEquals(deadline, lock.expiresAt)
-          case _ => fail(s"Expected one exact owner and one public contender: $results, $firstState, $secondState")
+      TestControl.executeEmbed {
+        val otherOwner              = EditorId(new UUID(0L, 4L))
+        val otherAlias: EditorAlias = "Alice"
+
+        for
+          manager       <- buildManager()
+          first         <- registerConnection(manager, owner, tab)
+          secondSession <- manager.register(otherOwner, otherAlias, maybeSession = None).flatMap(requireSession)
+          second        <- manager.bind(secondSession.id, duplicate).flatMap(requireConnection)
+          results       <- (
+            manager.select(first, TargetRevision.initial, target),
+            manager.select(second, TargetRevision.initial, target)
+          ).parTupled
+          firstState  <- manager.readTarget(first)
+          secondState <- manager.readTarget(second)
+        yield
+          val revision = TargetRevision.initial.next
+          results match
+            case (SelectResult.Owned(lock, _), _) =>
+              val expectedLock    = EditingLock(target, first.session, lock.grant, 30.seconds)
+              val expectedResults = (SelectResult.Owned(expectedLock, revision), SelectResult.Blocked(owner, alias, 30.seconds, revision))
+              assertEquals(results, expectedResults)
+              assertEquals(firstState, ReadTargetResult.Current(revision, Some(expectedLock)))
+              assertEquals(secondState, ReadTargetResult.Current(revision, None))
+            case (_, SelectResult.Owned(lock, _)) =>
+              val expectedLock    = EditingLock(target, second.session, lock.grant, 30.seconds)
+              val expectedResults = (SelectResult.Blocked(otherOwner, otherAlias, 30.seconds, revision), SelectResult.Owned(expectedLock, revision))
+              assertEquals(results, expectedResults)
+              assertEquals(firstState, ReadTargetResult.Current(revision, None))
+              assertEquals(secondState, ReadTargetResult.Current(revision, Some(expectedLock)))
+            case _ => fail(s"Expected one exact owner and one public contender: $results, $firstState, $secondState")
+      }
   }
 
   test("should release the previous target on contention and fence late navigation retries"):
@@ -646,13 +646,16 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
             _ <- IO.sleep(10.seconds)
           yield waiting
         }
-        results <- pending.joinWithNever
-        current <- manager.readTarget(first)
+        results       <- pending.joinWithNever
+        current       <- manager.readTarget(first)
+        acquiredState <- manager.readTarget(second)
       yield
         results match
           case (RenewTargetResult.Rejected(Failure.StaleGrant), SelectResult.Owned(acquired, revision)) =>
-            assertEquals(acquired.target, target)
-            assertEquals(acquired.expiresAt, 60.seconds)
+            val expectedLock    = EditingLock(target, second.session, acquired.grant, 60.seconds)
+            val expectedResults = (RenewTargetResult.Rejected(Failure.StaleGrant), SelectResult.Owned(expectedLock, TargetRevision.initial.next))
+            assertEquals(results, expectedResults)
+            assertEquals(acquiredState, ReadTargetResult.Current(TargetRevision.initial.next, Some(expectedLock)))
             assertEquals(revision, TargetRevision.initial.next)
             assertNotEquals(acquired.grant, lock.grant)
           case _ => fail(s"Expected expired renewal and a fresh acquisition: $results")
@@ -703,6 +706,36 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       yield
         assertEquals(result, SelectResult.Rejected(Failure.StaleTransition))
         assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+    }
+
+  test("should preserve the original target and error when replacement identity generation fails"):
+    TestControl.executeEmbed {
+      val target      = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+      val destination = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+      val unavailable = new RuntimeException("Target identity unavailable")
+
+      for
+        mutex <- Mutex[IO]
+        calls <- Ref.of[IO, Int](0)
+        identity = new IdGenerator[IO]:
+          override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
+            case 3     => IO.raiseError[UUID](unavailable)
+            case index => IO.pure(new UUID(0L, index.toLong + 100L))
+          }
+        manager    <- buildCoordinatedManager(mutex, identity)
+        connection <- registerConnection(manager, owner, tab)
+        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        failed     <- manager.select(connection, TargetRevision.initial.next, destination).attempt
+        _          <- mutex.lock.use(_ => IO.unit)
+        retained   <- manager.readTarget(connection)
+        accepted   <- manager.select(connection, TargetRevision.initial.next, destination)
+        current    <- manager.readTarget(connection)
+      yield
+        val replacement = EditingLock(destination, connection.session, GrantId(new UUID(0L, 104L)), 30.seconds)
+        assertEquals(failed, unavailable.asLeft[SelectResult])
+        assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(accepted, SelectResult.Owned(replacement, TargetRevision.initial.next.next))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, Some(replacement)))
     }
 
   private def registerConnection(manager: EditorSessionManager[IO], editor: EditorId, document: TabId) =
