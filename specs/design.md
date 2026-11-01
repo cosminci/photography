@@ -39,16 +39,16 @@ Editorial content belongs to the book's domain owners, independently of layout:
 
 | Owner | Content and relationship |
 | --- | --- |
-| Album | Synopsis and a nonempty author selection; Cover credits derive from that selection, and new albums select all supported authors. |
+| Album | Synopsis and a nonempty author selection from which Cover credits derive. |
 | Chapter | Plain-text description and ordered gear selection, separate from destination and visit-period metadata. |
-| Photo | Caption retained independently of placement; clearing it removes the visible label. |
-| Interior placement | Caption corner, carried with the placement when it moves; caption text remains photo-owned. |
+| Photo | Caption retained independently of placement. |
+| Interior placement | Caption position within the layout, separate from photo-owned text. |
 
-Cameras and lenses have independent, shared catalog lifecycles. A chapter may select no gear, fixed-lens cameras without lenses, or interchangeable bodies with nonempty lens selections; the same lens may serve several compatible bodies.
+Cameras and lenses have independent, shared catalog lifecycles; chapters select compatible equipment rather than owning catalog entries. A lens can serve several bodies, so changing or deleting one entry must preserve the validity of every saved selection that references it.
 
-Compatibility requires a matching mount and sufficient lens coverage: full-frame bodies require full-frame lenses, while APS-C bodies accept either coverage. Application validation protects saved selections against incompatible replacements and catalog edits; database references prevent deleting used entries, and deleting an unused camera leaves lenses intact.
+The application decides compatibility against current catalog state, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
 
-Book presentation preserves plain-text content and derives headings, date wording and gear labels from structured data. Compact gear labels follow selection order without changing shared catalog names; Synopsis flags derive from deduplicated chapter countries in country-code order, with explicit feedback for unavailable artwork.
+Book presentation preserves editorial text and derives headings and supporting information from structured data. Formatting is a projection of saved state, not another source of truth for content or catalog identities.
 
 Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
 
@@ -97,13 +97,13 @@ sequenceDiagram
 
 Local previews stay responsive while completed adjustments save in order. Failed saves retain an explicitly unsaved preview for recovery.
 
-Cancellation preserves saved state, and rejected saves retain the draft with recoverable feedback. Validation and confirmation precede writes; each content mutation or complete gear replacement commits atomically without replacing unrelated content or composition.
+Cancellation preserves saved state, and rejected saves retain the draft with recoverable feedback. Validated mutations commit within their owning boundary, preserving unrelated content and composition.
 
-Acknowledgement is retained even when the saved response cannot be decoded or published; subsequent recovery retries authoritative reads, never the acknowledged mutation. An uncertain write outcome is reconciled before another write attempt, and failed reads remain explicit failures rather than successful empty content.
+Saving and delivering the saved result are distinct outcomes: once a write is acknowledged, recovery retries authoritative reads rather than replaying the mutation. Uncertain outcomes are reconciled before another write attempt; unavailable state remains an explicit failure rather than successful empty content.
 
-Chapter metadata and gear share an editor but commit separately, with metadata resolved before gear is written. Partial-save recovery identifies the saved portion and retries only unresolved work.
+An editor spanning several owners does not imply an all-or-nothing transaction. Chapter metadata resolves before gear commits separately; partial-save recovery preserves the saved portion and retries only unresolved work.
 
-Routine editing and saves retain rendered book content, control visibility and workspace/dialog geometry, reusing unchanged layout and gear choices. Temporary guards prevent conflicting actions with accessible explanations that do not shift the layout; errors and recovery actions remain visible.
+Editing keeps book content primary and preserves the user's spatial context through saves. Temporary guards prevent conflicting actions without hiding controls or shifting the layout; their reasons are accessible, while errors and recovery actions remain visible.
 
 Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
 
@@ -144,12 +144,12 @@ The browser treats live events as invalidations, not a second database. Initial 
 
 Each saved spread supplies its geometry and placements together for editing and Reader. Navigation reuses the acquired resource; authoritative refreshes reconcile saved state without discarding pending adjustments or uncertain-write feedback. Cover is acquired when selected and refreshed on reconnect, while in-flight reads and unresolved saves retain their owning recovery lifecycle.
 
-Complete acknowledged album metadata is published directly to the workspace and its book views. Resource acquisition must not overwrite that publication with an older read; conflicting acquisitions reconcile through authoritative reads before publication.
+Acknowledged saved state takes precedence over older in-flight reads. Workspace views reconcile authoritative state before publication so background acquisition cannot undo a successful edit.
 
 ## Architectural decisions
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
 
-The supported topology is one backend instance. Shared mutation coordination protects read/decision/write decisions, including gear replacement and catalog edits against saved selections; database transactions make supplied changes atomic. Slow source and image work runs outside that critical section.
+The supported topology is one backend instance. Shared mutation coordination protects read/decision/write decisions; database transactions make supplied changes atomic. Slow source and image work runs outside that critical section.
 
 Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Lightweight album, chapter and membership reads use their existing persistence authorities and representation validation, while atomic business workflows retain aggregate acquisition. Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving. [Contracts](contracts.md) identify authoritative representations; [operations](operational.md) owns deployment and recovery.
