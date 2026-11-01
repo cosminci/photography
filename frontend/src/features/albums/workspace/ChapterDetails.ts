@@ -1,4 +1,4 @@
-import type { ChapterDetails } from "../model/Workspace";
+import type { Chapter, ChapterDetails } from "../model/Workspace";
 
 export function validateChapter(details: ChapterDetails): string | undefined {
   if (details.kind === "vacation" && details.name.trim() === "") return "Enter a location / name.";
@@ -48,4 +48,14 @@ export function readCalendarDay(value: string): string {
   if (!/^[0-9]{2}\/[0-9]{2}\/[0-9]{4}$/.test(value)) return "";
   const day = `${value.slice(6, 10)}-${value.slice(3, 5)}-${value.slice(0, 2)}`;
   return isCalendarDay(day) ? day : "";
+}
+export function matchesChapterDetails(chapter: Chapter | undefined, details: ChapterDetails): boolean {
+  if (
+    chapter?.kind !== details.kind ||
+    chapter.sourceFolder !== details.sourceFolder ||
+    chapter.countries.length !== details.countries.length ||
+    !chapter.countries.every((id) => details.countries.includes(id))
+  )
+    return false;
+  return details.kind === "home" || (chapter.name === details.name && chapter.start === details.start && chapter.end === details.end);
 }

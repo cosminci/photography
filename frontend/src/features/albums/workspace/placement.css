@@ -28,13 +28,93 @@
 }
 .photo-slot-actions {
   position: absolute;
-  right: 4px;
+  left: 50%;
+  transform: translateX(-50%);
   top: 4px;
   display: flex;
   gap: 2px;
   opacity: 0;
   pointer-events: none;
   z-index: 2;
+}
+.photo-caption {
+  position: absolute;
+  z-index: 1;
+  max-width: 100%;
+  min-width: 1em;
+  margin: 0;
+  padding: 3px 6px;
+  background: rgb(0 0 0 / 65%);
+  color: white;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+  font:
+    400 6px/1.3 Georgia,
+    serif;
+}
+.photo-caption:empty:not([role="textbox"]) {
+  display: none;
+}
+.photo-caption[data-corner="top_left"],
+.photo-caption[data-corner="top_right"] {
+  top: 3%;
+}
+.photo-caption[data-corner="bottom_left"],
+.photo-caption[data-corner="bottom_right"] {
+  bottom: 3%;
+}
+.photo-caption[data-corner="top_left"],
+.photo-caption[data-corner="bottom_left"] {
+  left: 0;
+  text-align: left;
+}
+.photo-caption[data-corner="top_right"],
+.photo-caption[data-corner="bottom_right"] {
+  right: 0;
+  text-align: right;
+}
+.photo-caption[role="button"] {
+  cursor: text;
+}
+.photo-caption:is([role="button"], [role="textbox"]):hover,
+.photo-caption:is([role="button"], [role="textbox"]):focus-visible {
+  background: rgb(0 0 0 / 75%);
+}
+.photo-caption[role="textbox"]:focus-visible {
+  outline: 1px solid #70b8c1;
+}
+.photo-caption-actions {
+  position: absolute;
+  top: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+}
+.photo-caption-actions path {
+  fill: currentColor;
+  stroke: none;
+}
+.photo-caption-empty {
+  opacity: 0;
+}
+.photo-slot:hover .photo-caption-empty,
+.photo-caption-empty:focus-visible {
+  opacity: 1;
+}
+.caption-feedback {
+  position: absolute;
+  z-index: 3;
+  inset: auto 0 0;
+  background: #000c;
+  color: white;
+  padding: 4px;
+  font-size: 11px;
+}
+.caption-feedback button {
+  min-height: 24px;
+  font-size: 11px;
 }
 .photo-slot:hover .photo-slot-actions,
 .photo-slot:focus-within .photo-slot-actions,
@@ -118,4 +198,7 @@ button.photo-slot-action[aria-pressed="true"] {
   position: static;
   width: 100%;
   height: 100%;
+}
+.photo-thumbnails button:disabled {
+  opacity: 1;
 }

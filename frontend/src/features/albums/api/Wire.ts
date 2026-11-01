@@ -1,4 +1,4 @@
-import { maximumAlbumYear, minimumAlbumYear, type Album, type AlbumPage, type AlbumSummary } from "../model/Album";
+import { albumAuthors, maximumAlbumYear, minimumAlbumYear, type Album, type AlbumPage, type AlbumSummary } from "../model/Album";
 
 export function readSummary(value: unknown): AlbumSummary {
   const fields = readRecord(value);
@@ -8,7 +8,14 @@ export function readSummary(value: unknown): AlbumSummary {
 }
 
 export function readAlbum(value: unknown): Album {
-  return { ...readSummary(value), synopsis: readText(readRecord(value)["synopsis"]) };
+  const fields = readRecord(value);
+  const authors = readArray(fields["authors"]).map((entry) => {
+    const author = albumAuthors.find((candidate) => candidate === entry);
+    if (author === undefined) throw new Error("Unknown album author");
+    return author;
+  });
+  if (authors.length === 0 || new Set(authors).size !== authors.length) throw new Error("Expected a nonempty unique author selection");
+  return { ...readSummary(value), synopsis: readText(fields["synopsis"]), authors };
 }
 
 export function readPage(value: unknown): AlbumPage {

@@ -1,5 +1,21 @@
 UPDATE album SET authors = CASE WHEN year <= 2025 THEN 3 ELSE 7 END;
 
+INSERT INTO camera (id, code, friendly_name, kind, mount, sensor_format) VALUES
+    ('30000000-0000-0000-0000-000000000001', 'Nikon Z6 III', 'Nikon Z6 III', 'interchangeable_lens', 'nikon_z', 'full_frame'),
+    ('30000000-0000-0000-0000-000000000004', 'Sony α6000', 'Sony α6000', 'interchangeable_lens', 'sony_e', 'aps_c'),
+    ('30000000-0000-0000-0000-000000000005', 'Nikon P520', 'Nikon P520', 'fixed_lens', NULL, NULL),
+    ('30000000-0000-0000-0000-000000000006', 'Samsung Galaxy S20 FE', 'Samsung Galaxy S20 FE', 'fixed_lens', NULL, NULL),
+    ('30000000-0000-0000-0000-000000000007', 'Samsung Galaxy S20 Ultra', 'Samsung Galaxy S20 Ultra', 'fixed_lens', NULL, NULL),
+    ('30000000-0000-0000-0000-000000000008', 'Samsung Galaxy S22', 'Samsung Galaxy S22', 'fixed_lens', NULL, NULL),
+    ('30000000-0000-0000-0000-000000000009', 'Samsung Galaxy S25', 'Samsung Galaxy S25', 'fixed_lens', NULL, NULL);
+
+INSERT INTO lens (id, code, friendly_name, mount, coverage) VALUES
+    ('30000000-0000-0000-0000-000000000002', 'Nikkor 28-400mm f/4-8', 'Nikkor 28-400mm f/4-8', 'nikon_z', 'full_frame'),
+    ('30000000-0000-0000-0000-000000000003', 'Viltrox 16mm f/1.8', 'Viltrox 16mm f/1.8', 'nikon_z', 'full_frame'),
+    ('30000000-0000-0000-0000-000000000010', 'Sigma 30mm f/2.8 DN Art', 'Sigma 30mm f/2.8 DN Art', 'sony_e', 'aps_c'),
+    ('30000000-0000-0000-0000-000000000011', 'Sigma 60mm f/2.8 DN Art', 'Sigma 60mm f/2.8 DN Art', 'sony_e', 'aps_c'),
+    ('30000000-0000-0000-0000-000000000012', 'Sigma 16-300mm F3.5-6.7 DC OS Contemporary', 'Sigma 16-300mm F3.5-6.7 DC OS Contemporary', 'sony_e', 'aps_c');
+
 INSERT INTO spread_template (id, name, kind) VALUES
     ('00000000-0000-0000-0000-000000000001', '2 x (L/L) + Text', 'album_start'),
     ('00000000-0000-0000-0000-000000000002', 'L + Text', 'album_start'),

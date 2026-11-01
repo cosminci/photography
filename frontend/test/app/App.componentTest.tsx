@@ -291,6 +291,7 @@ describe("album dashboard and open", () => {
     });
     expect(client.rename).toHaveBeenLastCalledWith(firstAlbum.id, renamedAlbum.title);
     expect(await screen.findByRole("button", { name: `Rename ${renamedAlbum.title}` })).toHaveFocus();
+    expect(screen.getByRole("button", { name: `Rename ${renamedAlbum.title}` })).toBe(rename);
   });
 
   it("should protect a pending delete, preserve confirmation on failure and fall back after the last page disappears", async () => {
@@ -361,7 +362,7 @@ describe("album dashboard and open", () => {
       [operation]: vi
         .fn()
         .mockRejectedValueOnce(new AlbumRequestError(status, "Request failed"))
-        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry." } : []),
+        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry.", authors: ["Cosmin", "Mara", "Iacob"] } : []),
     });
 
     render(() => <App client={client} events={events} />);
@@ -410,6 +411,15 @@ describe("album dashboard and open", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
   return {
+    gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
+    chapterGear: vi.fn().mockResolvedValue([]),
+    saveChapterGear: vi.fn(),
+    createCamera: vi.fn(),
+    updateCamera: vi.fn(),
+    deleteCamera: vi.fn(),
+    createLens: vi.fn(),
+    updateLens: vi.fn(),
+    deleteLens: vi.fn(),
     readPlacements: vi
       .fn()
       .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
@@ -431,7 +441,11 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     list: vi.fn().mockResolvedValue(firstPage),
     create: vi.fn().mockResolvedValue(firstAlbum),
     rename: vi.fn().mockResolvedValue(firstAlbum),
-    open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn." }),
+    open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn.", authors: ["Cosmin", "Mara", "Iacob"] }),
+    saveSynopsis: vi.fn(),
+    saveAuthors: vi.fn(),
+    saveDescription: vi.fn(),
+    saveCaption: vi.fn(),
     remove: vi.fn().mockResolvedValue(undefined),
     chapters: vi.fn().mockResolvedValue([]),
     composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),

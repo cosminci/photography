@@ -174,9 +174,18 @@ export function ChapterOutline(props: {
         </div>
       </div>
       <Show when={props.spreads.length >= 65}>
-        <p class="spread-action-feedback">This album has 65 interior spreads. No more spreads can be added.</p>
+        <>
+          <p class="spread-action-feedback">This album has 65 interior spreads. No more spreads can be added.</p>
+          <p class="spread-action-feedback">This album has 65 interior spreads. No more chapters can be added.</p>
+        </>
       </Show>
-      <Show when={props.creationReason}>{(reason) => <p id="chapter-capacity">{reason()}</p>}</Show>
+      <Show when={props.creationReason}>
+        {(reason) => (
+          <p id="chapter-capacity" class="control-help">
+            {reason()}
+          </p>
+        )}
+      </Show>
     </aside>
   );
 }

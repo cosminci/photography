@@ -1,10 +1,18 @@
-import { Show, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { For, Show, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
 import type { Photo } from "../model/Photo";
-import type { Placement, PlacementEdit, PhotoTransform } from "../model/Placement";
+import { captionCorners, type Placement, type PlacementEdit, type PhotoTransform } from "../model/Placement";
+import { PhotoCaption, type CaptionEditing } from "./PhotoCaption";
 import { boundTransform, cropImage, panTransform } from "./PlacementCrop";
 import { photoDragFeedback, photoDragType, readPhotoChoice, startPhotoDrag, type PhotoChoice } from "./PhotoDrag";
 import type { PlacementSession } from "./PlacementSession";
 import "./placement.css";
+
+const cornerIcons = {
+  top_left: { label: "Top left", path: "M5 5h6v3H5z" },
+  top_right: { label: "Top right", path: "M13 5h6v3h-6z" },
+  bottom_left: { label: "Bottom left", path: "M5 16h6v3H5z" },
+  bottom_right: { label: "Bottom right", path: "M13 16h6v3h-6z" },
+};
 
 export function PhotoSlot(props: {
   slotId: string;
@@ -18,12 +26,22 @@ export function PhotoSlot(props: {
   onChoose: (choice: PhotoChoice | undefined) => void;
   unavailable: string | undefined;
   reader: boolean;
+  captions?: CaptionEditing | undefined;
 }) {
   const reasonId = createUniqueId();
   const reason = createMemo(() => props.unavailable ?? props.session.unavailable());
   const actionReason = createMemo(() => reason() ?? props.session.navigationReason());
   const [dragError, setDragError] = createSignal(false);
   const moving = createMemo(() => props.choice?.kind === "move" && props.choice.placementId === props.placement?.id);
+  const caption = createMemo(() => {
+    const row = props.placement;
+    const photo = props.photo;
+    return row?.kind === "spread" && photo !== undefined ? { row, photo } : undefined;
+  });
+  const alternativeCorners = createMemo(() => {
+    const row = props.placement;
+    return row?.kind === "spread" ? captionCorners.filter((corner) => corner !== row.captionCorner) : [];
+  });
   const crop = createMemo(() => {
     const photo = props.photo;
     const placement = props.placement;
@@ -187,6 +205,30 @@ export function PhotoSlot(props: {
           )}
         </Show>
       </button>
+      <Show when={caption()}>
+        {(content) => (
+          <Show
+            when={props.captions}
+            fallback={
+              <div class="photo-caption" data-corner={content().row.captionCorner}>
+                {content().photo.caption}
+              </div>
+            }
+          >
+            {(captions) => (
+              <Show when={content().photo.id} keyed>
+                <PhotoCaption
+                  photo={content().photo}
+                  corner={content().row.captionCorner}
+                  reader={props.reader}
+                  unavailable={actionReason()}
+                  editing={captions()}
+                />
+              </Show>
+            )}
+          </Show>
+        )}
+      </Show>
       <Show when={!props.reader}>
         <span id={`${reasonId}-help`} class="control-help">
           Choose a collection photo, then activate a slot. Pan with arrows; zoom with + or −.
@@ -272,6 +314,30 @@ export function PhotoSlot(props: {
                   <path d="m6 6 12 12M6 18 18 6" />
                 </svg>
               </button>
+              <Show when={row().kind === "spread"}>
+                <div class="photo-caption-actions" role="group" aria-label="Move caption">
+                  <For each={alternativeCorners()}>
+                    {(corner) => (
+                      <button
+                        type="button"
+                        class="photo-slot-action"
+                        aria-label={`Move caption to ${cornerIcons[corner].label.toLowerCase()}`}
+                        title={cornerIcons[corner].label}
+                        disabled={actionReason() !== undefined}
+                        aria-describedby={actionReason() === undefined ? undefined : `${reasonId}-action`}
+                        onClick={() => {
+                          void edit({ operation: "captionCorner", placementId: row().id, captionCorner: corner });
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <rect x="3" y="3" width="18" height="18" rx="1" />
+                          <path d={cornerIcons[corner].path} />
+                        </svg>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
             </div>
           )}
         </Show>

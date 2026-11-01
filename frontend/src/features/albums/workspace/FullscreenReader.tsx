@@ -1,4 +1,4 @@
-import { Show, createMemo, createSignal, createUniqueId, onCleanup, type JSX } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, createUniqueId, onCleanup, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import "./reader.css";
 
@@ -16,10 +16,12 @@ export function FullscreenReader(props: {
   const [active, setActive] = createSignal(false);
   const [pending, setPending] = createSignal(false);
   const [error, setError] = createSignal<string>();
+  const [returnPending, setReturnPending] = createSignal(false);
   const entryReason = createMemo(() => props.unavailable ?? (pending() ? "Entering fullscreen. Please wait." : undefined));
   const reasonId = createUniqueId();
   let stage!: HTMLDivElement;
   let opener!: HTMLButtonElement;
+  let status!: HTMLSpanElement;
   let exitButton: HTMLButtonElement | undefined;
 
   function syncFullscreen() {
@@ -30,9 +32,18 @@ export function FullscreenReader(props: {
     if (entered) exitButton?.focus();
     if (exited) {
       setError(undefined);
-      opener.focus();
+      if (opener.disabled) {
+        status.focus();
+        setReturnPending(true);
+      } else opener.focus();
     }
   }
+  createEffect(() => {
+    if (returnPending() && entryReason() === undefined) {
+      setReturnPending(false);
+      if (document.activeElement === status) opener.focus();
+    }
+  });
   document.addEventListener("fullscreenchange", syncFullscreen);
   document.addEventListener("keydown", handleKeyDown);
   onCleanup(() => {
@@ -97,7 +108,16 @@ export function FullscreenReader(props: {
           <path d="M12 5.5C9 3.5 5.5 3 2 4v15c3.5-1 7-.5 10 1.5C15 18.5 18.5 18 22 19V4c-3.5-1-7-.5-10 1.5Zm0 0v15M5 8c1.5-.2 3 .1 4 .7M5 12c1.5-.2 3 .1 4 .7M15 8.7c1-.6 2.5-.9 4-.7M15 12.7c1-.6 2.5-.9 4-.7" />
         </svg>
       </button>
-      <Show when={entryReason()}>{(reason) => <span id={reasonId}>{reason()}</span>}</Show>
+      <span
+        ref={(element) => {
+          status = element;
+        }}
+        id={reasonId}
+        class="control-help"
+        tabindex="-1"
+      >
+        {entryReason()}
+      </span>
     </div>
   );
 

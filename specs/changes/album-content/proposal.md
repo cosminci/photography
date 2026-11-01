@@ -97,6 +97,7 @@ If retained equipment cannot be classified, the transition stops with an explici
 ### Captions
 
 - Captions sit flush against their selected horizontal edge with a 3% vertical inset.
+- Multiline captions align each line to that horizontal edge in both editing and Reader.
 - Clicking the actual caption edits that label directly with unchanged typography, background and padding.
 - Empty captions expose an Add caption affordance on hover or keyboard focus.
 - Editing adds no toolbar or dialog; typing sends no mutation.
@@ -122,6 +123,8 @@ If retained equipment cannot be classified, the transition stops with an explici
 - Full-frame lenses are selectable on same-mount APS-C bodies.
 - Exhausted lens selectors disappear; removal restores the choice and maintains usable keyboard focus.
 - Camera/lens catalog management opens from chapter gear in split panels with quiet controls and aligned subtitles.
+- Open catalog management with the usual pencil immediately to the right of Gear.
+- Fresh databases contain the confirmed equipment inventory, including historical phones needed for rebuilding old albums; the shared catalog remains editable.
 - Each catalog panel has its Add icon at the right of its heading; narrow layouts stack the panels.
 - Catalog create/edit exposes mount and sensor format or lens coverage where applicable.
 - Editing compatibility or camera kind rejects changes that invalidate saved chapter selections.
@@ -138,6 +141,8 @@ If retained equipment cannot be classified, the transition stops with an explici
 - The band shows deduplicated chapter countries in country-code order; flags measure 42×28pt with bottoms 80pt above the text-slot bottom.
 - Unavailable flag artwork produces explicit feedback rather than a broken image or silently missing country.
 - Reader preserves synopsis contrast, chapter typography, gear, attribution and saved captions without editing controls.
+- Routine saves preserve rendered book content, workspace metadata, navigation and dialog geometry without document reloads, temporary save overlays or reacquiring unchanged layout/gear choices.
+- Temporary save guards retain controls' normal visibility; accessible busy descriptions leave the layout unchanged.
 - Controls remain keyboard accessible, retain meaningful focus after changes and expose reasons for unavailable actions.
 - Malformed content or invalid selections return validation feedback; missing targets report missing/stale state.
 - Successful saves followed by failed refresh retry authoritative reads without replaying the mutation.

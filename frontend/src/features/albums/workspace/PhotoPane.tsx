@@ -153,7 +153,7 @@ export function PhotoPane(props: {
           </div>
           <Show when={refreshReason()}>
             {(reason) => (
-              <p id="photo-refresh-reason" role="status">
+              <p id="photo-refresh-reason" role="status" class="control-help">
                 {reason()}
               </p>
             )}
@@ -319,7 +319,7 @@ export function PhotoPane(props: {
           </Show>
           <Show when={props.unavailable}>
             {(reason) => (
-              <p id="photo-placement-unavailable" role="status">
+              <p id="photo-placement-unavailable" class="control-help" role="status">
                 {reason()}
               </p>
             )}

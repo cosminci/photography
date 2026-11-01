@@ -1,9 +1,10 @@
-import { AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
+import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type AlbumClient } from "../model/Album";
 import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readText, readNumber } from "./Wire";
 import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
 import { readArray } from "./Wire";
 import { readPhotoInventory, readScheduling } from "./PhotoWire";
 import { readPlacementSnapshot, readSpread } from "./PlacementWire";
+import { readCamera, readChapterGear, readGearCatalog, readLens } from "./GearWire";
 import type {
   CoverContext,
   CoverSnapshot,
@@ -13,6 +14,13 @@ import type {
   SpreadContext,
   SpreadSnapshot,
 } from "../model/Placement";
+
+const catalogFailureMessages: Readonly<Record<string, string>> = {
+  catalog_conflict: "This catalog entry conflicts with an existing entry.",
+  invalidates_selection: "This change would invalidate saved chapter gear.",
+  camera_used: "This camera is used by a chapter and cannot be deleted.",
+  lens_used: "This lens is used by a chapter and cannot be deleted.",
+};
 
 export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   async function request<T>(
@@ -43,11 +51,17 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
         throw new AlbumRequestError(404, "This spread could not be found. Reload the workspace and try again.");
       if (response.status === 409 && fields["code"] === "composition_changed")
         throw new AlbumRequestError(409, "This chapter's composition changed. Reload saved workspace before choosing the action again.");
-      throw new AlbumRequestError(response.status, readFailureMessage(failure));
+      const catalogFailure = typeof fields["code"] === "string" ? catalogFailureMessages[fields["code"]] : undefined;
+      throw new AlbumRequestError(response.status, catalogFailure ?? readFailureMessage(failure));
     }
-    if (response.status !== expectedStatus) throw new Error("Unexpected album response status");
-    const value: unknown = response.status === 204 ? undefined : await response.json();
-    return decode(value);
+    try {
+      if (response.status !== expectedStatus) throw new Error("Unexpected album response status");
+      const value: unknown = response.status === 204 ? undefined : await response.json();
+      return decode(value);
+    } catch (failure) {
+      if (method !== "GET") throw new AcknowledgedWriteError("The write was acknowledged, but its saved response could not be read.");
+      throw failure;
+    }
   }
 
   function readPlacements(id: string, context: CoverContext): Promise<CoverSnapshot>;
@@ -60,16 +74,35 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   function editPlacements(id: string, context: CoverContext, edit: PlacementEdit): Promise<CoverSnapshot>;
   function editPlacements(id: string, context: SpreadContext, edit: PlacementEdit): Promise<SpreadSnapshot>;
   function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot>;
-  function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
+  async function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
     const base = `${resourcePath(id, context)}/placements`;
     if (edit.operation === "place")
       return request(base, "POST", { slotId: edit.slotId, photoId: edit.photoId }, 200, (value) => readPlacementSnapshot(value, context));
     const path = `${base}/${encodeURIComponent(edit.placementId)}`;
-    const body = edit.operation === "adjust" ? { transform: edit.transform } : edit.operation === "move" ? { slotId: edit.slotId } : undefined;
+    if (edit.operation === "captionCorner" && context.kind === "cover") throw new Error("Caption corners belong to interior placements");
+    const body =
+      edit.operation === "adjust"
+        ? { transform: edit.transform }
+        : edit.operation === "move"
+          ? { slotId: edit.slotId }
+          : edit.operation === "captionCorner"
+            ? { captionCorner: edit.captionCorner }
+            : undefined;
     return request(path, edit.operation === "remove" ? "DELETE" : "PATCH", body, 200, (value) => readPlacementSnapshot(value, context));
   }
 
   return {
+    gearCatalog: (signal) => request("/api/gear", "GET", undefined, 200, readGearCatalog, signal),
+    chapterGear: (id, chapterId, signal) =>
+      request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/gear`, "GET", undefined, 200, readChapterGear, signal),
+    saveChapterGear: (id, chapterId, cameras) =>
+      request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/gear`, "PUT", { cameras }, 204, () => undefined),
+    createCamera: (details) => request("/api/cameras", "POST", details, 201, readCamera),
+    updateCamera: (id, details) => request(`/api/cameras/${encodeURIComponent(id)}`, "PUT", details, 204, () => undefined),
+    deleteCamera: (id) => request(`/api/cameras/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
+    createLens: (details) => request("/api/lenses", "POST", details, 201, readLens),
+    updateLens: (id, details) => request(`/api/lenses/${encodeURIComponent(id)}`, "PUT", details, 204, () => undefined),
+    deleteLens: (id) => request(`/api/lenses/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
     readPlacements,
     editPlacements,
     templates: (context) => {
@@ -112,6 +145,12 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     create: (year) => request("/api/albums", "POST", { year }, 201, readSummary),
     rename: (id, title) => request(`/api/albums/${encodeURIComponent(id)}`, "PATCH", { title }, 200, readSummary),
     open: (id, signal) => request(`/api/albums/${encodeURIComponent(id)}`, "GET", undefined, 200, readAlbum, signal),
+    saveSynopsis: (id, text) => request(`/api/albums/${encodeURIComponent(id)}/synopsis`, "PUT", { text }, 200, readAlbum),
+    saveAuthors: (id, authors) => request(`/api/albums/${encodeURIComponent(id)}/authors`, "PUT", { authors }, 200, readAlbum),
+    saveDescription: (id, chapterId, text) =>
+      request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/description`, "PUT", { text }, 204, () => undefined),
+    saveCaption: (chapterId, photoId, text) =>
+      request(`/api/chapters/${encodeURIComponent(chapterId)}/photos/${encodeURIComponent(photoId)}/caption`, "PUT", { text }, 204, () => undefined),
     remove: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
     chapters: (id, signal) =>
       request(
@@ -158,7 +197,11 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     updateChapter: (id, chapterId, details) => {
       const common = { kind: details.kind, countries: details.countries, sourceFolder: details.sourceFolder };
       const body = details.kind === "home" ? common : { name: details.name, start: details.start, end: details.end, ...common };
-      return request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}`, "PUT", body, 200, readChapterIdentity);
+      return request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}`, "PUT", body, 200, (value) => {
+        const saved = readChapterIdentity(value);
+        if (saved.id !== chapterId) throw new Error("Unexpected saved chapter identity");
+        return saved;
+      });
     },
   };
 }

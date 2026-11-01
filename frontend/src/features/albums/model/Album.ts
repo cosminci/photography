@@ -1,6 +1,7 @@
 import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTemplate, SpreadMembership } from "./Workspace";
 import type { ChapterSave, PhotoInventory } from "./Photo";
 import type { PlacementClient } from "./Placement";
+import type { GearClient } from "./Gear";
 
 export const minimumAlbumYear = 1900;
 export const maximumAlbumYear = 2100;
@@ -14,7 +15,11 @@ export interface AlbumSummary {
 
 export interface Album extends AlbumSummary {
   readonly synopsis: string;
+  readonly authors: readonly Author[];
 }
+
+export const albumAuthors = ["Cosmin", "Mara", "Iacob"] as const;
+export type Author = (typeof albumAuthors)[number];
 
 export interface AlbumPage {
   readonly albums: readonly AlbumSummary[];
@@ -24,11 +29,15 @@ export interface AlbumPage {
   readonly totalPages: number;
 }
 
-export interface AlbumClient extends PlacementClient {
+export interface AlbumClient extends PlacementClient, GearClient {
   readonly list: (page: number) => Promise<AlbumPage>;
   readonly create: (year: number) => Promise<AlbumSummary>;
   readonly rename: (id: string, title: string) => Promise<AlbumSummary>;
   readonly open: (id: string, signal?: AbortSignal) => Promise<Album>;
+  readonly saveSynopsis: (id: string, text: string) => Promise<Album>;
+  readonly saveAuthors: (id: string, authors: readonly Author[]) => Promise<Album>;
+  readonly saveDescription: (id: string, chapterId: string, text: string) => Promise<void>;
+  readonly saveCaption: (chapterId: string, photoId: string, text: string) => Promise<void>;
   readonly remove: (id: string) => Promise<void>;
   readonly chapters: (id: string, signal: AbortSignal) => Promise<readonly Chapter[]>;
   readonly composition: (id: string, signal: AbortSignal) => Promise<readonly SpreadMembership[]>;
@@ -65,3 +74,5 @@ export class AlbumRequestError extends Error {
     super(message);
   }
 }
+
+export class AcknowledgedWriteError extends Error {}

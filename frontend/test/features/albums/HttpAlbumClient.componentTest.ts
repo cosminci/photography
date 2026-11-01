@@ -1,11 +1,169 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeHttpAlbumClient } from "../../../src/features/albums/api/HttpAlbumClient";
-import { AlbumRequestError } from "../../../src/features/albums/model/Album";
+import { AcknowledgedWriteError, AlbumRequestError } from "../../../src/features/albums/model/Album";
 import type { PlacementContext, PlacementEdit } from "../../../src/features/albums/model/Placement";
 import type { Spread } from "../../../src/features/albums/model/Workspace";
 import { buildChapterReorder } from "../../../src/features/albums/workspace/WorkspaceSelection";
 
 describe("same-origin album HTTP client", () => {
+  it.each([
+    { operation: "create" as const, returnedId: "" },
+    { operation: "update" as const, returnedId: "" },
+    { operation: "update" as const, returnedId: "another-chapter" },
+  ])("should retain acknowledgement for $operation returning identity '$returnedId' without another request", async ({ operation, returnedId }) => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ id: returnedId, scheduling: "not-requested" }), { status: operation === "create" ? 201 : 200 }),
+      );
+    const client = makeHttpAlbumClient(fetcher);
+    const details = { kind: "home" as const, countries: ["country"], sourceFolder: "/photos/Home" };
+
+    await expect(
+      operation === "create" ? client.createChapter("album", details) : client.updateChapter("album", "chapter", details),
+    ).rejects.toBeInstanceOf(AcknowledgedWriteError);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { code: "catalog_conflict", message: "This catalog entry conflicts with an existing entry." },
+    { code: "invalidates_selection", message: "This change would invalidate saved chapter gear." },
+    { code: "camera_used", message: "This camera is used by a chapter and cannot be deleted." },
+    { code: "lens_used", message: "This lens is used by a chapter and cannot be deleted." },
+  ])("should explain catalog rejection $code without retrying its mutation", async ({ code, message }) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ code }), { status: 409 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    await expect(client.deleteCamera("camera")).rejects.toEqual(new AlbumRequestError(409, message));
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it("should create and edit each catalog resource with exact codes, complete acknowledgements and no mutation replay", async () => {
+    const camera = {
+      code: "  Camera code  ",
+      name: "山 body",
+      kind: "interchangeable_lens" as const,
+      mount: "sony_e" as const,
+      sensorFormat: "aps_c" as const,
+    };
+    const lens = { code: "Original lens code", name: "山 lens", mount: "nikon_z" as const, coverage: "full_frame" as const };
+    const createdCamera = { id: "camera/id", ...camera };
+    const createdLens = { id: "lens/id", ...lens };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(createdCamera), { status: 201 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(createdLens), { status: 201 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    expect(await client.createCamera(camera)).toEqual(createdCamera);
+    await client.updateCamera(createdCamera.id, camera);
+    await client.deleteCamera(createdCamera.id);
+    expect(await client.createLens(lens)).toEqual(createdLens);
+    await client.updateLens(createdLens.id, lens);
+    await client.deleteLens(createdLens.id);
+
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["/api/cameras", "POST", JSON.stringify(camera)],
+      ["/api/cameras/camera%2Fid", "PUT", JSON.stringify(camera)],
+      ["/api/cameras/camera%2Fid", "DELETE", undefined],
+      ["/api/lenses", "POST", JSON.stringify(lens)],
+      ["/api/lenses/lens%2Fid", "PUT", JSON.stringify(lens)],
+      ["/api/lenses/lens%2Fid", "DELETE", undefined],
+    ]);
+  });
+  it("should acquire shared gear and replace only scoped chapter selections", async () => {
+    const camera = { id: "camera", code: "Camera code", name: "Saved camera", kind: "fixed_lens" };
+    const selection = [{ cameraId: camera.id, lensIds: [] }];
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ cameras: [camera], lenses: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ cameras: selection })))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    expect(await client.gearCatalog()).toEqual({ cameras: [camera], lenses: [] });
+    expect(await client.chapterGear("album/id", "chapter/id")).toEqual(selection);
+    await client.saveChapterGear("album/id", "chapter/id", selection);
+
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["/api/gear", "GET", undefined],
+      ["/api/albums/album%2Fid/chapters/chapter%2Fid/gear", "GET", undefined],
+      ["/api/albums/album%2Fid/chapters/chapter%2Fid/gear", "PUT", JSON.stringify({ cameras: selection })],
+    ]);
+  });
+  it.each(["not JSON", '{"id":"album"}'])("should distinguish acknowledged malformed saved metadata %s from an uncertain write", async (body) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 200 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    await expect(client.saveSynopsis("album", "Draft")).rejects.toEqual(
+      new AcknowledgedWriteError("The write was acknowledged, but its saved response could not be read."),
+    );
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it.each(["top_left", "top_right", "bottom_left", "bottom_right"] as const)(
+    "should save %s independently and publish the complete saved spread",
+    async (captionCorner) => {
+      const transform = { x: 3, y: 4, zoom: 2, mirrored: true };
+      const slot = { id: "slot", kind: "photo", x: 0, y: 0, width: 100, height: 100 };
+      const placement = { id: "placement", slotId: slot.id, photoId: "photo", captionCorner, transform };
+      const wire = { id: "spread/id", kind: "photos_only", templateId: "template", slots: [slot], placements: [placement] };
+      const saved = {
+        kind: "spread",
+        id: wire.id,
+        layout: { kind: wire.kind, templateId: wire.templateId, slots: wire.slots },
+        placements: [{ kind: "spread", ...placement }],
+      };
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(wire)));
+      const client = makeHttpAlbumClient(fetcher);
+
+      const result = await client.editPlacements(
+        "album/id",
+        { kind: "spread", id: wire.id },
+        { operation: "captionCorner", placementId: placement.id, captionCorner },
+      );
+
+      expect(result).toEqual(saved);
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/albums/album%2Fid/spreads/spread%2Fid/placements/placement", {
+        method: "PATCH",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ captionCorner }),
+      });
+      await expect(
+        client.editPlacements("album", { kind: "cover" }, { operation: "captionCorner", placementId: placement.id, captionCorner }),
+      ).rejects.toThrow("Caption corners belong to interior placements");
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
+  it("should save editorial resources with exact bodies and complete saved album metadata", async () => {
+    const album = {
+      id: "album/id",
+      title: "Saved title",
+      year: 2026,
+      createdAt: "2026-01-01T00:00:00Z",
+      synopsis: "  山\n\n ",
+      authors: ["Cosmin", "Iacob"],
+    };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(album)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(album)))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    expect(await client.saveSynopsis(album.id, album.synopsis)).toEqual(album);
+    expect(await client.saveAuthors(album.id, ["Cosmin", "Iacob"])).toEqual(album);
+    await client.saveDescription(album.id, "chapter/id", "");
+    await client.saveCaption("chapter/id", "photo/id", "  山\n\n ");
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["/api/albums/album%2Fid/synopsis", "PUT", JSON.stringify({ text: album.synopsis })],
+      ["/api/albums/album%2Fid/authors", "PUT", '{"authors":["Cosmin","Iacob"]}'],
+      ["/api/albums/album%2Fid/chapters/chapter%2Fid/description", "PUT", '{"text":""}'],
+      ["/api/chapters/chapter%2Fid/photos/photo%2Fid/caption", "PUT", JSON.stringify({ text: album.synopsis })],
+    ]);
+  });
   it("should independently decode populated chapter, composition, spread and country resources with cancellation", async () => {
     const chapter = {
       id: "chapter",
@@ -205,7 +363,7 @@ describe("same-origin album HTTP client", () => {
       .mockResolvedValueOnce(new Response('{"countries":[]}'))
       .mockResolvedValueOnce(new Response('{"photoRoot":"/nas/photos"}'))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "vacation", scheduling: "failed" }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "vacation", scheduling: "not-requested" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "chapter/id", scheduling: "not-requested" })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "home", scheduling: "queued" }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ id: "home", scheduling: "coalesced" })));
     const client = makeHttpAlbumClient(fetcher);
@@ -240,7 +398,7 @@ describe("same-origin album HTTP client", () => {
       photoRoot: workspace.photoRoot,
     });
     expect(createdVacation).toEqual({ id: "vacation", scheduling: "failed" });
-    expect(updatedVacation).toEqual({ id: "vacation", scheduling: "not-requested" });
+    expect(updatedVacation).toEqual({ id: "chapter/id", scheduling: "not-requested" });
     expect(createdHome).toEqual({ id: "home", scheduling: "queued" });
     expect(updatedHome).toEqual({ id: "home", scheduling: "coalesced" });
     expect(fetcher.mock.calls.slice(0, 4).map(([url]) => url)).toEqual([
@@ -298,7 +456,7 @@ describe("same-origin album HTTP client", () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(page)))
       .mockResolvedValueOnce(new Response(JSON.stringify(album), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, synopsis: "" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, synopsis: "", authors: ["Cosmin", "Mara", "Iacob"] })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, title: "Asian capitals" })))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const client = makeHttpAlbumClient(fetcher);
@@ -313,7 +471,7 @@ describe("same-origin album HTTP client", () => {
 
     expect(listed).toEqual(page);
     expect(created).toEqual(album);
-    expect(opened).toEqual({ ...album, synopsis: "" });
+    expect(opened).toEqual({ ...album, synopsis: "", authors: ["Cosmin", "Mara", "Iacob"] });
     expect(renamed).toEqual({ ...album, title: "Asian capitals" });
     expect(fetcher.mock.calls.map((call) => call[0])).toEqual(expectedUrls);
     expect(fetcher.mock.calls[1]?.[1]).toMatchObject(expectedCreation);
@@ -351,6 +509,6 @@ describe("same-origin album HTTP client", () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}"));
     const client = makeHttpAlbumClient(fetcher);
 
-    await expect(client.remove("album")).rejects.toThrow("Unexpected album response status");
+    await expect(client.remove("album")).rejects.toThrow("The write was acknowledged, but its saved response could not be read.");
   });
 });

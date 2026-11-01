@@ -16,34 +16,32 @@ export function TemplateSelector(props: {
   const [loading, setLoading] = createSignal(false);
   const [retry, setRetry] = createSignal(0);
   const [category, setCategory] = createSignal<number>();
+  const selectedContext = createMemo(() => props.context);
   const categories = createMemo(() => [...new Set(templates().map(templateCategory))].sort((a, b) => a - b));
   const unavailable = createMemo(() => props.unavailable ?? (loading() ? "Loading templates. Please wait." : undefined));
   createEffect(
-    on(
-      () => [props.context, retry()] as const,
-      ([context]) => {
-        let active = true;
-        setTemplates([]);
-        setError(undefined);
-        setLoading(true);
-        void props
-          .load(context)
-          .then(
-            (catalog) => {
-              if (active) setTemplates(catalog);
-            },
-            (failure: unknown) => {
-              if (active) setError(describeFailure(failure));
-            },
-          )
-          .finally(() => {
-            if (active) setLoading(false);
-          });
-        onCleanup(() => {
-          active = false;
+    on([selectedContext, retry], ([context]) => {
+      let active = true;
+      setTemplates([]);
+      setError(undefined);
+      setLoading(true);
+      void props
+        .load(context)
+        .then(
+          (catalog) => {
+            if (active) setTemplates(catalog);
+          },
+          (failure: unknown) => {
+            if (active) setError(describeFailure(failure));
+          },
+        )
+        .finally(() => {
+          if (active) setLoading(false);
         });
-      },
-    ),
+      onCleanup(() => {
+        active = false;
+      });
+    }),
   );
   createEffect(() => {
     const applied = templates().find((template) => template.id === props.appliedTemplateId);
@@ -53,7 +51,9 @@ export function TemplateSelector(props: {
     <section class="template-selector" aria-label="Spread template selector">
       <h2>Spread template selector</h2>
       <Show when={loading()}>
-        <p role="status">Loading templates…</p>
+        <p role="status" class="control-help">
+          Loading templates…
+        </p>
       </Show>
       <Show when={error()}>
         {(message) => (

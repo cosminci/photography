@@ -1,5 +1,5 @@
-import { Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
-import { AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient } from "../model/Album";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js";
+import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient } from "../model/Album";
 import { describeFailure } from "../model/Presentation";
 import type { Chapter, Workspace } from "../model/Workspace";
 import type { ChapterSave, Scheduling } from "../model/Photo";
@@ -23,6 +23,11 @@ import { SpreadConfirmation } from "./SpreadConfirmation";
 import { createPlacementSession } from "./PlacementSession";
 import type { PhotoChoice } from "./PhotoDrag";
 import type { CanvasPhotos } from "./Canvas";
+import { describeGear, validateGear, type GearClient } from "../model/Gear";
+import { AlbumAuthors } from "./AlbumAuthors";
+import { TextEditor } from "./TextEditor";
+import { createCaptionEditing } from "./PhotoCaption";
+import { RetainedCaption } from "./RetainedCaption";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -33,7 +38,7 @@ type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
 type SpreadDestination = { kind: "part"; part: string | null } | { kind: "index"; index: number };
 
 export function AlbumWorkspace(props: {
-  album: Pick<Album, "id" | "title" | "synopsis">;
+  album: Album;
   workspace: Workspace;
   client: Pick<
     AlbumClient,
@@ -46,6 +51,12 @@ export function AlbumWorkspace(props: {
     | "deleteSpread"
     | "readPlacements"
     | "editPlacements"
+    | "saveSynopsis"
+    | "saveAuthors"
+    | "saveDescription"
+    | "saveCaption"
+    | "chapters"
+    | keyof GearClient
   >;
   onRefresh: () => Promise<void>;
   onSaved: (result: ChapterSave) => Promise<void>;
@@ -55,6 +66,7 @@ export function AlbumWorkspace(props: {
   liveStatus: "connecting" | "catching-up" | "live" | "interrupted" | "invalid";
   onPhotoRefresh: (ids: readonly string[]) => Promise<void>;
   onInventoryRetry: (id: string) => void;
+  onAlbumSaved: (saved: Album) => void;
 }) {
   const readPart = () => new URL(window.location.href).searchParams.get("part");
   const [part, setPart] = createSignal(readPart());
@@ -71,6 +83,70 @@ export function AlbumWorkspace(props: {
   const [reloadTarget, setReloadTarget] = createSignal<{ destination: SpreadDestination; opener: HTMLButtonElement }>();
   const [choice, setChoice] = createSignal<PhotoChoice>();
   const [reader, setReader] = createSignal(false);
+  const [contentBlocks, setContentBlocks] = createSignal<Readonly<Record<string, string>>>({});
+  const [textEdit, setTextEdit] = createSignal<{ chapter: Chapter | undefined; opener: HTMLButtonElement }>();
+  const contentReason = createMemo(() => Object.values(contentBlocks())[0]);
+  function blockContent(key: string, reason: string | undefined) {
+    setContentBlocks((current) =>
+      reason === undefined ? Object.fromEntries(Object.entries(current).filter(([id]) => id !== key)) : { ...current, [key]: reason },
+    );
+  }
+  async function readContent() {
+    await props.onRefresh();
+    if (props.workspaceError !== undefined) throw new Error("Saved content acquisition failed");
+  }
+  async function saveAuthors(authors: Album["authors"]) {
+    const metadata = await props.client.saveAuthors(props.album.id, authors);
+    publishAlbum(metadata);
+    return metadata.authors;
+  }
+  function publishAlbum(metadata: Album) {
+    try {
+      props.onAlbumSaved(metadata);
+    } catch (cause) {
+      throw new AcknowledgedWriteError("Saved album metadata could not be published. Read saved content again.", { cause });
+    }
+  }
+  async function readAuthors() {
+    await readContent();
+    return props.album.authors;
+  }
+  async function saveText(owner: Chapter | undefined, text: string) {
+    if (owner !== undefined) {
+      await props.client.saveDescription(props.album.id, owner.id, text);
+      return undefined;
+    }
+    const metadata = await props.client.saveSynopsis(props.album.id, text);
+    publishAlbum(metadata);
+    return metadata.synopsis;
+  }
+  async function readText(owner: Chapter | undefined) {
+    await readContent();
+    if (owner === undefined) return props.album.synopsis;
+    const metadata = props.workspace.chapters.find((candidate) => candidate.id === owner.id);
+    if (metadata === undefined) throw new Error("The saved chapter could not be found");
+    return metadata.description;
+  }
+  const captions = createCaptionEditing({
+    save: async (photoId, text) => {
+      const owner = props.workspace.chapters.find(
+        (candidate) => props.workspace.photoInventories[candidate.id]?.photos.some((photo) => photo.id === photoId) === true,
+      );
+      if (owner === undefined) throw new AlbumRequestError(404, "The photo could not be found in its chapter");
+      await props.client.saveCaption(owner.id, photoId, text);
+    },
+    read: async (photoId) => {
+      await readContent();
+      const photo = Object.values(props.workspace.photoInventories)
+        .flatMap((inventory) => inventory.photos)
+        .find((candidate) => candidate.id === photoId);
+      if (photo === undefined) throw new Error("The saved photo could not be found");
+      return photo.caption ?? "";
+    },
+    onBlock: (photoId, reason) => {
+      blockContent(`caption-${photoId}`, reason);
+    },
+  });
   const placement = createPlacementSession(
     untrack(() => props.client),
     async () => {
@@ -91,6 +167,41 @@ export function AlbumWorkspace(props: {
     return common;
   });
   const chapter = createMemo(() => props.workspace.chapters.find((candidate) => candidate.id === selectedSpread()?.chapter));
+  const selectedChapterId = createMemo(() => chapter()?.id);
+  const [gearText, setGearText] = createSignal<string>();
+  const [gearError, setGearError] = createSignal<string>();
+  const [gearLoading, setGearLoading] = createSignal(false);
+  let gearGeneration = 0;
+  async function loadGearPresentation() {
+    const generation = ++gearGeneration;
+    const owner = chapter();
+    if (owner === undefined) setGearText(undefined);
+    setGearError(undefined);
+    setGearLoading(owner !== undefined);
+    if (owner === undefined) return;
+    try {
+      const [catalog, cameras] = await Promise.all([props.client.gearCatalog(), props.client.chapterGear(props.album.id, owner.id)]);
+      if (!active || generation !== gearGeneration) return;
+      const invalid = validateGear(cameras, catalog);
+      if (invalid !== undefined) setGearError(invalid);
+      else setGearText(describeGear(cameras, catalog));
+    } catch (failure) {
+      if (active && generation === gearGeneration) setGearError(describeFailure(failure));
+    } finally {
+      if (active && generation === gearGeneration) setGearLoading(false);
+    }
+  }
+  createEffect(
+    on(selectedChapterId, () => {
+      setGearText(undefined);
+      void loadGearPresentation();
+    }),
+  );
+  const albumCountries = createMemo(() =>
+    props.workspace.countries
+      .filter((country) => props.workspace.chapters.some((owner) => owner.countries.includes(country.id)))
+      .toSorted((first, second) => first.code.localeCompare(second.code)),
+  );
   const spreadPosition = createMemo(() => {
     const spread = selectedSpread();
     return spread === undefined ? undefined : findSpreadPosition(props.workspace.spreads, spread);
@@ -137,11 +248,18 @@ export function AlbumWorkspace(props: {
     photos: Object.values(props.workspace.photoInventories).flatMap((inventory) => inventory.photos),
     choice: choice(),
     onChoose: setChoice,
-    unavailable: spreadPending() ? "Saving spread. Please wait." : refreshing() ? "Refreshing saved workspace. Please wait." : undefined,
+    unavailable:
+      contentReason() ?? (spreadPending() ? "Saving spread. Please wait." : refreshing() ? "Refreshing saved workspace. Please wait." : undefined),
     reader: reader(),
+    captions,
+    onEditText: (opener) => setTextEdit({ chapter: chapter(), opener }),
+    get textUnavailable() {
+      return contentEditReason();
+    },
   }));
-  const navigationReason = createMemo(() =>
-    spreadNeedsReload() ? "Reload the saved workspace before choosing another spread action." : placement.navigationReason(),
+  const navigationReason = createMemo(
+    () =>
+      contentReason() ?? (spreadNeedsReload() ? "Reload the saved workspace before choosing another spread action." : placement.navigationReason()),
   );
   const refreshReason = createMemo(() =>
     spreadPending()
@@ -153,6 +271,7 @@ export function AlbumWorkspace(props: {
           : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
+  const contentEditReason = createMemo(() => refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
   let active = true;
@@ -219,20 +338,20 @@ export function AlbumWorkspace(props: {
   }
 
   function saved(result: ChapterSave, action: { chapter: Chapter | undefined; opener: HTMLElement }) {
-    if (!active) return;
     const opener = action.opener;
     setDialog(undefined);
     if (action.chapter === undefined) select(result.id);
     void refresh(result).then(() => {
-      if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus();
-      else workspaceElement.focus();
+      if (active && action.chapter?.id === selectedChapterId()) void loadGearPresentation();
+      if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+      else workspaceElement.focus({ preventScroll: true });
     });
   }
 
   function restoreFocus(opener: HTMLButtonElement) {
     queueMicrotask(() => {
-      if (opener.isConnected && !opener.disabled) opener.focus();
-      else workspaceElement.focus();
+      if (opener.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
+      else workspaceElement.focus({ preventScroll: true });
     });
   }
 
@@ -316,6 +435,16 @@ export function AlbumWorkspace(props: {
         <div class="workspace-album-heading">
           <h1>{props.album.title}</h1>
           <span aria-hidden="true">|</span>
+          <AlbumAuthors
+            authors={props.album.authors}
+            unavailable={refreshReason() ?? placement.navigationReason() ?? Object.entries(contentBlocks()).find(([key]) => key !== "authors")?.[1]}
+            save={saveAuthors}
+            read={readAuthors}
+            onBlock={(reason) => {
+              blockContent("authors", reason);
+            }}
+          />
+          <span aria-hidden="true">|</span>
           <a
             class="back-link"
             href="/"
@@ -355,7 +484,9 @@ export function AlbumWorkspace(props: {
         </div>
       </header>
       <Show when={refreshing()}>
-        <p role="status">Refreshing saved workspace…</p>
+        <p role="status" class="control-help">
+          Refreshing saved workspace…
+        </p>
       </Show>
       <Show when={placement.error()}>
         {(message) => (
@@ -374,7 +505,7 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={navigationReason()}>
         {(message) => (
-          <p id="photo-navigation-reason" role="status">
+          <p id="photo-navigation-reason" class="control-help" role="status">
             {message()}
           </p>
         )}
@@ -394,6 +525,19 @@ export function AlbumWorkspace(props: {
           </p>
         )}
       </Show>
+      <For each={captions.sessions()}>
+        {(retained) => (
+          <Show when={retained.save.draft() !== undefined && !placement.placements().some((row) => row.photoId === retained.photoId)}>
+            <RetainedCaption
+              caption={retained}
+              focus={captions.focus}
+              returnFocus={() => {
+                workspaceElement.focus();
+              }}
+            />
+          </Show>
+        )}
+      </For>
       <Show when={props.workspaceError !== undefined}>
         <div role="alert">
           {reloadTarget() !== undefined
@@ -469,7 +613,7 @@ export function AlbumWorkspace(props: {
             )}
           </Show>
           <article class="workspace-preview" aria-label="Selected part">
-            <Show when={props.workspaceError === undefined}>
+            <Show when={props.workspaceError === undefined || contentReason() !== undefined}>
               <Show when={!refreshing() && selection().kind === "invalid"}>
                 <div role="alert">
                   This album part could not be found.{" "}
@@ -488,7 +632,9 @@ export function AlbumWorkspace(props: {
                 label={readerLabel()}
                 entryMount={readerEntry()}
                 unavailable={
-                  selection().kind === "invalid" ? "Choose an available album part to enter reader mode." : (refreshReason() ?? navigationReason())
+                  selection().kind === "invalid"
+                    ? "Choose an available album part to enter reader mode."
+                    : (refreshReason() ?? navigationReason() ?? (gearLoading() ? "Loading saved chapter gear." : gearError()))
                 }
                 onActive={setReader}
                 canPrevious={navigation().previous !== undefined}
@@ -499,8 +645,28 @@ export function AlbumWorkspace(props: {
                   if (next !== undefined) select(next);
                 }}
               >
+                <Show when={gearLoading()}>
+                  <p role="status" class="control-help">
+                    Loading saved chapter gear.
+                  </p>
+                </Show>
+                <Show when={gearError()}>
+                  {(message) => (
+                    <p role="alert" class="reader-error">
+                      {message()}{" "}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void loadGearPresentation();
+                        }}
+                      >
+                        Read chapter gear
+                      </button>
+                    </p>
+                  )}
+                </Show>
                 <Show when={part() === "cover"}>
-                  <CoverCanvas title={props.album.title} year={props.workspace.year} editing={editing()} />
+                  <CoverCanvas title={props.album.title} year={props.workspace.year} authors={props.album.authors} editing={editing()} />
                 </Show>
                 <Show when={displayedSpread()}>
                   {(spread) => (
@@ -509,11 +675,20 @@ export function AlbumWorkspace(props: {
                       title={chapter()?.name ?? props.album.title}
                       text={chapter()?.description ?? props.album.synopsis}
                       label={label()}
+                      gear={gearText()}
+                      synopsisCountries={spread().kind === "album_start" ? albumCountries() : undefined}
                       editing={editing()}
                     />
                   )}
                 </Show>
               </FullscreenReader>
+              <Show when={contentEditReason()}>
+                {(reason) => (
+                  <p id="content-edit-reason" class="control-help">
+                    {reason()}
+                  </p>
+                )}
+              </Show>
               <Show when={chapter()}>
                 {(owner) => (
                   <Show when={spreadPosition()}>
@@ -580,6 +755,7 @@ export function AlbumWorkspace(props: {
       <Show when={dialog()} keyed>
         {(action) => (
           <ChapterDialog
+            resources={{ client: props.client, albumId: props.album.id, maybeChapterId: action.chapter?.id }}
             save={(details) =>
               action.chapter === undefined
                 ? props.client.createChapter(props.album.id, details)
@@ -593,11 +769,46 @@ export function AlbumWorkspace(props: {
             onSaved={(result) => {
               saved(result, action);
             }}
+            onReconciled={(chapterId) => {
+              setDialog(undefined);
+              if (action.chapter === undefined) select(chapterId);
+              void refresh().then(() => {
+                if (active && action.chapter?.id === chapter()?.id) void loadGearPresentation();
+                if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
+                  action.opener.focus({ preventScroll: true });
+                else workspaceElement.focus({ preventScroll: true });
+              });
+            }}
+            onBlock={(reason) => {
+              blockContent("chapter", reason);
+            }}
             onClose={() => {
               setDialog(undefined);
             }}
             returnFocus={() => {
-              action.opener.focus();
+              if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
+                action.opener.focus({ preventScroll: true });
+              else workspaceElement.focus({ preventScroll: true });
+            }}
+          />
+        )}
+      </Show>
+      <Show when={textEdit()} keyed>
+        {(action) => (
+          <TextEditor
+            heading={action.chapter === undefined ? "Album synopsis" : `Chapter description for ${action.chapter.name}`}
+            label={action.chapter === undefined ? "Synopsis" : "Chapter description"}
+            text={action.chapter?.description ?? props.album.synopsis}
+            save={(text) => saveText(action.chapter, text)}
+            read={() => readText(action.chapter)}
+            onClose={() => {
+              setTextEdit(undefined);
+            }}
+            onBlock={(reason) => {
+              blockContent("text", reason);
+            }}
+            returnFocus={() => {
+              restoreFocus(action.opener);
             }}
           />
         )}
