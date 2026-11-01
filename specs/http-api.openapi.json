@@ -7,6 +7,84 @@
   },
   "servers": [{ "url": "/" }],
   "paths": {
+    "/api/editor-session": {
+      "post": {
+        "operationId": "registerEditorSession",
+        "summary": "Register or privately resume a remembered browser identity",
+        "description": "Supply exactly editorId and a nonblank alias. Aliases are nonunique display labels, not authentication. Resume a live identity with its private X-Editor-Session header; an expired identity receives a new session. Resume preserves the remembered session alias. Credentials are lowercase canonical UUIDs, supplied once per header, never in URLs. All session JSON responses are Cache-Control: no-store.",
+        "parameters": [
+          { "name": "X-Editor-Session", "in": "header", "required": false, "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["editorId", "alias"], "additionalProperties": false,
+          "properties": {
+            "editorId": { "type": "string", "format": "uuid", "description": "Remembered browser-profile identity; not a session credential." },
+            "alias": { "type": "string", "pattern": "\\S", "description": "Nonblank identification label, preserved as supplied." }
+          }
+        } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EditorSession" },
+          "400": { "$ref": "#/components/responses/EditorSessionInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      },
+      "get": {
+        "operationId": "readEditorSession",
+        "summary": "Reconcile the current session and exact tab binding",
+        "description": "Does not renew session or target ownership. Backend restart invalidates old credentials.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" },
+          { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/EditorSession" },
+          "400": { "$ref": "#/components/responses/EditorSessionInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      }
+    },
+    "/api/editor-session/heartbeat": {
+      "post": {
+        "operationId": "heartbeatEditorSession",
+        "summary": "Renew only the live session for its exact current tab connection",
+        "description": "No request body. Accepted heartbeats extend the session by 30 seconds; send every 10 seconds. Does not renew a target grant, revive expiry or accept an obsolete connection generation. An attempted heartbeat is not evidence of renewal.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" },
+          { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/EditorSession" },
+          "400": { "$ref": "#/components/responses/EditorSessionInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      }
+    },
+    "/api/editor-session/events": {
+      "get": {
+        "operationId": "bindEditorTab",
+        "summary": "Bind application access to one document through header-authenticated SSE",
+        "description": "The response body acquires the binding when consumed. HTTP 200 alone does not grant application access: wait for bound with private {sessionId,tabId,generation}. A different live document receives tab_blocked with public {ownerId,alias}, then the stream closes. A stale credential receives session_lost with {code:stale_session}. Reconnecting the same document advances generation; cancellation releases only that exact generation and retains session/target leases. Every 10 seconds, validate without renewing and send a heartbeat comment, or terminal session_lost with {code} on expiry/obsolete binding. This stream establishes session access, not target ownership.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" },
+          { "$ref": "#/components/parameters/EditorTab" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binding result followed by liveness comments; terminal failures close the stream",
+            "headers": {
+              "Cache-Control": { "schema": { "const": "no-store" } },
+              "X-Accel-Buffering": { "schema": { "const": "no" } }
+            },
+            "content": { "text/event-stream": { "schema": { "type": "string" },
+              "example": "event: bound\ndata: {\"sessionId\":\"00000000-0000-0000-0000-000000000001\",\"tabId\":\"00000000-0000-0000-0000-000000000002\",\"generation\":\"00000000-0000-0000-0000-000000000003\"}\n\n: heartbeat\n\n"
+            } }
+          },
+          "400": { "$ref": "#/components/responses/EditorSessionInvalid" }
+        }
+      }
+    },
     "/api/gear": {
       "get": {
         "operationId": "readGearCatalog",
@@ -1075,6 +1153,21 @@
   },
   "components": {
     "parameters": {
+      "EditorSession": {
+        "name": "X-Editor-Session", "in": "header", "required": true,
+        "description": "One private backend session credential, lowercase canonical UUID; never place in a URL.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "EditorTab": {
+        "name": "X-Editor-Tab", "in": "header", "required": true,
+        "description": "One fresh memory-only document identity, lowercase canonical UUID.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "EditorGeneration": {
+        "name": "X-Editor-Generation", "in": "header", "required": true,
+        "description": "One private connection generation from the bound SSE event, lowercase canonical UUID.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
       "CameraId": {
         "name": "cameraId",
         "in": "path",
@@ -1166,6 +1259,34 @@
       }
     },
     "responses": {
+      "EditorSession": {
+        "description": "Current private session; heartbeatSeconds is client guidance, not authority",
+        "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["sessionId", "ownerId", "alias", "leaseSeconds", "heartbeatSeconds"], "additionalProperties": false,
+          "properties": {
+            "sessionId": { "type": "string", "format": "uuid" },
+            "ownerId": { "type": "string", "format": "uuid" },
+            "alias": { "type": "string", "pattern": "\\S" },
+            "leaseSeconds": { "const": 30 },
+            "heartbeatSeconds": { "const": 10 }
+          }
+        } } }
+      },
+      "EditorSessionInvalid": {
+        "description": "Malformed registration or missing, malformed or repeated credential headers",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "additionalProperties": false,
+          "properties": { "code": { "enum": ["invalid_registration", "missing_credentials", "invalid_credentials"] } }
+        } } }
+      },
+      "EditorSessionConflict": {
+        "description": "Session authority rejected the operation; reconcile before retrying",
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "additionalProperties": false,
+          "properties": { "code": { "enum": ["credential_required", "stale_session", "obsolete_connection", "stale_transition", "stale_grant"] } }
+        } } }
+      },
       "ContentMutationFailure": {
         "description": "service_failure reports a failed operation. mutation_uncertain means acknowledgement was lost and the write may have committed. Reconcile through the authoritative resource read before deciding whether to retry; failed acquisition remains an error rather than empty success.",
         "content": { "application/json": { "schema": {
