@@ -20,6 +20,8 @@ describe("chapter gear fields", () => {
         <p id="chapter-feedback">Choose compatible gear.</p>
       </>
     ));
+    expect(screen.getByRole("button", { name: "Manage catalog" })).toHaveAttribute("title", "Manage catalog");
+    expect(screen.getByRole("button", { name: "Manage catalog" })).not.toHaveTextContent("Manage catalog");
     fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: "" } });
     expect(untrack(selection)).toEqual([]);
     fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: first.id } });
@@ -79,6 +81,7 @@ describe("chapter gear fields", () => {
       </>
     ));
     expect(screen.getByRole("combobox", { name: "Add camera" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Manage catalog" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Remove Shared lens from chapter" })).toBeDisabled();
     expect(screen.getByRole("group", { name: "Gear" })).toHaveAccessibleDescription("Saving gear. Please wait.");
   });

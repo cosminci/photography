@@ -282,6 +282,7 @@ describe("on-slot photo editing", () => {
     fireEvent.keyDown(label, { key: "Enter" });
     const editor = screen.getByRole("textbox", { name: "Caption for Mountains.jpg" });
     expect(editor).toHaveFocus();
+    expect(editor.contains(window.getSelection()?.focusNode ?? null)).toBe(true);
     editor.textContent = text;
     fireEvent.input(editor);
     expect(save).not.toHaveBeenCalled();

@@ -71,26 +71,30 @@ export function SpreadCanvas(props: {
               )}
             </For>
           </Show>
-          <For each={props.slots}>
-            {(slot) => (
-              <svg x={`${String(slot.x)}%`} y={`${String(slot.y)}%`} width={`${String(slot.width)}%`} height={`${String(slot.height)}%`}>
-                <Show
-                  when={slot.kind === "photo"}
-                  fallback={
-                    <foreignObject width="100%" height="100%">
-                      <EditorialText
-                        title={props.title}
-                        text={props.text}
-                        gear={props.gear}
-                        synopsis={props.synopsisCountries !== undefined}
-                        textWidth={props.synopsisCountries === undefined ? undefined : (20 / slot.width) * 100}
-                      />
-                    </foreignObject>
-                  }
-                >
-                  <rect width="100%" height="100%" fill="#dfebec" stroke="white" stroke-width="3" />
-                </Show>
-              </svg>
+          <For each={props.slots.map((slot) => slot.id)}>
+            {(slotId) => (
+              <Show when={props.slots.find((slot) => slot.id === slotId)}>
+                {(slot) => (
+                  <svg x={`${String(slot().x)}%`} y={`${String(slot().y)}%`} width={`${String(slot().width)}%`} height={`${String(slot().height)}%`}>
+                    <Show
+                      when={slot().kind === "photo"}
+                      fallback={
+                        <foreignObject width="100%" height="100%">
+                          <EditorialText
+                            title={props.title}
+                            text={props.text}
+                            gear={props.gear}
+                            synopsis={props.synopsisCountries !== undefined}
+                            textWidth={props.synopsisCountries === undefined ? undefined : (20 / slot().width) * 100}
+                          />
+                        </foreignObject>
+                      }
+                    >
+                      <rect width="100%" height="100%" fill="#dfebec" stroke="white" stroke-width="3" />
+                    </Show>
+                  </svg>
+                )}
+              </Show>
             )}
           </For>
           <Show when={props.synopsisCountries}>

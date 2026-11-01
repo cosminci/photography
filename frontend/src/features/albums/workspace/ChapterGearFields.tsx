@@ -14,7 +14,27 @@ export function ChapterGearFields(props: {
   const rows = new Map<string, HTMLDivElement>();
   return (
     <fieldset class="chapter-gear-fields" disabled={props.disabled} aria-describedby="chapter-feedback">
-      <legend>Gear</legend>
+      <legend>
+        Gear
+        <button
+          ref={(element) => {
+            manage = element;
+          }}
+          type="button"
+          class="icon-button gear-manage"
+          aria-label="Manage catalog"
+          title="Manage catalog"
+          disabled={props.disabled}
+          aria-describedby="chapter-feedback"
+          onClick={(event) => {
+            props.onManage(event.currentTarget);
+          }}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
+          </svg>
+        </button>
+      </legend>
       <For each={props.selected.map((selection) => selection.cameraId)}>
         {(cameraId) => {
           const selection = () => props.selected.find((item) => item.cameraId === cameraId);
@@ -162,19 +182,6 @@ export function ChapterGearFields(props: {
             <For each={remainingCameras()}>{(camera) => <option value={camera.id}>{camera.name}</option>}</For>
           </select>
         </Show>
-        <button
-          ref={(element) => {
-            manage = element;
-          }}
-          type="button"
-          class="gear-manage-link"
-          aria-describedby="chapter-feedback"
-          onClick={(event) => {
-            props.onManage(event.currentTarget);
-          }}
-        >
-          Manage catalog
-        </button>
       </div>
     </fieldset>
   );

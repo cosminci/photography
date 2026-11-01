@@ -12,7 +12,13 @@ import {
 } from "../../../src/features/albums/model/Album";
 import type { Chapter, Spread, Workspace } from "../../../src/features/albums/model/Workspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
-import type { PlacementContext, PlacementSnapshot, SpreadPlacement, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
+import type {
+  PlacementContext,
+  PlacementEdit,
+  PlacementSnapshot,
+  SpreadPlacement,
+  SpreadSnapshot,
+} from "../../../src/features/albums/model/Placement";
 
 const album: Album = {
   id: "album",
@@ -104,6 +110,77 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it("should retain book nodes and unchanged template and gear acquisitions through a caption-position save and workspace readback", async () => {
+    const photo = {
+      id: "photo",
+      filename: "Mountain.jpg",
+      width: 1000,
+      height: 800,
+      capturedLocal: null,
+      caption: "Long line\nShort",
+      thumbnail: { url: "/thumbnails/mountain.jpg", width: 1000, height: 800 },
+    };
+    const placed: SpreadPlacement = {
+      kind: "spread",
+      id: "placement",
+      slotId: photoSlot.id,
+      photoId: photo.id,
+      captionCorner: "bottom_left",
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+    };
+    let selectedCorner = placed.captionCorner;
+    const saved = {
+      ...workspace,
+      spreads: workspace.spreads.map((spread) => (spread.id === vacationOpening.id ? { ...spread, placements: [placed] } : spread)),
+      photoInventories: { ...workspace.photoInventories, vacation: { ...inventory, photos: [photo] } },
+    };
+    const readSpread = (id: string) => {
+      const spread = saved.spreads.find((item) => item.id === id);
+      if (spread === undefined) throw new Error("Unknown spread");
+      return {
+        ...spread,
+        slots: spread.slots.map((slot) => ({ ...slot })),
+        placements: spread.placements.map((row) => ({ ...row, captionCorner: selectedCorner })),
+      };
+    };
+    const client = buildClient(
+      {
+        spread: vi.fn().mockImplementation((_album: string, id: string) => Promise.resolve(readSpread(id))),
+        editPlacements: vi.fn().mockImplementation((_album: string, _context: PlacementContext, command: PlacementEdit) => {
+          if (command.operation !== "captionCorner") throw new Error("Expected caption corner edit");
+          selectedCorner = command.captionCorner;
+          const spread = readSpread(vacationOpening.id);
+          return Promise.resolve({
+            kind: "spread",
+            id: spread.id,
+            placements: spread.placements,
+            layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
+          });
+        }),
+      },
+      saved,
+    );
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    const editorial = screen.getByRole("group", { name: "Chapter text" });
+    const template = screen.getByRole("button", { name: "Applied layout" });
+    const caption = screen.getByRole("button", { name: "Edit caption for Mountain.jpg" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Move caption to top right" }));
+    await waitFor(() => {
+      expect(client.chapters).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Move caption to bottom left" })).toBeEnabled());
+
+    expect(screen.getByRole("group", { name: "Chapter text" })).toBe(editorial);
+    expect(screen.getByRole("button", { name: "Applied layout" })).toBe(template);
+    expect(screen.getByRole("button", { name: "Edit caption for Mountain.jpg" })).toBe(caption);
+    expect(client.templates).toHaveBeenCalledTimes(1);
+    expect(client.gearCatalog).toHaveBeenCalledTimes(1);
+    expect(client.chapterGear).toHaveBeenCalledTimes(1);
+    expect(caption).toHaveTextContent("Long line Short");
+  });
   it("should reconcile an acknowledged album publication failure without replaying synopsis", async () => {
     const text = "  Saved 山\n\n ";
     const client = buildClient({

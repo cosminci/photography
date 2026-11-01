@@ -72,6 +72,7 @@
 .photo-caption[data-corner="top_right"],
 .photo-caption[data-corner="bottom_right"] {
   right: 0;
+  text-align: right;
 }
 .photo-caption[role="button"] {
   cursor: text;
@@ -197,4 +198,7 @@ button.photo-slot-action[aria-pressed="true"] {
   position: static;
   width: 100%;
   height: 100%;
+}
+.photo-thumbnails button:disabled {
+  opacity: 1;
 }

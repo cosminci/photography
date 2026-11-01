@@ -33,6 +33,11 @@
   font-size: 12px;
   font-weight: 500;
 }
+.chapter-gear-fields legend .gear-manage {
+  display: inline-grid;
+  vertical-align: middle;
+  margin-left: 4px;
+}
 .chapter-camera {
   border-bottom: 1px solid var(--line);
   margin-bottom: 8px;

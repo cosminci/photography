@@ -167,6 +167,7 @@ export function AlbumWorkspace(props: {
     return common;
   });
   const chapter = createMemo(() => props.workspace.chapters.find((candidate) => candidate.id === selectedSpread()?.chapter));
+  const selectedChapterId = createMemo(() => chapter()?.id);
   const [gearText, setGearText] = createSignal<string>();
   const [gearError, setGearError] = createSignal<string>();
   const [gearLoading, setGearLoading] = createSignal(false);
@@ -174,7 +175,7 @@ export function AlbumWorkspace(props: {
   async function loadGearPresentation() {
     const generation = ++gearGeneration;
     const owner = chapter();
-    setGearText(undefined);
+    if (owner === undefined) setGearText(undefined);
     setGearError(undefined);
     setGearLoading(owner !== undefined);
     if (owner === undefined) return;
@@ -191,7 +192,8 @@ export function AlbumWorkspace(props: {
     }
   }
   createEffect(
-    on(chapter, () => {
+    on(selectedChapterId, () => {
+      setGearText(undefined);
       void loadGearPresentation();
     }),
   );
@@ -340,6 +342,7 @@ export function AlbumWorkspace(props: {
     setDialog(undefined);
     if (action.chapter === undefined) select(result.id);
     void refresh(result).then(() => {
+      if (active && action.chapter?.id === selectedChapterId()) void loadGearPresentation();
       if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus();
       else workspaceElement.focus();
     });
@@ -481,7 +484,9 @@ export function AlbumWorkspace(props: {
         </div>
       </header>
       <Show when={refreshing()}>
-        <p role="status">Refreshing saved workspace…</p>
+        <p role="status" class="control-help">
+          Refreshing saved workspace…
+        </p>
       </Show>
       <Show when={placement.error()}>
         {(message) => (
@@ -641,7 +646,9 @@ export function AlbumWorkspace(props: {
                 }}
               >
                 <Show when={gearLoading()}>
-                  <p role="status">Loading saved chapter gear.</p>
+                  <p role="status" class="control-help">
+                    Loading saved chapter gear.
+                  </p>
                 </Show>
                 <Show when={gearError()}>
                   {(message) => (
@@ -766,6 +773,7 @@ export function AlbumWorkspace(props: {
               setDialog(undefined);
               if (action.chapter === undefined) select(chapterId);
               void refresh().then(() => {
+                if (active && action.chapter?.id === chapter()?.id) void loadGearPresentation();
                 if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled)) action.opener.focus();
                 else workspaceElement.focus();
               });

@@ -291,6 +291,7 @@ describe("album dashboard and open", () => {
     });
     expect(client.rename).toHaveBeenLastCalledWith(firstAlbum.id, renamedAlbum.title);
     expect(await screen.findByRole("button", { name: `Rename ${renamedAlbum.title}` })).toHaveFocus();
+    expect(screen.getByRole("button", { name: `Rename ${renamedAlbum.title}` })).toBe(rename);
   });
 
   it("should protect a pending delete, preserve confirmation on failure and fall back after the last page disappears", async () => {

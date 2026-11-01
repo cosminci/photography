@@ -227,6 +227,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         val manager     = ChapterManager.make(chapters, gear)
 
         for
+          _          <- (sql"DELETE FROM lens".update.run >> sql"DELETE FROM camera".update.run).transact(xa)
           _          <- seedAlbum(xa)
           first      <- buildChapter(xa, index = 1)
           _          <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)

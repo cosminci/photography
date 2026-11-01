@@ -75,25 +75,25 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
             const controls = createMemo(() => getPaginationFeedback(page(), albums.loading));
             return (
               <Show when={page().albums.length > 0}>
-                <Show when={page().albums} keyed>
-                  {(entries) => (
-                    <div class="album-grid" data-direction={page().direction} aria-busy={albums.loading}>
-                      <For each={entries}>
+                <div class="album-grid" data-direction={page().direction} aria-busy={albums.loading}>
+                  <For each={page().albums.map((album) => album.id)}>
+                    {(id) => (
+                      <Show when={page().albums.find((album) => album.id === id)}>
                         {(album) => (
                           <AlbumCard
-                            album={album}
+                            album={album()}
                             onRename={() => {
-                              setAction({ kind: "rename", album });
+                              setAction({ kind: "rename", album: album() });
                             }}
                             onDelete={() => {
-                              setAction({ kind: "delete", album });
+                              setAction({ kind: "delete", album: album() });
                             }}
                           />
                         )}
-                      </For>
-                    </div>
-                  )}
-                </Show>
+                      </Show>
+                    )}
+                  </For>
+                </div>
                 <nav class="pagination" aria-label="Album pages">
                   <div>
                     <button

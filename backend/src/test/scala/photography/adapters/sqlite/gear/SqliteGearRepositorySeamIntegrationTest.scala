@@ -24,6 +24,49 @@ final class SqliteGearRepositorySeamIntegrationTest extends CatsEffectSuite:
   private val camera       = Camera(CameraId(new UUID(1L, 1L)), code = "body", friendlyName = "Body", CameraKind.FixedLens)
   private val lens         = Lens(LensId(new UUID(2L, 1L)), code = "lens", friendlyName = "Lens", LensMount.SonyE, SensorFormat.FullFrame)
 
+  test("should seed the confirmed historical equipment in V2 and preserve it after migration validation and reopening"):
+    buildSeededDatabase.use: path =>
+      val expectedCameras: Vector[(String, String, Option[String], Option[String])] = Vector(
+        ("Nikon P520", "fixed_lens", None, None),
+        ("Nikon Z6 III", "interchangeable_lens", Some("nikon_z"), Some("full_frame")),
+        ("Samsung Galaxy S20 FE", "fixed_lens", None, None),
+        ("Samsung Galaxy S20 Ultra", "fixed_lens", None, None),
+        ("Samsung Galaxy S22", "fixed_lens", None, None),
+        ("Samsung Galaxy S25", "fixed_lens", None, None),
+        ("Sony α6000", "interchangeable_lens", Some("sony_e"), Some("aps_c"))
+      )
+      val expectedLenses = Vector(
+        ("Nikkor 28-400mm f/4-8", "nikon_z", "full_frame"),
+        ("Sigma 16-300mm F3.5-6.7 DC OS Contemporary", "sony_e", "aps_c"),
+        ("Sigma 30mm f/2.8 DN Art", "sony_e", "aps_c"),
+        ("Sigma 60mm f/2.8 DN Art", "sony_e", "aps_c"),
+        ("Viltrox 16mm f/1.8", "nikon_z", "full_frame")
+      )
+      val read = buildConnection(path).use: xa =>
+        val repository = SqliteGearRepository.make[IO](xa)
+
+        for
+          cameras <- sql"SELECT friendly_name, kind, mount, sensor_format FROM camera ORDER BY friendly_name"
+            .query[(String, String, Option[String], Option[String])].to[Vector].transact(xa)
+          lenses <-
+            sql"SELECT friendly_name, mount, coverage FROM lens ORDER BY friendly_name".query[(String, String, String)].to[Vector].transact(xa)
+          differentCodes <- sql"""SELECT (SELECT count(*) FROM camera WHERE code != friendly_name) +
+            (SELECT count(*) FROM lens WHERE code != friendly_name)""".query[Int].unique.transact(xa)
+          catalog <- repository.readCatalog
+        yield
+          assertEquals(cameras, expectedCameras)
+          assertEquals(lenses, expectedLenses)
+          assertEquals(differentCodes, 0)
+          catalog match
+            case CatalogReadResult.Found(_) => catalog
+            case other                      => fail(s"Expected valid seeded gear, obtained $other")
+
+      for
+        before <- read
+        _      <- FlywayMigrator.make[IO](path).use(_.migrate)
+        after  <- read
+      yield assertEquals(after, before)
+
   test("should persist complete independent camera and lens catalogs and retain them after reopening"):
     buildDatabase.use: path =>
       val kinds = Vector(CameraKind.FixedLens) ++ LensMount.values.toVector.flatMap: mount =>
@@ -291,6 +334,11 @@ final class SqliteGearRepositorySeamIntegrationTest extends CatsEffectSuite:
         assert(expected.contains(valid))
 
   private def buildDatabase =
+    buildSeededDatabase.evalTap: path =>
+      buildConnection(path).use: xa =>
+        (sql"DELETE FROM lens".update.run >> sql"DELETE FROM camera".update.run).transact(xa).void
+
+  private def buildSeededDatabase =
     Resource.make(Files.createTempFile(Path.of("target"), "gear-", ".sqlite").blocking[IO])(path => Files.deleteIfExists(path).blocking[IO].void)
       .evalTap(path => FlywayMigrator.make[IO](path).use(_.migrate).void)
 

@@ -650,7 +650,7 @@ button.metadata-edit {
 }
 .template-option:disabled {
   cursor: not-allowed;
-  opacity: 0.65;
+  opacity: 1;
 }
 .country-picker {
   position: relative;

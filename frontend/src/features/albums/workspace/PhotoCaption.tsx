@@ -120,12 +120,14 @@ export function PhotoCaption(props: {
   }
 
   function begin() {
-    if (!editable() || editing() || reason() !== undefined) return;
+    if (selection === null || !editable() || editing() || reason() !== undefined) return;
     save.begin(text());
     composing = false;
     departureRequested = false;
     renderDraft(text());
     label.focus();
+    selection.selectAllChildren(label);
+    selection.collapseToEnd();
   }
 
   function commit() {
@@ -195,7 +197,7 @@ export function PhotoCaption(props: {
         }}
       />
       <Show when={reason() !== undefined || save.error() !== undefined}>
-        <div id={feedback} class="caption-feedback">
+        <div id={feedback} class={save.error() === undefined ? "control-help" : "caption-feedback"}>
           <Show when={reason()}>{(message) => <span role="status">{message()}</span>}</Show>
           <Show when={save.error()}>{(message) => <span role="alert">{message()}</span>}</Show>
           <Show when={save.error()}>
