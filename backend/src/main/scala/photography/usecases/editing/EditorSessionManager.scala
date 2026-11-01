@@ -20,6 +20,12 @@ trait EditorSessionManager[F[_]]:
   def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): F[EditorSessionManager.ReleaseResult]
   def renewTarget(connection: EditorConnection, grant: GrantId): F[EditorSessionManager.RenewTargetResult]
   def readTarget(connection: EditorConnection): F[EditorSessionManager.ReadTargetResult]
+  def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): F[EditorSessionManager.AuthorizationResult]
+  def authorizeAffected(
+      connection: EditorConnection,
+      targets: Set[EditingTarget],
+      maybeGrant: Option[GrantId]
+  ): F[EditorSessionManager.AuthorizationResult]
 
 object EditorSessionManager:
   def make[F[_]: Sync: IdGenerator: Mutex](lease: SessionLease): F[EditorSessionManager[F]] =
@@ -123,13 +129,50 @@ object EditorSessionManager:
           case Right(session) => ReadTargetResult.Current(session.targetRevision, current.locks.find(_.session.value === session.id.value))
       }
 
-    private def acquire(current: EditorSessionState, session: EditorSession, connection: EditorConnection, target: EditingTarget) =
-      val maybeOwner = current.locks.toList.flatMap { lock =>
+    override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): F[AuthorizationResult] =
+      authorizeAffected(connection, Set(target), Some(grant)).flatMap {
+        case AuthorizationResult.Authorized =>
+          state.get.map { current =>
+            val ownsTarget = current.locks.exists(lock => lock.grant.value === grant.value && Set(target).contains(lock.target))
+            if ownsTarget then AuthorizationResult.Authorized else AuthorizationResult.Rejected(Failure.StaleGrant)
+          }
+        case rejected => rejected.pure[F]
+      }
+
+    override def authorizeAffected(
+        connection: EditorConnection,
+        targets: Set[EditingTarget],
+        maybeGrant: Option[GrantId]
+    ): F[AuthorizationResult] =
+      for
+        now     <- Clock[F].monotonic
+        current <- expire(now)
+      yield findConnection(current, connection) match
+        case Left(failure)  => AuthorizationResult.Rejected(failure)
+        case Right(session) => checkAffected(current, session, targets, maybeGrant)
+
+    private def checkAffected(current: EditorSessionState, session: EditorSession, targets: Set[EditingTarget], maybeGrant: Option[GrantId]) =
+      val proof = maybeGrant.traverse(findGrant(current, session, _))
+      proof match
+        case Left(failure)    => AuthorizationResult.Rejected(failure)
+        case Right(maybeLock) =>
+          val affected = current.locks.filter(lock => targets.contains(lock.target))
+          findOtherOwner(current, session, targets) match
+            case Some((lock, existing)) => AuthorizationResult.Blocked(lock.target, existing.owner, existing.alias)
+            case None                   =>
+              val ownsAffected = affected.exists(_.session.value === session.id.value)
+              if ownsAffected && maybeLock.isEmpty then AuthorizationResult.Rejected(Failure.StaleGrant)
+              else AuthorizationResult.Authorized
+
+    private def findOtherOwner(current: EditorSessionState, session: EditorSession, targets: Set[EditingTarget]) =
+      current.locks.toList.flatMap { lock =>
         current.sessions.values.find(_.id.value === lock.session.value).map(existing => (lock, existing))
       }.find { case (lock, existing) =>
-        existing.id.value =!= session.id.value && Set(target).contains(lock.target)
+        existing.id.value =!= session.id.value && targets.contains(lock.target)
       }
-      maybeOwner match
+
+    private def acquire(current: EditorSessionState, session: EditorSession, connection: EditorConnection, target: EditingTarget) =
+      findOtherOwner(current, session, Set(target)) match
         case Some((lock, existing)) =>
           changeTarget(
             session,
@@ -249,6 +292,11 @@ object EditorSessionManager:
 
   enum ReadTargetResult:
     case Current(revision: TargetRevision, maybeLock: Option[EditingLock])
+    case Rejected(failure: Failure)
+
+  enum AuthorizationResult:
+    case Authorized
+    case Blocked(target: EditingTarget, owner: EditorId, alias: EditorAlias)
     case Rejected(failure: Failure)
 
   enum Failure:
