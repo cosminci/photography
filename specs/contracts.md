@@ -7,7 +7,7 @@
 | Surface | Authoritative source |
 | --- | --- |
 | Browser-facing API, events and thumbnail delivery | [OpenAPI](http-api.openapi.json) owns paths, representations, status codes and transport policies. |
-| Persisted composition and reference catalogs | [SQLite migrations](../backend/src/main/resources/db/) own relational structure and seeded identities, names and geometry. |
+| Persisted book content, composition and shared catalogs | [SQLite migrations](../backend/src/main/resources/db/) own relational structure and seeded identities, names and geometry. |
 | Application dependencies | [Ports](../backend/src/main/scala/photography/ports/) define the boundaries implemented by infrastructure adapters. |
 
 ## Boundary semantics

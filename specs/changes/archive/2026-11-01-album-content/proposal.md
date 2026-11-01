@@ -161,7 +161,7 @@ Representative footer output:
 
 - `specs/design.md` — Album model: integrate editorial ownership, persisted attribution and shared compatible gear into the book model.
 - `specs/http-api.openapi.json` — Own content, attribution, corner and gear/catalog mutation contracts, validation and recovery responses.
-- [SQLite migrations](../../../backend/src/main/resources/db/) — Own shared-lens compatibility, attribution and retained references.
+- [SQLite migrations](../../../../backend/src/main/resources/db/) — Own shared-lens compatibility, attribution and retained references.
 
 ## Out of Scope
 

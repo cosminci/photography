@@ -16,6 +16,10 @@ Tests follow responsibility boundaries. Most behavior is proved through domain a
 
 Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
 
+Content recovery needs both browser evidence that acknowledgements prevent write replay and persistence evidence that reopened state retains the actual commit. Chapter metadata/gear partial saves and reads racing with saved publication must preserve the already-resolved portion.
+
+Native caption text entry and selection, responsive book presentation and layout stability during pending saves require actual-browser checks. Component assertions alone do not establish native editing behavior or the absence of transient reflow and focus-induced scrolling.
+
 ## Nomenclature
 
 Name domain and application suites `<Boundary>ComponentTest` and adapter suites `<Adapter>SeamIntegrationTest`; TypeScript uses the corresponding `.componentTest` and `.seamIntegrationTest` suffixes. A seam test crosses the adapter's real external boundary; substituting a network call establishes component behavior instead.
