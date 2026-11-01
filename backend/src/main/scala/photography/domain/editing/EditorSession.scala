@@ -5,8 +5,8 @@ import photography.domain.layout.SpreadId
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 
-import java.time.Instant
 import java.util.UUID
+import scala.concurrent.duration.FiniteDuration
 
 opaque type EditorId = UUID
 object EditorId:
@@ -18,9 +18,30 @@ object SessionId:
   def apply(value: UUID): SessionId         = value
   extension (id: SessionId) def value: UUID = id
 
-type SessionLease = Long :| Positive
+type SessionLease          = Long :| Positive
+type EditorAliasConstraint = Not[Blank]
+type EditorAlias           = String :| EditorAliasConstraint
 
-final case class EditorSession(id: SessionId, owner: EditorId, lastHeartbeat: Instant)
+opaque type TabId = UUID
+object TabId:
+  def apply(value: UUID): TabId         = value
+  extension (id: TabId) def value: UUID = id
+
+opaque type ConnectionGeneration = UUID
+object ConnectionGeneration:
+  def apply(value: UUID): ConnectionGeneration                 = value
+  extension (generation: ConnectionGeneration) def value: UUID = generation
+
+final case class EditorConnection(session: SessionId, tab: TabId, generation: ConnectionGeneration)
+
+final case class EditorSession(
+    id: SessionId,
+    owner: EditorId,
+    alias: EditorAlias,
+    lastHeartbeat: FiniteDuration,
+    expiresAt: FiniteDuration,
+    maybeConnection: Option[EditorConnection]
+)
 
 enum EditingTarget:
   case Spread(id: SpreadId)

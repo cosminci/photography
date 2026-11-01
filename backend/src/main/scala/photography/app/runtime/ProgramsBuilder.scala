@@ -33,6 +33,8 @@ import photography.adapters.imageio.ImageIoPhotoThumbnailGenerator
 import photography.adapters.sqlite.gear.SqliteGearRepository
 import photography.usecases.gear.GearManager
 import photography.usecases.chapter.ChapterManager
+import photography.usecases.editing.EditorSessionManager
+import io.github.iltotore.iron.autoRefine
 
 final case class Programs[F[_]](
     albums: AlbumManager[F],
@@ -48,7 +50,8 @@ final case class Programs[F[_]](
     countries: CountryRepository[F],
     photoEvents: AlbumPhotoEvents[F],
     spreads: SpreadManager[F],
-    coverPlacements: CoverManager[F]
+    coverPlacements: CoverManager[F],
+    editorSessions: EditorSessionManager[F]
 )
 
 trait ProgramsBuilder[F[_]]:
@@ -90,9 +93,10 @@ object ProgramsBuilder:
 
     override def build: Resource[F, Programs[F]] =
       for
-        mutex   <- Resource.eval(Mutex[F])
-        events  <- Resource.eval(AlbumPhotoEvents.make(albumRepository))
-        imports <- buildImports(events)(using mutex)
+        mutex    <- Resource.eval(Mutex[F])
+        sessions <- Resource.eval(buildSessions(using mutex))
+        events   <- Resource.eval(AlbumPhotoEvents.make(albumRepository))
+        imports  <- buildImports(events)(using mutex)
       yield
         given Mutex[F] = mutex
         val gear       = GearManager.make(gearRepository, chapterRepository)
@@ -110,10 +114,14 @@ object ProgramsBuilder:
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
-          coverPlacements = CoverManager.make(coverRepository, placements)
+          coverPlacements = CoverManager.make(coverRepository, placements),
+          editorSessions = sessions
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =
       ChapterPhotoImport.make(storage, photoRepository, generator, events)
+
+    private def buildSessions(using Mutex[F]) =
+      EditorSessionManager.make[F](lease = 30L)
 
   private val defaultPhotoLayout = SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000113"))
