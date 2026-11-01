@@ -35,6 +35,10 @@ flowchart TD
 
 An album has a unique, immutable year and an editable title. Chapters describe destinations and visit periods; Home represents the whole year and remains last. The interior starts with Synopsis, followed by chapter blocks whose openings stay ahead of their photo spreads.
 
+Editorial text is stored as plain text exactly as written and is separate from structured chapter data, so headings, dates and gear lines derive from structured fields rather than from parsing a description. The album owns its synopsis and a nonempty set of authors from Cosmin, Mara and Iacob; that attribution determines the Cover credits. Each chapter owns its description and gear selection. Each photo owns its caption independently of placement, while each interior placement owns only the caption's corner.
+
+Cameras and lenses are shared catalogs edited independently of any chapter. A chapter's gear selection pairs each camera with lenses: fixed-lens cameras use none, and each interchangeable body uses at least one lens, which may serve several bodies. A lens fits a body when both share a mount and the body's sensor accepts its coverage, so full-frame bodies require full-frame lenses. Removing a camera does not remove its lenses, and catalog changes or deletions that would invalidate a saved selection are rejected.
+
 Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
 
 Photos belong to chapter collections independently of their use in layouts. Chapter spreads use their chapter's photos; Synopsis and Cover can use the album collection. Removing a spread releases its placements rather than deleting its photographs.
@@ -82,6 +86,8 @@ Local previews stay responsive while completed adjustments save in order. Naviga
 
 Cancellation preserves saved state. Validation and confirmation precede writes; a failed refresh after a successful save retries the read, not the mutation. An uncertain write outcome is reconciled from authoritative state before another attempt. Accessibility, focus continuity and recoverable feedback apply throughout the journey.
 
+Each text, attribution, caption or corner change and each complete gear replacement commits as one change. A chapter's metadata and gear are separate commits, so after a partial chapter save recovery retries only the unsaved part.
+
 ## Photo processing and live views
 
 Chapter saves commit independently of background photo processing. Creation, a changed source folder or an explicit Refresh initiates reconciliation; opening an album reads saved state.
@@ -111,7 +117,7 @@ sequenceDiagram
   end
 ```
 
-Complete photos become visible progressively. Existing usable data remains available during replacement or recoverable processing failure. Durable write intents bridge database and filesystem updates so restart recovery can finish interrupted publication and cleanup.
+Complete photos become visible progressively. Rediscovery keeps authored captions with their photos. Existing usable data remains available during replacement or recoverable processing failure. Durable write intents bridge database and filesystem updates so restart recovery can finish interrupted publication and cleanup.
 
 The browser treats live events as invalidations, not a second database. Initial loads and reconnects assemble fresh album metadata, ordered chapters, composition membership, individual spreads and chapter photo inventories from authoritative resource reads. Independently acquired resources must agree on identities, chapter blocks and opening order before becoming the displayed workspace; incoherent acquisition is retried at most twice, with explicit failure and the last usable view retained if reconciliation fails. Country and template catalogs are independent resources. Ordinary composition changes become visible to other workspaces on reload.
 
@@ -121,6 +127,6 @@ Each saved spread supplies its geometry and placements together for editing and 
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
 
-The supported topology is one backend instance. Shared mutation coordination protects read/decision/write decisions; database transactions make supplied changes atomic. Slow source and image work runs outside that critical section.
+The supported topology is one backend instance. Shared mutation coordination protects read/decision/write decisions, including gear replacement and catalog changes that affect saved selections; database transactions make supplied changes atomic. Slow source and image work runs outside that critical section.
 
 Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Lightweight album, chapter and membership reads use their existing persistence authorities and representation validation, while atomic business workflows retain aggregate acquisition. Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving. [Contracts](contracts.md) identify authoritative representations; [operations](operational.md) owns deployment and recovery.
