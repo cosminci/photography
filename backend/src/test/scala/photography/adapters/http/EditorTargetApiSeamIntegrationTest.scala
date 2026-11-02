@@ -37,7 +37,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       val revision = TargetRevision.initial.next
       val expected = Json.obj(
         "revision" -> Json.fromString("1"),
-        "grant"    -> encodeGrant(kind, remainingMillis = 30000L)
+        "grant"    -> encodeGrant(kind, grant.value, remainingMillis = 30000L)
       )
 
       TestControl.executeEmbed {
@@ -65,7 +65,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           assertEquals(Vector(selected.status, read.status, renewed.status, released.status), Vector.fill(4)(Status.Ok))
           assertEquals(selectedBody, expected)
           assertEquals(readBody, expected)
-          assertEquals(renewedBody, encodeGrant(kind, remainingMillis = 30000L))
+          assertEquals(renewedBody, encodeGrant(kind, grant.value, remainingMillis = 30000L))
           assertEquals(releasedBody, Json.obj("revision" -> Json.fromString("2")))
           assertEquals(
             calls,
@@ -217,30 +217,41 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           case _                        => IO.raiseError[EditorConnection](new AssertionError("Expected tab binding"))
         app    = EditorSessionApi.make(manager).orNotFound
         select = connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "0"))
-        _         <- app.run(select).flatMap(_.body.compile.drain)
+        selected  <- app.run(select)
+        _         <- selected.body.compile.drain
         read      <- app.run(connectedRequest(Method.GET, active))
         saved     <- read.as[Json]
-        privateId <- IO.fromEither(saved.hcursor.downField("grant").get[String]("grantId"))
+        privateId <- IO.fromEither(saved.hcursor.downField("grant").get[UUID]("grantId"))
         late      <- app.run(select)
         lateBody  <- late.as[Json]
-        _         <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId)
-          .withEntity(Json.obj("revision" -> Json.fromString("1")))).flatMap(_.body.compile.drain)
+        released  <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId.toString)
+          .withEntity(Json.obj("revision" -> Json.fromString("1"))))
+        _            <- released.body.compile.drain
         afterRelease <- app.run(connectedRequest(Method.GET, active)).flatMap(_.as[Json])
         _            <- IO.sleep(10.seconds)
         _            <- manager.heartbeat(active)
-        _            <- app.run(connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "2"))).flatMap(_.body.compile.drain)
-        lateRenew    <- app.run(connectedRequest(Method.POST, active).putHeaders("X-Editor-Grant" -> privateId))
-        lateRelease  <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId)
+        acquired     <- app.run(connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "2")))
+        acquiredBody <- acquired.as[Json]
+        successorId  <- IO.fromEither(acquiredBody.hcursor.downField("grant").get[UUID]("grantId"))
+        lateRenew    <- app.run(connectedRequest(Method.POST, active).putHeaders("X-Editor-Grant" -> privateId.toString))
+        renewalBody  <- lateRenew.as[Json]
+        lateRelease  <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId.toString)
           .withEntity(Json.obj("revision" -> Json.fromString("3"))))
-        current <- app.run(connectedRequest(Method.GET, active)).flatMap(_.as[Json])
+        releaseBody <- lateRelease.as[Json]
+        current     <- app.run(connectedRequest(Method.GET, active)).flatMap(_.as[Json])
       yield
-        assertEquals(saved.hcursor.get[String]("revision").toOption, Some("1"))
+        val expectedInitial   = Json.obj("revision" -> Json.fromString("1"), "grant" -> encodeGrant("cover", privateId, remainingMillis = 30000L))
+        val expectedSuccessor = Json.obj("revision" -> Json.fromString("3"), "grant" -> encodeGrant("cover", successorId, remainingMillis = 30000L))
+        assertEquals(Vector(selected.status, read.status, released.status, acquired.status), Vector.fill(4)(Status.Ok))
+        assertEquals(saved, expectedInitial)
         assertEquals(late.status, Status.Conflict)
         assertEquals(lateBody, Json.obj("code" -> Json.fromString("stale_transition")))
         assertEquals(afterRelease, Json.obj("revision" -> Json.fromString("2"), "grant" -> Json.Null))
         assertEquals(Vector(lateRenew.status, lateRelease.status), Vector.fill(2)(Status.Conflict))
-        assertEquals(current.hcursor.get[String]("revision").toOption, Some("3"))
-        assertNotEquals(current.hcursor.downField("grant").get[String]("grantId").toOption, Some(privateId))
+        assertEquals(Vector(renewalBody, releaseBody), Vector.fill(2)(Json.obj("code" -> Json.fromString("stale_grant"))))
+        assertEquals(acquiredBody, expectedSuccessor)
+        assertEquals(current, expectedSuccessor)
+        assertNotEquals(successorId, privateId)
     }
 
   test("should preserve unbounded revisions and report elapsed leases as zero rather than exposing backend deadlines"):
@@ -270,7 +281,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           body,
           Json.obj(
             "revision" -> Json.fromString((BigInt(decimal) + 1).toString),
-            "grant"    -> encodeGrant("cover", remainingMillis = 0L)
+            "grant"    -> encodeGrant("cover", grant.value, remainingMillis = 0L)
           )
         )
         assertEquals(calls, Calls(Vector((connection, revision, target)), Vector.empty, Vector.empty, Vector.empty))
@@ -297,26 +308,34 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           else (second, first, secondResponse, firstResponse)
         wonBody     <- won.as[Json]
         blockedBody <- blocked.as[Json]
-        privateId   <- IO.fromEither(wonBody.hcursor.downField("grant").get[String]("grantId"))
+        privateId   <- IO.fromEither(wonBody.hcursor.downField("grant").get[UUID]("grantId"))
         _           <- IO.sleep(20.seconds)
         _           <- manager.heartbeat(first)
         _           <- manager.heartbeat(second)
         _           <- IO.sleep(10.seconds)
-        late        <- app.run(connectedRequest(Method.POST, winner).putHeaders("X-Editor-Grant" -> privateId))
+        late        <- app.run(connectedRequest(Method.POST, winner).putHeaders("X-Editor-Grant" -> privateId.toString))
         lateBody    <- late.as[Json]
         caughtUp    <- app.run(connectedRequest(Method.GET, winner)).flatMap(_.as[Json])
         acquired    <- app.run(connectedRequest(Method.PUT, loser).withEntity(selection("spread", revision = "1")))
         newBody     <- acquired.as[Json]
+        successorId <- IO.fromEither(newBody.hcursor.downField("grant").get[UUID]("grantId"))
+        readback    <- app.run(connectedRequest(Method.GET, loser))
+        current     <- readback.as[Json]
       yield
+        val expectedInitial   = Json.obj("revision" -> Json.fromString("1"), "grant" -> encodeGrant("spread", privateId, remainingMillis = 30000L))
+        val expectedSuccessor = Json.obj("revision" -> Json.fromString("2"), "grant" -> encodeGrant("spread", successorId, remainingMillis = 30000L))
         assertEquals(Vector(won.status, blocked.status), Vector(Status.Ok, Status.Conflict))
+        assertEquals(wonBody, expectedInitial)
         assertEquals(blockedBody.hcursor.get[String]("code").toOption, Some("target_locked"))
         assertEquals(blockedBody.hcursor.downField("grantId").focus, None)
         assertEquals(late.status, Status.Conflict)
         assertEquals(lateBody, Json.obj("code" -> Json.fromString("stale_grant")))
         assertEquals(caughtUp, Json.obj("revision" -> Json.fromString("2"), "grant" -> Json.Null))
         assertEquals(acquired.status, Status.Ok)
-        assertEquals(newBody.hcursor.get[String]("revision").toOption, Some("2"))
-        assertNotEquals(newBody.hcursor.downField("grant").get[String]("grantId").toOption, Some(privateId))
+        assertEquals(readback.status, Status.Ok)
+        assertEquals(newBody, expectedSuccessor)
+        assertEquals(current, expectedSuccessor)
+        assertNotEquals(successorId, privateId)
     }
 
   private case class Calls(
@@ -331,9 +350,9 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
     "target"   -> Json.obj("kind" -> Json.fromString(kind), "id" -> Json.fromString(targetId.toString))
   )
 
-  private def encodeGrant(kind: String, remainingMillis: Long) = Json.obj(
+  private def encodeGrant(kind: String, credential: UUID, remainingMillis: Long) = Json.obj(
     "target"          -> Json.obj("kind" -> Json.fromString(kind), "id" -> Json.fromString(targetId.toString)),
-    "grantId"         -> Json.fromString(grant.value.toString),
+    "grantId"         -> Json.fromString(credential.toString),
     "remainingMillis" -> Json.fromLong(remainingMillis)
   )
 
