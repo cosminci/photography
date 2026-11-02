@@ -6,10 +6,13 @@ import io.circe.Json
 import io.circe.jawn.parse
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
-import org.http4s.{HttpApp, MediaType, Method, Request, Status, Uri}
+import org.http4s.{Header, Headers, HttpApp, MediaType, Method, Request, Status, Uri}
+import org.typelevel.ci.CIString
 import org.http4s.headers.`Content-Type`
 import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, AlbumYear, Author, Chapter}
 import photography.domain.layout.*
+import photography.domain.editing.*
+import photography.usecases.editing.EditorSessionManager
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
 import photography.ports.album.AlbumRepository
@@ -35,6 +38,12 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private val metadata      = s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","createdAt":"2026-10-24T10:00:00.123Z"}"""
   private val albumPath     = s"/api/albums/${id.value}"
   private val jsonMediaType = MediaType.application.json.some
+  private val connection    = EditorConnection(SessionId(new UUID(0L, 10L)), TabId(new UUID(0L, 11L)), ConnectionGeneration(new UUID(0L, 12L)))
+  private val credentials   = Vector(
+    Header.Raw(CIString("X-Editor-Session"), connection.session.value.toString),
+    Header.Raw(CIString("X-Editor-Tab"), connection.tab.value.toString),
+    Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString)
+  )
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
     val savedAlbum = album.copy(synopsis = text)
@@ -79,7 +88,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls   <- refs.calls.get
       yield
         assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
-        assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors)))
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors, connection)))
         assertEquals(otherCalls, Vector.empty[String])
   }
 
@@ -106,7 +115,13 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   Vector(
     AuthorsScenario(SaveAuthorsResult.NotFound, Status.NotFound, code = "album_not_found"),
     AuthorsScenario(SaveAuthorsResult.Failed, Status.InternalServerError, code = "service_failure"),
-    AuthorsScenario(SaveAuthorsResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain")
+    AuthorsScenario(SaveAuthorsResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain"),
+    AuthorsScenario(SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, code = "stale_session"),
+    AuthorsScenario(
+      SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection),
+      Status.Conflict,
+      code = "obsolete_connection"
+    )
   ).foreach { scenario =>
     test(s"should deliver authors ${scenario.result} without retry or postwrite read"):
       val refs                   = Refs()
@@ -120,9 +135,38 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       yield
         val expected = ApiResponse(scenario.status, jsonMediaType, Json.obj("code" -> Json.fromString(scenario.code)).some)
         assertEquals(response, expected)
-        assertEquals(contentCalls, Vector(ContentCall.Authors(id, selected)))
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, selected, connection)))
         assertEquals(otherCalls, Vector.empty[String])
   }
+
+  test("should reject missing and noncanonical author credentials before decoding or dispatch, marking every outcome no-store"):
+    val refs    = Refs()
+    val server  = buildAlbumApi(refs)
+    val request = Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/authors")).withEntity("{")
+    val invalid = credentials.flatMap { header =>
+      val remaining = credentials.filterNot(_.name === header.name)
+      Vector(
+        (remaining, "missing_credentials"),
+        (remaining :+ header.copy(value = "invalid"), "invalid_credentials"),
+        (remaining :+ header.copy(value = "00000000-0000-0000-0000-00000000000A"), "invalid_credentials"),
+        (remaining :+ header.copy(value = "1-1-1-1-1"), "invalid_credentials"),
+        (remaining ++ Vector(header, header), "invalid_credentials"),
+        (remaining :+ header.copy(value = s"${header.value},${header.value}"), "invalid_credentials")
+      )
+    }
+
+    for
+      _ <- invalid.traverse_ { case (headers, code) =>
+        for
+          response <- server.run(request.withHeaders(Headers(headers)))
+          body     <- response.as[String]
+        yield
+          assertEquals(response.status, Status.BadRequest)
+          assertEquals(json(body), Json.obj("code" -> Json.fromString(code)))
+          assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
+      }
+      calls <- refs.contentCalls.get
+    yield assertEquals(calls, Vector.empty[ContentCall])
 
   test("should reject malformed content and noncanonical targets before any application call"):
     val refs             = Refs()
@@ -354,7 +398,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
 
   private enum ContentCall:
     case Synopsis(album: AlbumId, text: String)
-    case Authors(album: AlbumId, authors: AlbumAuthors)
+    case Authors(album: AlbumId, authors: AlbumAuthors, connection: EditorConnection)
 
   final private case class SynopsisScenario(result: SaveSynopsisResult, status: Status, code: String)
   final private case class AuthorsScenario(result: SaveAuthorsResult, status: Status, code: String)
@@ -385,8 +429,8 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val albums = new AlbumManager[IO]:
       override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =
         refs.contentCalls.update(_ :+ ContentCall.Synopsis(id, text = text)) >> synopsisResult
-      override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumManager.SaveAuthorsResult] =
-        refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors)) >> authorsResult
+      override def saveAuthors(id: AlbumId, authors: AlbumAuthors, connection: EditorConnection): IO[AlbumManager.SaveAuthorsResult] =
+        refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors, connection)) >> authorsResult
       override def list(page: Int): IO[ListAlbumsResult]                             = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
       override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] =
         refs.calls.update(_ :+ s"create:$year:$title").as(createAlbumResult)
@@ -400,12 +444,16 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   // scalafix:on DisableSyntax.defaultArgs
 
   private def send(server: HttpApp[IO], method: Method, path: String, body: String) =
-    val request = Request[IO](method, Uri.unsafeFromString(path)).withEntity(body).putHeaders(`Content-Type`(MediaType.application.json))
+    val original = Request[IO](method, Uri.unsafeFromString(path)).withEntity(body).putHeaders(`Content-Type`(MediaType.application.json))
+    val request  =
+      if method === Method.PUT && path.endsWith("/authors") then original.withHeaders(original.headers ++ Headers(credentials)) else original
 
     for
       response <- server.run(request)
       body     <- response.as[String]
     yield
+      if method === Method.PUT && path.endsWith("/authors") then
+        assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
       val maybeBody = Option.when(body.nonEmpty)(parse(body).fold(error => fail(error.message), identity))
       ApiResponse(response.status, response.contentType.map(_.mediaType), maybeBody)
 

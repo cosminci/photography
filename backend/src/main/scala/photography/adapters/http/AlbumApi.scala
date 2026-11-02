@@ -12,6 +12,7 @@ import photography.domain.album.{Album, AlbumId, AlbumTitle, AlbumYear, AlbumYea
 import io.github.iltotore.iron.constraint.all.*
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
+import photography.adapters.http.EditorCredentials.*
 import photography.ports.album.AlbumRepository
 import java.util.UUID
 
@@ -28,14 +29,16 @@ object AlbumApi:
       HttpRoutes.of[F] {
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => saveSynopsis(AlbumId(id), request)
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
-        case PUT -> Root / "api" / "albums" / _ / ("synopsis" | "authors")           => respondAlbumNotFound
-        case request @ GET -> Root / "api" / "albums"                                => list(request.uri.query)
-        case request @ POST -> Root / "api" / "albums"                               => create(request)
-        case GET -> Root / "api" / "albums" / CanonicalId(id)                        => read(AlbumId(id))
-        case GET -> Root / "api" / "albums" / _                                      => respondAlbumNotFound
-        case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id)             => rename(id, request)
-        case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)                      => delete(id)
-        case (PATCH | DELETE) -> Root / "api" / "albums" / _                         => respondAlbumNotFound
+        case PUT -> Root / "api" / "albums" / _ / "authors"                          =>
+          respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case PUT -> Root / "api" / "albums" / _ / "synopsis"             => respondAlbumNotFound
+        case request @ GET -> Root / "api" / "albums"                    => list(request.uri.query)
+        case request @ POST -> Root / "api" / "albums"                   => create(request)
+        case GET -> Root / "api" / "albums" / CanonicalId(id)            => read(AlbumId(id))
+        case GET -> Root / "api" / "albums" / _                          => respondAlbumNotFound
+        case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => rename(id, request)
+        case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => delete(id)
+        case (PATCH | DELETE) -> Root / "api" / "albums" / _             => respondAlbumNotFound
       }
 
     private def read(id: AlbumId) =
@@ -59,18 +62,23 @@ object AlbumApi:
       }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
 
     private def saveAuthors(album: AlbumId, request: Request[F]) =
-      request.as[Json].flatMap { value =>
-        authorsDecoder.decodeJson(value).fold(
-          _ => BadRequest(body = invalidAuthors),
-          authors =>
-            albums.saveAuthors(album, authors).flatMap {
-              case SaveAuthorsResult.Saved(updated) => Ok(buildMetadata(updated))
-              case SaveAuthorsResult.NotFound       => respondAlbumNotFound
-              case SaveAuthorsResult.Failed         => respondServiceFailure
-              case SaveAuthorsResult.Uncertain      => respondUncertain
-            }
-        )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors) }
+      readConnection(request).fold(
+        message => BadRequest(Map("code" -> message)),
+        connection =>
+          request.as[Json].flatMap { value =>
+            authorsDecoder.decodeJson(value).fold(
+              _ => BadRequest(body = invalidAuthors),
+              authors =>
+                albums.saveAuthors(album, authors, connection).flatMap {
+                  case SaveAuthorsResult.Saved(updated)            => Ok(buildMetadata(updated))
+                  case SaveAuthorsResult.NotFound                  => respondAlbumNotFound
+                  case SaveAuthorsResult.Failed                    => respondServiceFailure
+                  case SaveAuthorsResult.Uncertain                 => respondUncertain
+                  case SaveAuthorsResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+                }
+            )
+          }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors) }
+      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
     private def buildMetadata(album: Album) =
       AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)

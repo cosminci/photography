@@ -101,7 +101,7 @@ object ProgramsBuilder:
         given Mutex[F] = mutex
         val gear       = GearManager.make(gearRepository, chapterRepository)
         Programs(
-          albums = AlbumManager.make(albumRepository, templates, pageSize),
+          albums = AlbumManager.make(albumRepository, templates, pageSize, sessions),
           chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
           gear = gear,
           chapterGear = ChapterManager.make(chapterRepository, gear),
