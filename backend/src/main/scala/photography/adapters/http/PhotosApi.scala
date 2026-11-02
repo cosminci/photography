@@ -3,9 +3,10 @@ package photography.adapters.http
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Json
-import org.http4s.{CacheDirective, MessageBodyFailure, Request}
+import org.http4s.{CacheDirective, MessageBodyFailure, Request, Response}
 import org.http4s.headers.`Cache-Control`
 import photography.adapters.http.Routes.Route
+import photography.usecases.editing.EditingAccess.Protection
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.*
@@ -26,11 +27,11 @@ object PhotosApi:
       case GET -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" =>
         Route.public(listChapter(ChapterId(chapter)))
       case request @ PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" / CanonicalId(photo) / "caption" =>
-        Route.public(saveCaption(ChapterId(chapter), PhotoId(photo), request))
+        saveCaption(ChapterId(chapter), PhotoId(photo), request)
       case PUT -> Root / "api" / "chapters" / CanonicalId(_) / "photos" / _ / "caption" =>
-        Route.public(NotFound(body = Map("code" -> "photo_not_found")))
+        Route.public(NotFound(body = Map("code" -> "photo_not_found")).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
       case request if invalidChapter(request) =>
-        Route.public(NotFound(body = Map("code" -> "chapter_not_found")))
+        Route.public(NotFound(body = Map("code" -> "chapter_not_found")).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
     }
 
     private def invalidChapter(request: Request[F]) = request.pathInfo.segments.toList match
@@ -46,18 +47,23 @@ object PhotosApi:
         case ChapterResult.Failed          => InternalServerError(body = Map("code" -> "service_failure"))
 
     private def saveCaption(chapter: ChapterId, photo: PhotoId, request: Request[F]) =
-      request.as[Json].flatMap { value =>
+      val decode = request.as[Json].flatMap { value =>
         value.hcursor.get[String](k = "text").fold(
-          _ => BadRequest(body = Map("message" -> "Supply a text string")),
-          text =>
-            photos.saveCaption(chapter, photo, text = text).flatMap {
-              case SaveCaptionResult.Saved         => NoContent()
-              case SaveCaptionResult.PhotoNotFound => NotFound(body = Map("code" -> "photo_not_found"))
-              case SaveCaptionResult.Failed        => InternalServerError(body = Map("code" -> "service_failure"))
-              case SaveCaptionResult.Uncertain     => InternalServerError(body = Map("code" -> "mutation_uncertain"))
-            }
+          _ => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]),
+          _.asRight[Response[F]].pure[F]
         )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]) }
+      Route(
+        Routes.Access.Editor(Protection.OwnPhotoSpread(chapter, photo)),
+        decode,
+        (text: String) =>
+          photos.saveCaption(chapter, photo, text = text).flatMap {
+            case SaveCaptionResult.Saved         => NoContent()
+            case SaveCaptionResult.PhotoNotFound => NotFound(body = Map("code" -> "photo_not_found"))
+            case SaveCaptionResult.Failed        => InternalServerError(body = Map("code" -> "service_failure"))
+            case SaveCaptionResult.Uncertain     => InternalServerError(body = Map("code" -> "mutation_uncertain"))
+          }
+      )
 
     private def encodePhotos(snapshot: ChapterPhotos) =
       val inventory = snapshot.inventory

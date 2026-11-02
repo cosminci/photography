@@ -92,6 +92,7 @@ object ProgramsBuilder:
     private val storage           = FilePhotoStorage.make(thumbnails)
     private val generator         = ImageIoPhotoThumbnailGenerator.make[F](quality)
     private val membership        = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite)
+    private val photoTargets      = SqlitePhotoPlacementRepository.makeTargetRead[F](sqlite)
 
     override def build: Resource[F, Programs[F]] =
       for
@@ -118,7 +119,7 @@ object ProgramsBuilder:
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
           coverPlacements = CoverManager.make(coverRepository, placements),
           editorSessions = sessions,
-          editingAccess = EditingAccess.make(sessions, membership)
+          editingAccess = EditingAccess.make(sessions, membership, photoTargets)
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =

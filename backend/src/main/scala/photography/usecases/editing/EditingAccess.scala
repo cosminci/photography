@@ -4,7 +4,9 @@ import cats.effect.kernel.MonadCancelThrow
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import photography.domain.editing.*
-import photography.domain.album.AlbumId
+import photography.domain.album.{AlbumId, ChapterId, PhotoId}
+import photography.ports.photo.PhotoPlacementRepository
+import photography.ports.photo.PhotoPlacementRepository.TargetResult
 import photography.ports.album.AlbumCompositionRepository
 import photography.ports.album.AlbumCompositionRepository.CompositionResult
 import photography.usecases.editing.EditorSessionManager.{AuthorizationResult, ConnectionAuthorizationResult}
@@ -15,12 +17,14 @@ trait EditingAccess[F[_]]:
 object EditingAccess:
   def make[F[_]: MonadCancelThrow: Mutex](
       sessions: EditorSessionManager[F],
-      membership: AlbumCompositionRepository.MembershipRead[F]
-  ): EditingAccess[F] = new LiveEditingAccess(sessions, membership)
+      membership: AlbumCompositionRepository.MembershipRead[F],
+      photoTargets: PhotoPlacementRepository.TargetRead[F]
+  ): EditingAccess[F] = new LiveEditingAccess(sessions, membership, photoTargets)
 
   final private class LiveEditingAccess[F[_]: MonadCancelThrow: Mutex](
       sessions: EditorSessionManager[F],
-      membership: AlbumCompositionRepository.MembershipRead[F]
+      membership: AlbumCompositionRepository.MembershipRead[F],
+      photoTargets: PhotoPlacementRepository.TargetRead[F]
   ) extends EditingAccess[F]:
     override def run[A](connection: EditorConnection, protection: Protection, maybeGrant: Option[GrantId])(write: F[A]): F[Result[A]] =
       summon[Mutex[F]].lock.surround:
@@ -39,6 +43,15 @@ object EditingAccess:
                       admit(connection, EditingTarget.Spread(members.head.id), maybeGrant)(write)
                     case CompositionResult.AlbumNotFound => Result.AlbumNotFound[A]().pure[F]
                     case CompositionResult.Failed(_)     => Result.Failed[A]().pure[F]
+            case Protection.OwnPhotoSpread(chapter, photo) =>
+              sessions.authorizeConnection(connection).flatMap:
+                case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
+                case ConnectionAuthorizationResult.Authorized       =>
+                  photoTargets.findTarget(chapter, photo).flatMap:
+                    case TargetResult.Found(Some(target)) => admit(connection, target, maybeGrant)(write)
+                    case TargetResult.Found(None)         => complete(sessions.authorizeAffected(connection, Set.empty, maybeGrant))(write)
+                    case TargetResult.PhotoNotFound       => Result.PhotoNotFound[A]().pure[F]
+                    case TargetResult.Failed              => Result.Failed[A]().pure[F]
             case Protection.OwnSpread(spread)      => admit(connection, spread, maybeGrant)(write)
             case Protection.ChangeSpreads(spreads) =>
               complete(sessions.authorizeAffected(connection, spreads, maybeGrant))(write)
@@ -59,6 +72,7 @@ object EditingAccess:
     case ActiveTab
     case OwnSpread(spread: EditingTarget)
     case OwnAlbumOpening(album: AlbumId)
+    case OwnPhotoSpread(chapter: ChapterId, photo: PhotoId)
     case ChangeSpreads(spreads: Set[EditingTarget])
 
   enum Result[A]:
@@ -66,4 +80,5 @@ object EditingAccess:
     case Rejected(reason: EditorSessionManager.Failure)
     case Blocked(owner: EditorId, alias: EditorAlias)
     case AlbumNotFound()
+    case PhotoNotFound()
     case Failed()

@@ -767,12 +767,20 @@
       "put": {
         "operationId": "savePhotoCaption",
         "summary": "Save or clear photo-owned caption text",
-        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears the caption; chapter inventories publish cleared captions as null. The photo must belong to the supplied chapter. Changes only the photo caption, preserving interior corners, transforms and import state. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/chapters/{chapterId}/photos; after acknowledgement retry only a failed read.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" },
+          { "name": "X-Editor-Grant", "in": "header", "required": false,
+            "description": "Exact current spread acquisition credential, required when the photo is placed, including on the exterior spread. Unplaced photos require only a live current tab. If supplied, use one lowercase canonical UUID.",
+            "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "description": "Requires a live current tab and, for a placed photo, the exact grant for its current containing spread. Current chapter membership, placement, authorization and caption persistence share one coordination interval with competing acquisition. Failed relationship reads reject without writing. Every response is no-store. Preserves exact Unicode, whitespace and line breaks; empty text clears to null in chapter inventories. Changes only photo-owned caption text, preserving corners, transforms and import state. Acknowledgement returns no body and causes no retry or postwrite read. Reconcile through GET /api/chapters/{chapterId}/photos after uncertainty; never automatically replay after ownership loss or reacquisition.",
         "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
         "responses": {
-          "204": { "description": "Saved; no response body" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "204": { "description": "Saved; no response body", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } } },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/ContentPhotoNotFound" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ContentMutationFailure" }
         }
       }

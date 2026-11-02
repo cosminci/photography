@@ -8,7 +8,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Header, Headers, Method, Request, Response, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import org.typelevel.ci.CIString
-import photography.domain.album.AlbumId
+import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.SpreadId
 import photography.usecases.editing.EditingAccess
@@ -74,7 +74,9 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
     (Protection.ChangeSpreads(Set.empty), Some(grant), Some(grant.value.toString), Status.Ok),
     (Protection.ChangeSpreads(Set.empty), none[GrantId], none[String], Status.Ok),
     (Protection.ChangeSpreads(Set.empty), none[GrantId], Some("invalid"), Status.BadRequest),
-    (Protection.OwnAlbumOpening(AlbumId(new UUID(0L, 5L))), Some(grant), Some(grant.value.toString), Status.Ok)
+    (Protection.OwnAlbumOpening(AlbumId(new UUID(0L, 5L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), none[GrantId], none[String], Status.Ok)
   ).foreach { case (protection, maybeGrant, supplied, status) =>
     test(s"should forward $protection with grant header $supplied without implementing its authorization policy"):
       for
@@ -105,6 +107,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
       body = Json.obj("code" -> Json.fromString("stale_transition"))
     ),
     (result = Result.AlbumNotFound[Unit](), status = Status.NotFound, body = Json.obj("code" -> Json.fromString("album_not_found"))),
+    (result = Result.PhotoNotFound[Unit](), status = Status.NotFound, body = Json.obj("code" -> Json.fromString("photo_not_found"))),
     (result = Result.Failed[Unit](), status = Status.InternalServerError, body = Json.obj("code" -> Json.fromString("service_failure"))),
     (
       result = Result.Blocked[Unit](EditorId(new UUID(0L, 6L)), "Other"),
@@ -168,4 +171,5 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           case Result.Rejected(reason)      => Result.Rejected[A](reason).pure[IO]
           case Result.Blocked(owner, alias) => Result.Blocked[A](owner, alias).pure[IO]
           case Result.AlbumNotFound()       => Result.AlbumNotFound[A]().pure[IO]
+          case Result.PhotoNotFound()       => Result.PhotoNotFound[A]().pure[IO]
           case Result.Failed()              => Result.Failed[A]().pure[IO])

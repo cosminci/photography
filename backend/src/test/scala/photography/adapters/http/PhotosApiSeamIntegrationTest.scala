@@ -6,10 +6,13 @@ import io.circe.Json
 import io.circe.jawn.parse
 import io.github.iltotore.iron.*
 import munit.CatsEffectSuite
-import org.http4s.{HttpApp, MediaType, Method, Request, Status, Uri}
+import org.http4s.{Header, Headers, HttpApp, MediaType, Method, Request, Status, Uri}
 import org.http4s.headers.`Content-Type`
 import org.typelevel.ci.CIString
 import photography.domain.album.*
+import photography.domain.editing.*
+import photography.usecases.editing.EditingAccess
+import photography.usecases.editing.EditingAccess.Protection
 import photography.usecases.photo.{ChapterPhotoInventory, PhotoInventory, PhotoManager, PhotoWriteRecovery}
 import photography.usecases.photo.ChapterPhotoImport.{ExecutionOutcome, Status as ImportStatus}
 import photography.usecases.photo.PhotoManager.SaveCaptionResult
@@ -17,9 +20,17 @@ import java.util.UUID
 import java.time.LocalDateTime
 
 final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
-  private val chapter             = ChapterId(value = new UUID(0L, 2L))
-  private val photo               = PhotoId(value = new UUID(0L, 1L))
-  private val path                = s"/api/chapters/${chapter.value}/photos/${photo.value}/caption"
+  private val chapter     = ChapterId(value = new UUID(0L, 2L))
+  private val photo       = PhotoId(value = new UUID(0L, 1L))
+  private val path        = s"/api/chapters/${chapter.value}/photos/${photo.value}/caption"
+  private val connection  = EditorConnection(SessionId(new UUID(0L, 3L)), TabId(new UUID(0L, 4L)), ConnectionGeneration(new UUID(0L, 5L)))
+  private val grant       = GrantId(new UUID(0L, 6L))
+  private val credentials = Headers(
+    Header.Raw(CIString("X-Editor-Session"), connection.session.value.toString),
+    Header.Raw(CIString("X-Editor-Tab"), connection.tab.value.toString),
+    Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString),
+    Header.Raw(CIString("X-Editor-Grant"), grant.value.toString)
+  )
   private val unexpectedCaption   = IO.raiseError[SaveCaptionResult](new AssertionError("Unexpected caption write"))
   private val unexpectedInventory = IO.raiseError[ChapterPhotoInventory.Result](new AssertionError("Unexpected inventory read"))
 
@@ -34,7 +45,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         response <- send(server, path = path, body = requestBody)
         calls    <- refs.calls.get
       yield
-        assertEquals(response, WireResponse(Status.NoContent, body = "", maybeMediaType = None, maybeCacheControl = None))
+        assertEquals(response, WireResponse(Status.NoContent, body = "", maybeMediaType = None, maybeCacheControl = Some("no-store")))
         assertEquals(calls, Vector(CaptionCall(chapter, photo, text = text)))
   }
 
@@ -52,7 +63,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         calls    <- refs.calls.get
       yield
         val expectedBody = Json.obj("code" -> Json.fromString(scenario.code)).noSpaces
-        assertEquals(response, WireResponse(scenario.status, expectedBody, MediaType.application.json.some, maybeCacheControl = None))
+        assertEquals(response, WireResponse(scenario.status, expectedBody, MediaType.application.json.some, maybeCacheControl = Some("no-store")))
         assertEquals(calls, Vector(CaptionCall(chapter, photo, text = "once")))
   }
 
@@ -65,7 +76,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.BadRequest,
         body = """{"message":"Supply a text string"}""",
         MediaType.application.json.some,
-        maybeCacheControl = None
+        maybeCacheControl = Some("no-store")
       )
       send(server, path = path, body = body).map(response => assertEquals(response, expected))
     }
@@ -74,9 +85,18 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.NotFound,
         body = """{"code":"photo_not_found"}""",
         MediaType.application.json.some,
-        maybeCacheControl = None
+        maybeCacheControl = Some("no-store")
       )
       send(server, path = s"/api/chapters/${chapter.value}/photos/$id/caption", body = "{}").map(response => assertEquals(response, expected))
+    }
+    val checkChapters = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { id =>
+      val expected = WireResponse(
+        Status.NotFound,
+        body = """{"code":"chapter_not_found"}""",
+        MediaType.application.json.some,
+        maybeCacheControl = Some("no-store")
+      )
+      send(server, path = s"/api/chapters/$id/photos/${photo.value}/caption", body = "{}").map(response => assertEquals(response, expected))
     }
     val checkUnmatched = Vector("/api/chapters", s"/api/chapters/${chapter.value}", s"/api/chapters/${chapter.value}/photo-import")
       .traverse_ { path =>
@@ -87,6 +107,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
     for
       _     <- checkPayloads
       _     <- checkTargets
+      _     <- checkChapters
       _     <- checkUnmatched
       calls <- refs.calls.get
     yield assertEquals(calls, Vector.empty[CaptionCall])
@@ -252,7 +273,16 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         IO.raiseError[PhotoManager.RefreshResult](new AssertionError("Unexpected photo import"))
     val inventories = new ChapterPhotoInventory[IO]:
       override def read(chapter: ChapterId): IO[ChapterPhotoInventory.Result] = inventoryResult
-    PublicRoutes(PhotosApi.make(inventories, photos)).orNotFound
+    val access = new EditingAccess[IO]:
+      override def run[A](editor: EditorConnection, protection: Protection, maybeGrant: Option[GrantId])(write: IO[A]): IO[EditingAccess.Result[A]] =
+        assertEquals(editor, connection)
+        assertEquals(protection, Protection.OwnPhotoSpread(chapter, photo))
+        assertEquals(maybeGrant, Some(grant))
+        write.map(EditingAccess.Result.Completed(_))
+    val definitions = PhotosApi.make(inventories, photos)
+    val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access)
+    assertEquals(declaration, Some(Routes.Access.Editor(Protection.OwnPhotoSpread(chapter, photo))))
+    Routes.make(access)(definitions).orNotFound
 
   private def sendJson(server: HttpApp[IO], method: Method, path: String) =
     sendRaw(server, method, path = path, body = "").map { response =>
@@ -266,7 +296,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def sendRaw(server: HttpApp[IO], method: Method, path: String, body: String) =
     val request = Request[IO](method, Uri.unsafeFromString(s = path)).withEntity(b = body)
-      .putHeaders(`Content-Type`(MediaType.application.json))
+      .withHeaders(credentials).putHeaders(`Content-Type`(MediaType.application.json))
     for
       response <- server.run(request)
       content  <- response.as[String]
