@@ -6,8 +6,11 @@ import io.circe.{Decoder, Json}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
-import org.http4s.{HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.headers.`Cache-Control`
+import photography.adapters.http.EditorCredentials.*
 import photography.domain.album.{AlbumId, ChapterId}
+import photography.domain.editing.GrantId
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.{AddResult, ChangeTemplateResult, Conflict as SpreadConflict, DeleteResult}
@@ -28,8 +31,8 @@ object AlbumSpreadApi:
         case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "template" :?
             ConfirmPlacements(maybeConfirm) =>
           changeTemplate(AlbumId(album), SpreadId(spread), maybeConfirm = maybeConfirm, request)
-        case DELETE -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) :? ConfirmPlacements(maybeConfirm) =>
-          delete(AlbumId(album), SpreadId(spread), maybeConfirm = maybeConfirm)
+        case request @ DELETE -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) :? ConfirmPlacements(maybeConfirm) =>
+          delete(AlbumId(album), SpreadId(spread), maybeConfirm = maybeConfirm, request)
       }
 
     private def add(album: AlbumId, chapter: ChapterId, request: Request[F]) =
@@ -45,29 +48,47 @@ object AlbumSpreadApi:
             case AddResult.Failed             => serviceFailure
 
     private def changeTemplate(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String], request: Request[F]) =
-      decode(request, templateDecoder).map(_.flatMap(template => parseConfirmation(maybeValue = maybeConfirm).map((template, _)))).flatMap:
-        case Left(message)              => BadRequest(Map("message" -> message))
-        case Right((template, confirm)) =>
-          spreads.changeTemplate(album, spread, template, confirmPlacements = confirm).flatMap:
-            case ChangeTemplateResult.Changed(id, layout) =>
-              Ok(Json.obj("id" -> Json.fromString(id.value.toString), "templateId" -> Json.fromString(layout.value.toString)))
-            case ChangeTemplateResult.Occupied(placements) => Conflict(encodeOccupied(placements))
-            case ChangeTemplateResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
-            case ChangeTemplateResult.AlbumNotFound        => albumNotFound
-            case ChangeTemplateResult.SpreadNotFound       => notFound("spread_not_found")
-            case ChangeTemplateResult.Failed               => serviceFailure
+      val parsed = (readConnection(request), requiredId(request, "X-Editor-Grant").map(GrantId(_))).tupled
+      parsed.fold(
+        message => BadRequest(Map("code" -> message)),
+        { case (connection, grant) =>
+          decode(request, templateDecoder).map(_.flatMap(template => parseConfirmation(maybeValue = maybeConfirm).map((template, _)))).flatMap:
+            case Left(message)              => BadRequest(Map("message" -> message))
+            case Right((template, confirm)) =>
+              spreads.changeTemplate(album, spread, template, confirmPlacements = confirm, connection, grant).flatMap:
+                case ChangeTemplateResult.Changed(id, layout) =>
+                  Ok(Json.obj("id" -> Json.fromString(id.value.toString), "templateId" -> Json.fromString(layout.value.toString)))
+                case ChangeTemplateResult.Occupied(placements) => Conflict(encodeOccupied(placements))
+                case ChangeTemplateResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
+                case ChangeTemplateResult.Locked(owner, alias) =>
+                  Conflict(Map[String, String]("code" -> "target_locked", "ownerId" -> owner.value.toString, "alias" -> alias))
+                case ChangeTemplateResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+                case ChangeTemplateResult.AlbumNotFound             => albumNotFound
+                case ChangeTemplateResult.SpreadNotFound            => notFound("spread_not_found")
+                case ChangeTemplateResult.Failed                    => serviceFailure
+        }
+      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
-    private def delete(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String]) =
-      parseConfirmation(maybeValue = maybeConfirm) match
-        case Left(message)  => BadRequest(Map("message" -> message))
-        case Right(confirm) =>
-          spreads.delete(album, spread, confirmPlacements = confirm).flatMap:
-            case DeleteResult.Deleted              => NoContent()
-            case DeleteResult.Occupied(placements) => Conflict(encodeOccupied(placements))
-            case DeleteResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
-            case DeleteResult.AlbumNotFound        => albumNotFound
-            case DeleteResult.SpreadNotFound       => notFound("spread_not_found")
-            case DeleteResult.Failed               => serviceFailure
+    private def delete(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String], request: Request[F]) =
+      val parsed = (readConnection(request), optionalId(request, "X-Editor-Grant").map(_.map(GrantId(_)))).tupled
+      parsed.fold(
+        message => BadRequest(Map("code" -> message)),
+        { case (connection, maybeGrant) =>
+          parseConfirmation(maybeValue = maybeConfirm) match
+            case Left(message)  => BadRequest(Map("message" -> message))
+            case Right(confirm) =>
+              spreads.delete(album, spread, confirmPlacements = confirm, connection, maybeGrant).flatMap:
+                case DeleteResult.Deleted              => NoContent()
+                case DeleteResult.Occupied(placements) => Conflict(encodeOccupied(placements))
+                case DeleteResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
+                case DeleteResult.Locked(owner, alias) =>
+                  Conflict(Map[String, String]("code" -> "target_locked", "ownerId" -> owner.value.toString, "alias" -> alias))
+                case DeleteResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+                case DeleteResult.AlbumNotFound             => albumNotFound
+                case DeleteResult.SpreadNotFound            => notFound("spread_not_found")
+                case DeleteResult.Failed                    => serviceFailure
+        }
+      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
     private def parseConfirmation(maybeValue: Option[String]) =
       maybeValue.traverse {

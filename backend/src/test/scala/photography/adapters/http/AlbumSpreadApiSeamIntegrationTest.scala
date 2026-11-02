@@ -6,12 +6,16 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Json
 import io.circe.jawn.parse
+import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.`Content-Type`
 import org.http4s.{HttpApp, MediaType, Method, Request, Status, Uri}
+import org.http4s.{Header, Headers}
+import org.typelevel.ci.CIString
 import photography.domain.album.{AlbumId, ChapterId}
-import photography.domain.editing.{EditorConnection, GrantId}
+import photography.domain.editing.*
+import photography.usecases.editing.EditorSessionManager
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -20,11 +24,19 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
-  private val album    = UUID.fromString("00000000-0000-0000-0000-000000000001")
-  private val chapter  = UUID.fromString("00000000-0000-0000-0000-000000000002")
-  private val spread   = UUID.fromString("00000000-0000-0000-0000-000000000003")
-  private val layout   = UUID.fromString("00000000-0000-0000-0000-000000000113")
-  private val albumUrl = s"/api/albums/$album"
+  private val album       = UUID.fromString("00000000-0000-0000-0000-000000000001")
+  private val chapter     = UUID.fromString("00000000-0000-0000-0000-000000000002")
+  private val spread      = UUID.fromString("00000000-0000-0000-0000-000000000003")
+  private val layout      = UUID.fromString("00000000-0000-0000-0000-000000000113")
+  private val albumUrl    = s"/api/albums/$album"
+  private val connection  = EditorConnection(SessionId(new UUID(0L, 10L)), TabId(new UUID(0L, 11L)), ConnectionGeneration(new UUID(0L, 12L)))
+  private val grant       = GrantId(new UUID(0L, 13L))
+  private val credentials = Headers(
+    Header.Raw(CIString("X-Editor-Session"), connection.session.value.toString),
+    Header.Raw(CIString("X-Editor-Tab"), connection.tab.value.toString),
+    Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString),
+    Header.Raw(CIString("X-Editor-Grant"), grant.value.toString)
+  )
 
   test("should create a spread after the target and answer with the inserted identity"):
     for
@@ -146,20 +158,93 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(deleted, expected)
       assertEquals(seen, Vector.empty[String])
 
+  test("should require canonical connection headers before decoding structural requests and allow an absent deletion grant"):
+    val body            = Json.obj("templateId" -> Json.fromString(layout.toString))
+    val templateRequest = put(s"$albumUrl/spreads/$spread/template", body)
+    val requests        = Vector(templateRequest, delete(s"$albumUrl/spreads/$spread"))
+    val invalid         = credentials.headers.flatMap { header =>
+      val missing    = credentials.headers.filterNot(_.name === header.name)
+      val malformed  = header.copy(value = "invalid") :: missing
+      val duplicated = credentials.headers ++ List(header)
+      val combined   = header.copy(value = s"${header.value},${header.value}") :: missing
+      Vector(
+        (Headers(missing), "missing_credentials"),
+        (Headers(malformed), "invalid_credentials"),
+        (Headers(duplicated), "invalid_credentials"),
+        (Headers(combined), "invalid_credentials")
+      ).filterNot { case (_, code) => header.name === CIString("X-Editor-Grant") && code === "missing_credentials" }
+    }
+
+    for
+      calls <- Ref.of[IO, Vector[String]](Vector.empty)
+      server = buildApi(calls)
+      _ <- requests.traverse_ { request =>
+        invalid.traverse_ { case (headers, code) =>
+          respond(server, request.withHeaders(headers)).map(result =>
+            assertEquals(result, Status.BadRequest -> Json.obj("code" -> Json.fromString(code)).some)
+          )
+        }
+      }
+      missingGrant <- respond(server, templateRequest.withHeaders(Headers(credentials.headers.filterNot(_.name === CIString("X-Editor-Grant")))))
+      seen         <- calls.get
+      unlocked     <- respond(
+        buildApi(calls, delete = DeleteResult.Deleted, maybeDeleteGrant = None),
+        delete(s"$albumUrl/spreads/$spread").withHeaders(Headers(credentials.headers.filterNot(_.name === CIString("X-Editor-Grant"))))
+      )
+    yield
+      assertEquals(missingGrant, Status.BadRequest -> parseJson("""{"code":"missing_credentials"}""").some)
+      assertEquals(seen, Vector.empty[String])
+      assertEquals(unlocked, Status.NoContent -> None)
+
+  test("should expose only the public locked owner and exact structural recovery failures"):
+    val owner    = EditorId(new UUID(0L, 20L))
+    val body     = Json.obj("templateId" -> Json.fromString(layout.toString))
+    val failures = Vector(
+      EditorSessionManager.Failure.StaleSession       -> "stale_session",
+      EditorSessionManager.Failure.ObsoleteConnection -> "obsolete_connection",
+      EditorSessionManager.Failure.StaleGrant         -> "stale_grant",
+      EditorSessionManager.Failure.StaleTransition    -> "stale_transition"
+    )
+
+    for
+      calls <- Ref.of[IO, Vector[String]](Vector.empty)
+      server = buildApi(calls, change = ChangeTemplateResult.Locked(owner, "Other"), delete = DeleteResult.Locked(owner, "Other"))
+      template <- respond(server, put(s"$albumUrl/spreads/$spread/template?confirmPlacements=true", body))
+      deletion <- respond(server, delete(s"$albumUrl/spreads/$spread?confirmPlacements=true"))
+      _        <- failures.traverse_ { case (failure, code) =>
+        val rejected = buildApi(calls, change = ChangeTemplateResult.OwnershipRejected(failure), delete = DeleteResult.OwnershipRejected(failure))
+        val expected = Status.Conflict -> Json.obj("code" -> Json.fromString(code)).some
+        (respond(rejected, put(s"$albumUrl/spreads/$spread/template", body)), respond(rejected, delete(s"$albumUrl/spreads/$spread")))
+          .tupled.map { case (changed, deleted) =>
+            assertEquals(changed, expected)
+            assertEquals(deleted, expected)
+          }
+      }
+    yield
+      val expected = Status.Conflict -> Json.obj(
+        "code"    -> Json.fromString("target_locked"),
+        "ownerId" -> Json.fromString(owner.value.toString),
+        "alias"   -> Json.fromString("Other")
+      ).some
+      assertEquals(template, expected)
+      assertEquals(deletion, expected)
+
   private def buildRawJson = Stream.emits("{".getBytes(StandardCharsets.UTF_8).toSeq).covary[IO]
 
   private def post(path: String, body: Json) =
     Request[IO](Method.POST, Uri.unsafeFromString(path)).withEntity(body)
 
   private def put(path: String, body: Json) =
-    Request[IO](Method.PUT, Uri.unsafeFromString(path)).withEntity(body)
+    Request[IO](Method.PUT, Uri.unsafeFromString(path), headers = credentials).withEntity(body)
 
-  private def delete(path: String) = Request[IO](Method.DELETE, Uri.unsafeFromString(path))
+  private def delete(path: String) = Request[IO](Method.DELETE, Uri.unsafeFromString(path), headers = credentials)
 
   private def parseJson(text: String) = parse(text).fold(error => fail(error.message), identity)
 
   private def respond(app: HttpApp[IO], request: Request[IO]) =
     app.run(request).flatMap: response =>
+      if request.method === Method.PUT || request.method === Method.DELETE then
+        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
       response.bodyText.compile.toList.map(chunks => (response.status, parse(chunks.mkString).toOption))
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -167,7 +252,8 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       calls: Ref[IO, Vector[String]],
       add: AddResult = AddResult.Failed,
       change: ChangeTemplateResult = ChangeTemplateResult.Failed,
-      delete: DeleteResult = DeleteResult.Failed
+      delete: DeleteResult = DeleteResult.Failed,
+      maybeDeleteGrant: Option[GrantId] = Some(grant)
   ) =
     val addOutcome    = add
     val changeOutcome = change
@@ -196,10 +282,22 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
-          confirmPlacements: Boolean
+          confirmPlacements: Boolean,
+          editor: EditorConnection,
+          proof: GrantId
       ): IO[ChangeTemplateResult] =
+        assertEquals(editor, connection)
+        assertEquals(proof, grant)
         calls.update(_ :+ s"change:${album.value}:${spread.value}:${template.value}:$confirmPlacements").as(changeOutcome)
-      override def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): IO[DeleteResult] =
+      override def delete(
+          album: AlbumId,
+          spread: SpreadId,
+          confirmPlacements: Boolean,
+          editor: EditorConnection,
+          maybeGrant: Option[GrantId]
+      ): IO[DeleteResult] =
+        assertEquals(editor, connection)
+        assertEquals(maybeGrant, maybeDeleteGrant)
         calls.update(_ :+ s"delete:${album.value}:${spread.value}:$confirmPlacements").as(deleteOutcome)
     AlbumSpreadApi.make(spreads).routes.orNotFound
   // scalafix:on DisableSyntax.defaultArgs

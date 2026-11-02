@@ -112,9 +112,22 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
       .as(result)
     override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
       IO.raiseError[AddResult](new AssertionError("Unexpected add"))
-    override def changeTemplate(album: AlbumId, spread: SpreadId, template: SpreadTemplateId, confirmPlacements: Boolean): IO[ChangeTemplateResult] =
+    override def changeTemplate(
+        album: AlbumId,
+        spread: SpreadId,
+        template: SpreadTemplateId,
+        confirmPlacements: Boolean,
+        connection: EditorConnection,
+        grant: GrantId
+    ): IO[ChangeTemplateResult] =
       IO.raiseError[ChangeTemplateResult](new AssertionError("Unexpected template change"))
-    override def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): IO[DeleteResult] =
+    override def delete(
+        album: AlbumId,
+        spread: SpreadId,
+        confirmPlacements: Boolean,
+        connection: EditorConnection,
+        maybeGrant: Option[GrantId]
+    ): IO[DeleteResult] =
       IO.raiseError[DeleteResult](new AssertionError("Unexpected deletion"))
     override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
       IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
