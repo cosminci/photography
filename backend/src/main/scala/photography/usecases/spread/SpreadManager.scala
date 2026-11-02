@@ -10,6 +10,9 @@ import org.typelevel.log4cats.Logger
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.{AlbumId, ChapterId, PhotoId, InteriorSpreadCapacity}
 import photography.domain.layout.*
+import photography.domain.editing.*
+import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditorSessionManager.AuthorizationResult
 import photography.ports.album.AlbumCompositionRepository
 import photography.ports.spread.SpreadRepository
 import photography.ports.photo.PhotoPlacementRepository
@@ -26,7 +29,7 @@ trait SpreadManager[F[_]]:
   def changeTemplate(album: AlbumId, spread: SpreadId, template: SpreadTemplateId, confirmPlacements: Boolean): F[ChangeTemplateResult]
   def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): F[DeleteResult]
   def readPlacements(album: AlbumId, spread: SpreadId): F[PlacementReadResult]
-  def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult]
+  def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): F[PlacementResult]
 
 object SpreadManager:
   def make[F[_]: MonadCancelThrow: IdGenerator: Mutex: Logger, Db[_]: MonadThrow](
@@ -34,16 +37,18 @@ object SpreadManager:
       composition: AlbumCompositionRepository[Db],
       spreads: SpreadRepository[Db],
       placements: PhotoPlacementRepository[Db],
-      defaultPhotoLayout: SpreadTemplateId
+      defaultPhotoLayout: SpreadTemplateId,
+      sessions: EditorSessionManager[F]
   )(using Transaction[Db, F]): SpreadManager[F] =
-    new LiveSpreadManager(templates, composition, spreads, placements, defaultPhotoLayout)
+    new LiveSpreadManager(templates, composition, spreads, placements, defaultPhotoLayout, sessions)
 
   final private class LiveSpreadManager[F[_]: MonadCancelThrow: IdGenerator: Mutex: Logger, Db[_]: MonadThrow](
       templates: SpreadTemplateRepository[F],
       composition: AlbumCompositionRepository[Db],
       spreads: SpreadRepository[Db],
       placements: PhotoPlacementRepository[Db],
-      defaultPhotoLayout: SpreadTemplateId
+      defaultPhotoLayout: SpreadTemplateId,
+      sessions: EditorSessionManager[F]
   )(using Transaction[Db, F]) extends SpreadManager[F]:
     override def replaceChapterOrder(
         album: AlbumId,
@@ -119,20 +124,24 @@ object SpreadManager:
           ))
       act(PlacementReadResult.Failed)(Transaction[Db, F].run(read))
 
-    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult] =
+    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): F[PlacementResult] =
       act(PlacementResult.Failed):
-        preparePlacementEdit(request).flatMap: change =>
-          val mutation = composition.hasAlbum(album).flatMap:
-            case false => PlacementResult.AlbumNotFound.pure[Db]
-            case true  =>
-              composition.findSpread(album, spread).flatMap:
-                case None         => PlacementResult.SpreadNotFound.pure[Db]
-                case Some(target) =>
-                  checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
-                    permission.flatMap(_ => change(target.spread)) match
-                      case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
-                      case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
-          Transaction[Db, F].run(mutation)
+        sessions.authorizeTarget(connection, EditingTarget.Spread(spread), grant).flatMap:
+          case AuthorizationResult.Authorized =>
+            preparePlacementEdit(request).flatMap: change =>
+              val mutation = composition.hasAlbum(album).flatMap:
+                case false => PlacementResult.AlbumNotFound.pure[Db]
+                case true  =>
+                  composition.findSpread(album, spread).flatMap:
+                    case None         => PlacementResult.SpreadNotFound.pure[Db]
+                    case Some(target) =>
+                      checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
+                        permission.flatMap(_ => change(target.spread)) match
+                          case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
+                          case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
+              Transaction[Db, F].run(mutation)
+          case AuthorizationResult.Blocked(_, owner, alias) => PlacementResult.Locked(owner, alias).pure[F]
+          case AuthorizationResult.Rejected(reason)         => PlacementResult.OwnershipRejected(reason).pure[F]
 
     private def isReplacement(expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
       val observed          = expected.toList.map(_.value)
@@ -322,6 +331,8 @@ object SpreadManager:
   enum PlacementResult:
     case Saved(spread: Spread)
     case Rejected(reason: Failure)
+    case Locked(owner: EditorId, alias: EditorAlias)
+    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, SpreadNotFound, Failed
 
   enum Failure derives CanEqual:

@@ -24,6 +24,7 @@ import photography.app.config.SqliteConfig
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.*
 import photography.domain.layout.*
+import photography.usecases.editing.EditorSessionManager
 import photography.ports.album.AlbumRepository
 import photography.ports.chapter.ChapterRepository
 import photography.ports.spread.SpreadTemplateRepository
@@ -104,9 +105,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
-
         for
+          manager   <- buildManager(xa)
           opening   <- seedChapter(xa)
           results   <- (1 to 5).toList.parTraverse(_ => manager.add(albumId, chapterId, after = opening.id))
           positions <- chapterOrder.transact(xa)
@@ -118,9 +118,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
-
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -138,8 +137,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
-        val manager     = buildManager(xa)
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -163,9 +162,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
-        val manager     = buildManager(xa)
-
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -183,9 +181,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
-        val manager     = buildManager(xa)
-
-        (seedChapter(xa), Deferred[IO, Unit]).tupled.flatMap { case (opening, started) =>
+        (buildManager(xa), seedChapter(xa), Deferred[IO, Unit]).tupled.flatMap { case (manager, opening, started) =>
           val order             = NonEmptyList.one(opening.id)
           val replacement       = started.complete(()).void >> manager.replaceChapterOrder(albumId, chapterId, order, order)
           val cancelWhileLocked = mutex.lock.surround:
@@ -209,8 +205,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
-        val manager     = buildManager(xa)
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -239,14 +235,16 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         given Transaction[ConnectionIO, IO] with
           override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(mutationXa)
           override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
-        val manager = SpreadManager.make[IO, ConnectionIO](
-          SqliteSpreadTemplateRepository.make[IO](xa),
-          composition,
-          spreads,
-          SqlitePhotoPlacementRepository.make,
-          defaultLayout
-        )
         for
+          sessions <- EditorSessionManager.make[IO](lease = 30L)
+          manager = SpreadManager.make[IO, ConnectionIO](
+            SqliteSpreadTemplateRepository.make[IO](xa),
+            composition,
+            spreads,
+            SqlitePhotoPlacementRepository.make,
+            defaultLayout,
+            sessions
+          )
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -267,9 +265,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
-
         for
+          manager     <- buildManager(xa)
           _           <- seedChapter(xa)
           photo       <- buildPhotoSpread(xa, index = 20L, layout = defaultLayout)
           _           <- spreads.insert(chapterId, photo).transact(xa)
@@ -321,11 +318,11 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
         val otherAlbum                = AlbumId(new UUID(11L, 1L))
         val insertOther = sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES (${otherAlbum.value}, 2025, 'Other', '', 0)"
 
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           _       <- insertOther.update.run.transact(xa)
           photo   <- buildPhotoSpread(xa, index = 22L, layout = defaultLayout)
@@ -357,10 +354,10 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
         val inventory                 = buildInventory(xa)
 
         for
+          manager      <- buildManager(xa)
           _            <- seedChapter(xa)
           photo        <- buildPhotoSpread(xa, index = 23L, layout = defaultLayout)
           _            <- spreads.insert(chapterId, photo).transact(xa)
@@ -394,9 +391,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
-
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           _       <- placePhoto(xa, opening.photoSlots.lift(1).getOrElse(fail("Missing opening slot")).id, index = 1L)
           layout  <- loadChapterTemplate(xa)
@@ -418,13 +414,13 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
-        val manager                   = buildManager(xa)
         val chapters                  = buildChapterMetadataManager(xa)
         val period                    = ChapterMetadataManager.Period.Dates(VisitPeriod(LocalDate.of(2026, 8, 1), days = 2L))
         val createChapter             =
           chapters.create(albumId, name = "Later trip", countries = NonEmptyList.one(country.id), period, sourceFolder = "/photos/later")
 
         for
+          manager <- buildManager(xa)
           opening <- seedChapter(xa)
           photos  <- (1 to 62).toVector.traverse(index => buildPhotoSpread(xa, index = 100L + index.toLong, layout = defaultLayout))
           _       <- photos.traverse_(spreads.insert(chapterId, _)).transact(xa)
@@ -570,7 +566,9 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
     val templates  = SqliteSpreadTemplateRepository.make[IO](xa)
     val placements = SqlitePhotoPlacementRepository.make
-    SpreadManager.make(templates, composition, spreads, placements, defaultLayout)
+    EditorSessionManager.make[IO](lease = 30L).map(sessions =>
+      SpreadManager.make(templates, composition, spreads, placements, defaultLayout, sessions)
+    )
 
   private def buildInventory(xa: Transactor[IO]) =
     given transaction: Transaction[ConnectionIO, IO] with

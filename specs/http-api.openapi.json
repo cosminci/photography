@@ -484,8 +484,11 @@
       }
     },
     "/api/albums/{id}/spreads/{spreadId}/placements/{placementId}": {
+      "description": "All mutations require a live session, current bound tab generation and exact spread grant. Admission and atomic persistence share one coordination interval; a live-admitted write may finish across expiry before competing acquisition. Every response is Cache-Control: no-store. Reconcile uncertain saved state before explicit resubmission; ownership loss never permits automatic replay.",
       "parameters": [
         { "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/SpreadId" },
+        { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+        { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" },
         { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
       ],
       "patch": {
@@ -494,15 +497,16 @@
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InteriorPlacementChanges" } } } },
         "responses": {
           "200": { "description": "Saved spread", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       },
       "delete": {
         "operationId": "deleteSpreadPlacement", "summary": "Remove one interior placement",
         "responses": {
           "200": { "description": "Saved spread; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -523,35 +527,38 @@
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
         "responses": {
           "200": { "description": "Saved cover", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/CoverEditInvalid" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/CoverEditRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       },
       "delete": {
         "operationId": "deleteCoverPlacement", "summary": "Remove one cover placement",
         "responses": {
           "200": { "description": "Saved cover; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/CoverEditInvalid" },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/CoverEditRejected" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
     },
     "/api/albums/{id}/spreads/{spreadId}/placements": {
+      "description": "Requires a live session, current bound tab generation and exact spread grant even without a competing owner. All responses are Cache-Control: no-store; private credentials are canonical single-valued headers, never URL parameters.",
       "parameters": [
+        { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+        { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" },
         { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Lowercase canonical album UUID." },
         { "name": "spreadId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" }, "description": "Current spread UUID owned by the album." }
       ],
       "post": {
         "operationId": "createSpreadPlacement",
         "summary": "Place or replace an interior photo",
-        "description": "Synopsis accepts album photos; chapter openings and photo spreads accept their chapter photos. Validate current ownership and globally unique photo use in the same coordination interval as the atomic write. Place initializes centered, unmirrored zoom 1; replacement releases the old photo. Move within this spread swaps occupied destinations and carries transforms and caption corners. Geometry remains with slots. Requests use current saved state, not an editing lease. An uncertain outcome must be read before repeating a mutation.",
+        "description": "Synopsis accepts album photos; chapter openings and photo spreads accept their chapter photos. Validate live ownership and globally unique photo use in the same coordination interval as the atomic write. Place initializes centered, unmirrored zoom 1; replacement releases the old photo. Move within this spread swaps occupied destinations and carries transforms and caption corners. Geometry remains with slots. Reconcile uncertain saves through authoritative reads; never automatically replay after ownership loss or reacquisition.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
         "responses": {
           "200": { "description": "Acknowledged saved composition; a later refresh failure must be retried as reads only", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -585,9 +592,9 @@
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
         "responses": {
           "200": { "description": "Saved cover composition", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/CoverEditInvalid" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/CoverEditRejected" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -1533,18 +1540,14 @@
         "description": "Current target is missing or belongs elsewhere. Reload authoritative composition. Noncanonical path IDs fall through to the API's not_found response.",
         "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["album_not_found", "spread_not_found", "cover_not_found", "not_found"] } } } } }
       },
-      "PlacementRejected": {
-        "description": "Current ownership or identity validation rejected the edit without partial writes. Reload authoritative state before choosing another action.",
-        "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["photo_not_in_collection", "photo_already_used", "slot_not_found", "placement_not_found", "invalid_transform"] } } } } }
-      },
-      "CoverEditInvalid": {
+      "TargetEditInvalid": {
         "description": "Malformed placement JSON returns message. Missing, duplicated, comma-combined or noncanonical private headers return a credential code before body decoding.",
         "content": { "application/json": { "schema": { "oneOf": [
           { "type": "object", "required": ["message"], "additionalProperties": false, "properties": { "message": { "type": "string" } } },
           { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["missing_credentials", "invalid_credentials"] } } }
         ] } } }
       },
-      "CoverEditRejected": {
+      "TargetEditRejected": {
         "description": "No partial writes. Stale credentials or grants require authoritative reconciliation. Public contention exposes only owner identity and alias, never private session or grant. Placement constraints retain their existing codes.",
         "content": { "application/json": { "schema": { "oneOf": [
           { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": {

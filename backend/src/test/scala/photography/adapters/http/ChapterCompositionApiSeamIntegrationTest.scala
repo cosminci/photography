@@ -10,6 +10,7 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId}
+import photography.domain.editing.{EditorConnection, GrantId}
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -117,5 +118,5 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
       IO.raiseError[DeleteResult](new AssertionError("Unexpected deletion"))
     override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
       IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
-    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
+    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): IO[PlacementResult] =
       IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))

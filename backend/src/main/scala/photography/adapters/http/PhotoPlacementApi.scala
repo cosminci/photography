@@ -27,8 +27,12 @@ object PhotoPlacementApi:
         readSpread(AlbumId(album), SpreadId(spread))
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" =>
         editSpread(AlbumId(album), SpreadId(spread), request, spreadPlaceDecoder)
-      case DELETE -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
-        spreads.editPlacements(AlbumId(album), SpreadId(spread), SpreadManager.Edit.Remove(SpreadPlacementId(placement))).flatMap(respondToSpreadEdit)
+      case request @ DELETE ->
+          Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
+        withTargetGrant(request)((connection, grant) =>
+          spreads.editPlacements(AlbumId(album), SpreadId(spread), SpreadManager.Edit.Remove(SpreadPlacementId(placement)), connection, grant)
+            .flatMap(respondToSpreadEdit)
+        )
       case request @ PATCH ->
           Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
         editSpread(AlbumId(album), SpreadId(spread), request, spreadUpdateDecoder(placement))
@@ -37,7 +41,7 @@ object PhotoPlacementApi:
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" =>
         editCover(AlbumId(album), request, coverPlaceDecoder)
       case request @ DELETE -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" / CanonicalId(placement) =>
-        withCoverGrant(request)((connection, grant) =>
+        withTargetGrant(request)((connection, grant) =>
           covers.edit(AlbumId(album), CoverManager.Edit.Remove(CoverPlacementId(placement)), connection, grant).flatMap(respondToCoverEdit)
         )
       case request @ PATCH -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" / CanonicalId(placement) =>
@@ -58,18 +62,20 @@ object PhotoPlacementApi:
         case CoverManager.ReadResult.Failed        => InternalServerError(Map("code" -> "service_failure"))
 
     private def editSpread(album: AlbumId, spread: SpreadId, request: Request[F], decoder: Decoder[SpreadManager.Edit]) =
-      decode(request, decoder).flatMap:
-        case Left(message) => BadRequest(Map("message" -> message))
-        case Right(edit)   => spreads.editPlacements(album, spread, edit).flatMap(respondToSpreadEdit)
+      withTargetGrant(request)((connection, grant) =>
+        decode(request, decoder).flatMap:
+          case Left(message) => BadRequest(Map("message" -> message))
+          case Right(edit)   => spreads.editPlacements(album, spread, edit, connection, grant).flatMap(respondToSpreadEdit)
+      )
 
     private def editCover(album: AlbumId, request: Request[F], decoder: Decoder[CoverManager.Edit]) =
-      withCoverGrant(request)((connection, grant) =>
+      withTargetGrant(request)((connection, grant) =>
         decode(request, decoder).flatMap:
           case Left(message) => BadRequest(Map("message" -> message))
           case Right(edit)   => covers.edit(album, edit, connection, grant).flatMap(respondToCoverEdit)
       )
 
-    private def withCoverGrant(request: Request[F])(
+    private def withTargetGrant(request: Request[F])(
         run: (EditorConnection, GrantId) => F[Response[F]]
     ) =
       val parsed = (readConnection(request), requiredId(request, "X-Editor-Grant").map(GrantId(_))).tupled
@@ -77,11 +83,14 @@ object PhotoPlacementApi:
         .map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
     private def respondToSpreadEdit(result: SpreadManager.PlacementResult) = result match
-      case SpreadManager.PlacementResult.Saved(value)     => Ok(encodeSpread(value))
-      case SpreadManager.PlacementResult.Rejected(reason) => Conflict(Map("code" -> explainSpreadFailure(reason)))
-      case SpreadManager.PlacementResult.AlbumNotFound    => NotFound(Map("code" -> "album_not_found"))
-      case SpreadManager.PlacementResult.SpreadNotFound   => NotFound(Map("code" -> "spread_not_found"))
-      case SpreadManager.PlacementResult.Failed           => InternalServerError(Map("code" -> "service_failure"))
+      case SpreadManager.PlacementResult.Saved(value)              => Ok(encodeSpread(value))
+      case SpreadManager.PlacementResult.Rejected(reason)          => Conflict(Map("code" -> explainSpreadFailure(reason)))
+      case SpreadManager.PlacementResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+      case SpreadManager.PlacementResult.Locked(owner, alias)      =>
+        Conflict(Map[String, String]("code" -> "target_locked", "ownerId" -> owner.value.toString, "alias" -> alias))
+      case SpreadManager.PlacementResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
+      case SpreadManager.PlacementResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
+      case SpreadManager.PlacementResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
 
     private def respondToCoverEdit(result: CoverManager.Result) = result match
       case CoverManager.Result.Saved(value)              => Ok(encodeCover(value))
