@@ -24,7 +24,7 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
         lifecycle = Resource.make(IO.unit)(_ => released.set(true))
         events    = Stream.resource(lifecycle) >> (Stream.emits(Vector(Event.Subscribed, Event.InventoryChanged(chapter))) ++ Stream.never[IO])
         service   = buildEvents(SubscribeResult.Opened(events))
-        response <- AlbumPhotoEventsApi.make(service).routes.orNotFound.run(Request[IO](uri = uri))
+        response <- PublicRoutes(AlbumPhotoEventsApi.make(service)).orNotFound.run(Request[IO](uri = uri))
         received <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
         closed   <- released.get
       yield
@@ -44,7 +44,7 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
       SubscribeResult.AlbumNotFound[IO]() -> Status.NotFound,
       SubscribeResult.Failed[IO]()        -> Status.InternalServerError
     ).traverse_ { case (result, expected) =>
-      val app = AlbumPhotoEventsApi.make(buildEvents(result)).routes.orNotFound
+      val app = PublicRoutes(AlbumPhotoEventsApi.make(buildEvents(result))).orNotFound
 
       for
         response  <- app.run(Request[IO](uri = uri))

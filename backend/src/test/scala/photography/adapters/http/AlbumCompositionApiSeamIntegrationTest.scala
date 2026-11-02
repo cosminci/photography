@@ -68,4 +68,4 @@ final class AlbumCompositionApiSeamIntegrationTest extends CatsEffectSuite:
         IO(assertEquals(id.value, album.value)) *> result
 
   private def read(repository: AlbumCompositionRepository.MembershipRead[IO], path: String) =
-    AlbumCompositionApi.make(repository).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString(path)))
+    PublicRoutes(AlbumCompositionApi.make(repository)).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString(path)))

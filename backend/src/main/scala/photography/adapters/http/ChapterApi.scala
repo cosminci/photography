@@ -1,12 +1,15 @@
 package photography.adapters.http
 
+import photography.adapters.http.Routes.Route
+import org.http4s.Request
+
 import cats.data.{NonEmptyList, NonEmptyVector}
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.{CacheDirective, MessageBodyFailure}
 import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
@@ -24,8 +27,7 @@ import java.time.{DateTimeException, LocalDate}
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
-trait ChapterApi[F[_]]:
-  def routes: HttpRoutes[F]
+trait ChapterApi[F[_]] extends Routes[F]
 
 object ChapterApi:
   def make[F[_]: Async](
@@ -40,31 +42,36 @@ object ChapterApi:
       metadata: AlbumRepository.ChapterRead[F],
       gear: ChapterManager[F]
   ) extends ChapterApi[F] with Http4sDsl[F]:
-    override def routes: HttpRoutes[F] =
-      HttpRoutes.of[F] {
-        case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" =>
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" => Route.public {
           saveDescription(AlbumId(album), ChapterId(chapter), request)
-        case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "description"                 => chapterNotFound
-        case PUT -> Root / "api" / "albums" / _ / "chapters" / _ / "description"                              => albumNotFound
-        case GET -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
+        }
+      case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "description"                 => Route.public(chapterNotFound)
+      case PUT -> Root / "api" / "albums" / _ / "chapters" / _ / "description"                              => Route.public(albumNotFound)
+      case GET -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" => Route.public {
           readGear(AlbumId(value = album), ChapterId(value = chapter))
-        case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" =>
+        }
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" => Route.public {
           replaceGear(AlbumId(value = album), ChapterId(value = chapter), request)
-        case (GET | PUT) -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "gear" => chapterNotFound
-        case (GET | PUT) -> Root / "api" / "albums" / _ / "chapters" / _ / "gear"              => albumNotFound
-        case GET -> Root / "api" / "albums" / CanonicalId(id) / "chapters"                     => read(AlbumId(id))
-        case GET -> Root / "api" / "albums" / _ / "chapters"                                   => albumNotFound
-        case request @ POST -> Root / "api" / "albums" / CanonicalId(id) / "chapters"          =>
+        }
+      case (GET | PUT) -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "gear" => Route.public(chapterNotFound)
+      case (GET | PUT) -> Root / "api" / "albums" / _ / "chapters" / _ / "gear"              => Route.public(albumNotFound)
+      case GET -> Root / "api" / "albums" / CanonicalId(id) / "chapters"                     => Route.public(read(AlbumId(id)))
+      case GET -> Root / "api" / "albums" / _ / "chapters"                                   => Route.public(albumNotFound)
+      case request @ POST -> Root / "api" / "albums" / CanonicalId(id) / "chapters"          => Route.public {
           create(AlbumId(id), request)
-        case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "chapters" / CanonicalId(chapter) =>
+        }
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "chapters" / CanonicalId(chapter) => Route.public {
           update(AlbumId(id), ChapterId(chapter), request)
-        case PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photo-import" =>
+        }
+      case PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photo-import" => Route.public {
           refresh(ChapterId(chapter))
-        case PUT -> Root / "api" / "chapters" / _ / "photo-import"            => chapterNotFound
-        case POST -> Root / "api" / "albums" / _ / "chapters"                 => albumNotFound
-        case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => chapterNotFound
-        case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => albumNotFound
-      }
+        }
+      case PUT -> Root / "api" / "chapters" / _ / "photo-import"            => Route.public(chapterNotFound)
+      case POST -> Root / "api" / "albums" / _ / "chapters"                 => Route.public(albumNotFound)
+      case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ => Route.public(chapterNotFound)
+      case PUT -> Root / "api" / "albums" / _ / "chapters" / _              => Route.public(albumNotFound)
+    }
 
     private def saveDescription(album: AlbumId, chapter: ChapterId, request: Request[F]) =
       request.as[Json].flatMap { value =>

@@ -6,7 +6,7 @@
 
 ## What and why
 
-Give one browser session exclusive editing ownership of a spread, including its photo captions and editable text, or the full Cover. Other browsers can view the saved target and its owner's alias until release or expiry permits editing.
+Give one browser session exclusive editing ownership of an interior or exterior spread, including its photo captions and editable text. Other browsers can view the saved target and its owner's alias until release or expiry permits editing.
 
 Deliver other browsers' saved changes live, so cached content cannot silently become the basis of a new editing session. [Design](design.md) records the existing-owner evolution and agreed protection boundaries.
 
@@ -17,11 +17,11 @@ Deliver other browsers' saved changes live, so cached content cannot silently be
 | Browser identity | One remembered, nonblank identification alias per browser profile; aliases are recognizable labels, not unique names or authenticated users. |
 | Application tab | One application tab per browser profile; additional tabs show a blocking explanation and retry rather than opening another workspace or Reader. |
 | Session | Remembered browser identity survives reload; live backend sessions expire 30 seconds after their last successful heartbeat. |
-| Target | One session owns at most one spread or full Cover; a grant expires after 30 seconds without accepted renewal, with heartbeat attempts every 10 seconds and no forced takeover. |
+| Target | One session owns at most one spread, with both cover sides protected together; a grant expires after 30 seconds without accepted renewal, with heartbeat attempts every 10 seconds and no forced takeover. |
 | Lifetimes | Releasing a target leaves its session alive; session heartbeat without a valid target grant cannot renew that target. |
 | Navigation | Selecting another spread or Cover releases the previous target and attempts acquisition of the destination; a busy destination remains view-only. |
 | Reader | Entering Reader or leaving the album releases target ownership while keeping viewing available. |
-| Full protection | Content and destructive changes check current affected targets, regardless of their HTTP route or UI entry point; another session's affected lock rejects the entire mutation. |
+| Spread protection | Content and destructive changes check current affected targets, regardless of their HTTP route or UI entry point; another session's affected lock rejects the entire mutation. |
 | Explicit exceptions | Author selection and nondestructive insertion/reordering remain independently writable; ordering retains stable target identities and existing stale-order rejection. |
 | Admission | Session, exact grant, current affected relationships and mutation share one coordination interval; a live-admitted atomic write can finish before a waiting acquisition proceeds. |
 | Fencing | Expired, released or superseded grants cannot write, renew, release newer ownership or revive an obsolete acquisition. |
@@ -32,13 +32,15 @@ Deliver other browsers' saved changes live, so cached content cannot silently be
 
 Locking is access coordination, not a saved-book snapshot or an undo implementation. Shared content retains its domain owner even when an affected target's lease protects its mutation.
 
+Album title editing and album deletion retain their existing behavior outside this feature's scope.
+
 ## Model evolution
 
 The linked [reviewable design decision](design.md#model-evolution) owns concrete domain, operation and port changes, their migrated consumers, fencing and the protection map. Existing SQLite session/lock representations remain dormant rather than competing with the selected in-memory authority.
 
 ## Acceptance
 
-- Independent browsers competing for one spread or full Cover obtain exactly one live owner.
+- Independent browsers competing for one interior or exterior spread obtain exactly one live owner.
 - A contender can view saved content and Reader, sees the owner's alias, and cannot edit the locked target through any protected endpoint.
 - One remembered alias identifies the browser across reloads and backend restarts without another identification prompt.
 - A second tab in the same browser profile is blocked from the entire application until the previous active-tab binding releases or expires.

@@ -1,11 +1,14 @@
 package photography.adapters.http
 
+import photography.adapters.http.Routes.Route
+import org.http4s.Request
+
 import cats.effect.{Async, Clock, Resource}
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.{Decoder, Json}
 import io.github.iltotore.iron.*
-import org.http4s.{HttpRoutes, Request, Response, ServerSentEvent}
+import org.http4s.{Response, ServerSentEvent}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.adapters.http.EditorCredentials.*
@@ -18,78 +21,89 @@ import photography.usecases.editing.EditorSessionManager.*
 import scala.concurrent.duration.*
 
 object EditorSessionApi:
-  def make[F[_]: Async](sessions: EditorSessionManager[F]): HttpRoutes[F] = new LiveEditorSessionApi(sessions).routes
+  def make[F[_]: Async](sessions: EditorSessionManager[F]): Routes[F] = new LiveEditorSessionApi(sessions)
 
-  final private class LiveEditorSessionApi[F[_]: Async](sessions: EditorSessionManager[F]) extends Http4sDsl[F]:
-    def routes: HttpRoutes[F] = HttpRoutes.of[F]:
-      case request @ POST -> Root / "api" / "editor-session" =>
-        register(request)
-      case request @ GET -> Root / "api" / "editor-session" / "events" =>
-        (requiredId(request, "X-Editor-Session"), requiredId(request, "X-Editor-Tab")).tupled match
-          case Left(message)         => BadRequest(code(message)).map(_.putHeaders("Cache-Control" -> "no-store"))
-          case Right((session, tab)) =>
-            Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("Cache-Control" -> "no-store", "X-Accel-Buffering" -> "no"))
-      case request @ GET -> Root / "api" / "editor-session" =>
-        withConnection(request)(connection =>
-          sessions.read(connection).flatMap {
-            case ReadResult.Current(session) => Ok(encodeSession(session))
-            case ReadResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
-          }
-        )
-      case request @ POST -> Root / "api" / "editor-session" / "heartbeat" =>
-        withConnection(request)(connection =>
-          sessions.heartbeat(connection).flatMap {
-            case HeartbeatResult.Alive(session)   => Ok(encodeSession(session))
-            case HeartbeatResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
-          }
-        )
-      case request @ GET -> Root / "api" / "editor-session" / "target" =>
-        withConnection(request)(connection =>
-          sessions.readTarget(connection).flatMap {
-            case ReadTargetResult.Current(revision, maybeLock) =>
-              maybeLock.traverse(encodeGrant).flatMap(lock => Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> lock.getOrElse(Json.Null)))))
-            case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
-          }
-        )
-      case request @ PUT -> Root / "api" / "editor-session" / "target" =>
-        withConnection(request)(connection =>
-          withBody(request, selection) { case (revision, target) =>
-            sessions.select(connection, revision, target).flatMap {
-              case SelectResult.Owned(lock, current) =>
-                encodeGrant(lock).flatMap(grant => Ok(encodeRevision(current).deepMerge(Json.obj("grant" -> grant))))
-              case SelectResult.Blocked(owner, alias, expiresAt, current) =>
-                remaining(expiresAt).flatMap(millis =>
-                  Conflict(encodeRevision(current).deepMerge(Json.obj(
-                    "code"            -> Json.fromString("target_locked"),
-                    "ownerId"         -> Json.fromString(owner.value.toString),
-                    "alias"           -> Json.fromString(alias),
-                    "remainingMillis" -> Json.fromLong(millis)
-                  )))
-                )
-              case SelectResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
-            }
-          }
-        )
-      case request @ POST -> Root / "api" / "editor-session" / "target" =>
-        withConnection(request)(connection =>
-          withGrant(request)(grant =>
-            sessions.renewTarget(connection, grant).flatMap {
-              case RenewTargetResult.Renewed(lock)    => encodeGrant(lock).flatMap(Ok(_))
-              case RenewTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+  final private class LiveEditorSessionApi[F[_]: Async](sessions: EditorSessionManager[F]) extends Routes[F] with Http4sDsl[F]:
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case request @ POST -> Root / "api" / "editor-session" => Route.public {
+          register(request)
+        }
+      case request @ GET -> Root / "api" / "editor-session" / "events" => Route.public {
+          (requiredId(request, "X-Editor-Session"), requiredId(request, "X-Editor-Tab")).tupled match
+            case Left(message)         => BadRequest(code(message)).map(_.putHeaders("Cache-Control" -> "no-store"))
+            case Right((session, tab)) =>
+              Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("Cache-Control" -> "no-store", "X-Accel-Buffering" -> "no"))
+        }
+      case request @ GET -> Root / "api" / "editor-session" => Route.public {
+          withConnection(request)(connection =>
+            sessions.read(connection).flatMap {
+              case ReadResult.Current(session) => Ok(encodeSession(session))
+              case ReadResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
           )
-        )
-      case request @ DELETE -> Root / "api" / "editor-session" / "target" =>
-        withConnection(request)(connection =>
-          withGrant(request)(grant =>
-            withBody(request, releaseRevision)(revision =>
-              sessions.release(connection, revision, grant).flatMap {
-                case ReleaseResult.Released(current) => Ok(encodeRevision(current))
-                case ReleaseResult.Rejected(reason)  => Conflict(code(encodeFailure(reason)))
+        }
+      case request @ POST -> Root / "api" / "editor-session" / "heartbeat" => Route.public {
+          withConnection(request)(connection =>
+            sessions.heartbeat(connection).flatMap {
+              case HeartbeatResult.Alive(session)   => Ok(encodeSession(session))
+              case HeartbeatResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+            }
+          )
+        }
+      case request @ GET -> Root / "api" / "editor-session" / "target" => Route.public {
+          withConnection(request)(connection =>
+            sessions.readTarget(connection).flatMap {
+              case ReadTargetResult.Current(revision, maybeLock) =>
+                maybeLock.traverse(encodeGrant).flatMap(lock =>
+                  Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> lock.getOrElse(Json.Null))))
+                )
+              case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+            }
+          )
+        }
+      case request @ PUT -> Root / "api" / "editor-session" / "target" => Route.public {
+          withConnection(request)(connection =>
+            withBody(request, selection) { case (revision, target) =>
+              sessions.select(connection, revision, target).flatMap {
+                case SelectResult.Owned(lock, current) =>
+                  encodeGrant(lock).flatMap(grant => Ok(encodeRevision(current).deepMerge(Json.obj("grant" -> grant))))
+                case SelectResult.Blocked(owner, alias, expiresAt, current) =>
+                  remaining(expiresAt).flatMap(millis =>
+                    Conflict(encodeRevision(current).deepMerge(Json.obj(
+                      "code"            -> Json.fromString("target_locked"),
+                      "ownerId"         -> Json.fromString(owner.value.toString),
+                      "alias"           -> Json.fromString(alias),
+                      "remainingMillis" -> Json.fromLong(millis)
+                    )))
+                  )
+                case SelectResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+              }
+            }
+          )
+        }
+      case request @ POST -> Root / "api" / "editor-session" / "target" => Route.public {
+          withConnection(request)(connection =>
+            withGrant(request)(grant =>
+              sessions.renewTarget(connection, grant).flatMap {
+                case RenewTargetResult.Renewed(lock)    => encodeGrant(lock).flatMap(Ok(_))
+                case RenewTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
               }
             )
           )
-        )
+        }
+      case request @ DELETE -> Root / "api" / "editor-session" / "target" => Route.public {
+          withConnection(request)(connection =>
+            withGrant(request)(grant =>
+              withBody(request, releaseRevision)(revision =>
+                sessions.release(connection, revision, grant).flatMap {
+                  case ReleaseResult.Released(current) => Ok(encodeRevision(current))
+                  case ReleaseResult.Rejected(reason)  => Conflict(code(encodeFailure(reason)))
+                }
+              )
+            )
+          )
+        }
+    }
 
     private def register(request: Request[F]) =
       request.attemptAs[Json].value.flatMap {

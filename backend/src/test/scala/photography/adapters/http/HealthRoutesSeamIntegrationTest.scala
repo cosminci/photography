@@ -8,7 +8,7 @@ import org.http4s.{MediaType, Method, Request, Status, Uri}
 final class HealthRoutesSeamIntegrationTest extends CatsEffectSuite:
 
   test("should serve JSON readiness at /health and not found for unknown paths"):
-    val healthRoutes = HealthRoutes.routes[IO].orNotFound
+    val healthRoutes = PublicRoutes(HealthRoutes.routes[IO]).orNotFound
     val health       = Request[IO](Method.GET, Uri.unsafeFromString("/health"))
     val unknown      = Request[IO](Method.GET, Uri.unsafeFromString("/unknown"))
 

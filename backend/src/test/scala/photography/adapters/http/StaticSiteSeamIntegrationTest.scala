@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets
 final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
 
   test("should serve the entry point for extensionless navigation and preserve built resource bytes and media types"):
-    val app       = StaticSite.make(HealthRoutes.routes[IO], assetRoot = "static-site")
+    val app       = StaticSite.make(PublicRoutes(HealthRoutes.routes[IO]), assetRoot = "static-site")
     val scenarios = List(
       ("/", "index.html", MediaType.text.html.some),
       ("/albums/00000000-0000-0000-0000-000000000001?source=dashboard", "index.html", MediaType.text.html.some),
@@ -40,7 +40,7 @@ final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
       case request if request.uri.path.renderString === "/api/albums" =>
         Response[IO](Status.Ok).withEntity("""{"albums":[]}""").putHeaders(`Content-Type`(MediaType.application.json)).pure[IO]
     }
-    val app       = StaticSite.make(api <+> HealthRoutes.routes[IO], assetRoot = "static-site")
+    val app       = StaticSite.make(api <+> PublicRoutes(HealthRoutes.routes[IO]), assetRoot = "static-site")
     val scenarios = List(
       (Method.GET, "/api/albums", Status.Ok, """{"albums":[]}"""),
       (Method.GET, "/health", Status.Ok, """{"status":"ok"}"""),
@@ -60,7 +60,7 @@ final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should not turn missing resources or unsupported frontend methods into successful navigation"):
-    val app       = StaticSite.make(HealthRoutes.routes[IO], assetRoot = "static-site")
+    val app       = StaticSite.make(PublicRoutes(HealthRoutes.routes[IO]), assetRoot = "static-site")
     val scenarios = List(
       (Method.GET, "/assets/missing.js"),
       (Method.GET, "/assets/missing"),
@@ -83,7 +83,7 @@ final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should serve bodyless HEAD responses with the same resource headers as GET"):
-    val app   = StaticSite.make(HealthRoutes.routes[IO], assetRoot = "static-site")
+    val app   = StaticSite.make(PublicRoutes(HealthRoutes.routes[IO]), assetRoot = "static-site")
     val paths = List("/", "/albums/unknown", "/assets/app.js", "/assets/app.css")
 
     paths.traverse_ { path =>
@@ -99,7 +99,7 @@ final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should deliver the real built frontend entry point and its emitted assets"):
-    val app        = StaticSite.make(HealthRoutes.routes[IO], assetRoot = "frontend")
+    val app        = StaticSite.make(PublicRoutes(HealthRoutes.routes[IO]), assetRoot = "frontend")
     val entryPoint = Resource.fromAutoCloseable(IO.blocking(getClass.getResourceAsStream("/frontend/index.html")))
 
     entryPoint.use { stream =>

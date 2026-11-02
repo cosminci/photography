@@ -3,16 +3,12 @@ package photography.usecases.spread
 import cats.MonadThrow
 import cats.data.NonEmptyList
 import cats.effect.kernel.MonadCancelThrow
-import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import org.typelevel.log4cats.Logger
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.{AlbumId, ChapterId, PhotoId, InteriorSpreadCapacity}
 import photography.domain.layout.*
-import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
-import photography.usecases.editing.EditorSessionManager.{AuthorizationResult, ConnectionAuthorizationResult}
 import photography.ports.album.AlbumCompositionRepository
 import photography.ports.spread.SpreadRepository
 import photography.ports.photo.PhotoPlacementRepository
@@ -28,114 +24,93 @@ trait SpreadManager[F[_]]:
       album: AlbumId,
       chapter: ChapterId,
       expected: NonEmptyList[SpreadId],
-      order: NonEmptyList[SpreadId],
-      connection: EditorConnection
+      order: NonEmptyList[SpreadId]
   ): F[ReplacementResult]
-  def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): F[AddResult]
+  def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult]
   def changeTemplate(
       album: AlbumId,
       spread: SpreadId,
       template: SpreadTemplateId,
-      confirmPlacements: Boolean,
-      connection: EditorConnection,
-      grant: GrantId
+      confirmPlacements: Boolean
   ): F[ChangeTemplateResult]
-  def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean, connection: EditorConnection, maybeGrant: Option[GrantId]): F[DeleteResult]
+  def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): F[DeleteResult]
   def readPlacements(album: AlbumId, spread: SpreadId): F[PlacementReadResult]
-  def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): F[PlacementResult]
+  def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult]
 
 object SpreadManager:
-  def make[F[_]: MonadCancelThrow: IdGenerator: Mutex: Logger, Db[_]: MonadThrow](
+  def make[F[_]: MonadCancelThrow: IdGenerator: Logger, Db[_]: MonadThrow](
       templates: SpreadTemplateRepository[F],
       composition: AlbumCompositionRepository[Db],
       spreads: SpreadRepository[Db],
       placements: PhotoPlacementRepository[Db],
-      defaultPhotoLayout: SpreadTemplateId,
-      sessions: EditorSessionManager[F]
+      defaultPhotoLayout: SpreadTemplateId
   )(using Transaction[Db, F]): SpreadManager[F] =
-    new LiveSpreadManager(templates, composition, spreads, placements, defaultPhotoLayout, sessions)
+    new LiveSpreadManager(templates, composition, spreads, placements, defaultPhotoLayout)
 
-  final private class LiveSpreadManager[F[_]: MonadCancelThrow: IdGenerator: Mutex: Logger, Db[_]: MonadThrow](
+  final private class LiveSpreadManager[F[_]: MonadCancelThrow: IdGenerator: Logger, Db[_]: MonadThrow](
       templates: SpreadTemplateRepository[F],
       composition: AlbumCompositionRepository[Db],
       spreads: SpreadRepository[Db],
       placements: PhotoPlacementRepository[Db],
-      defaultPhotoLayout: SpreadTemplateId,
-      sessions: EditorSessionManager[F]
+      defaultPhotoLayout: SpreadTemplateId
   )(using Transaction[Db, F]) extends SpreadManager[F]:
     override def replaceChapterOrder(
         album: AlbumId,
         chapter: ChapterId,
         expected: NonEmptyList[SpreadId],
-        order: NonEmptyList[SpreadId],
-        connection: EditorConnection
+        order: NonEmptyList[SpreadId]
     ): F[ReplacementResult] =
-      summon[Mutex[F]].lock.surround:
-        MonadCancelThrow[F].uncancelable: _ =>
-          sessions.authorizeConnection(connection).flatMap:
-            case ConnectionAuthorizationResult.Rejected(reason) => ReplacementResult.OwnershipRejected(reason).pure[F]
-            case ConnectionAuthorizationResult.Authorized       =>
-              if !isReplacement(expected, order) then ReplacementResult.Invalid.pure[F]
-              else replaceCurrent(album, chapter, expected, order)
+      MonadCancelThrow[F].uncancelable: _ =>
+        if !isReplacement(expected, order) then ReplacementResult.Invalid.pure[F]
+        else replaceCurrent(album, chapter, expected, order)
 
-    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): F[AddResult] =
+    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult] =
       act[AddResult](AddResult.Failed):
-        sessions.authorizeConnection(connection).flatMap:
-          case ConnectionAuthorizationResult.Rejected(reason) => AddResult.OwnershipRejected(reason).pure[F]
-          case ConnectionAuthorizationResult.Authorized       =>
-            templates.findTemplate(defaultPhotoLayout).flatMap[AddResult]:
-              case FindTemplateResult.Found(layout: SpreadTemplate.PhotosOnly) =>
-                buildPhotoSpread(layout).flatMap: fresh =>
-                  val mutation =
-                    for
-                      _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
-                      order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
-                      target   <- composition.findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
-                      _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
-                      inserted <- insertAfter(order = order, after, fresh.id).orFail[Db, AddResult](ifEmpty = AddResult.SpreadNotFound)
-                      count    <- composition.countInteriorSpreads(album).lift[AddResult]
-                      _        <- (!InteriorSpreadCapacity.isReached(count)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AtCapacity))
-                      _        <- (spreads.insert(chapter, fresh) >> spreads.reorder(chapter, order = inserted)).lift[AddResult]
-                    yield AddResult.Added(fresh.id): AddResult
-                  Transaction[Db, F].run(mutation.merge)
-              case _ => AddResult.Failed.pure[F]
+        templates.findTemplate(defaultPhotoLayout).flatMap[AddResult]:
+          case FindTemplateResult.Found(layout: SpreadTemplate.PhotosOnly) =>
+            buildPhotoSpread(layout).flatMap: fresh =>
+              val mutation =
+                for
+                  _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
+                  order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
+                  target   <- composition.findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
+                  _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
+                  inserted <- insertAfter(order = order, after, fresh.id).orFail[Db, AddResult](ifEmpty = AddResult.SpreadNotFound)
+                  count    <- composition.countInteriorSpreads(album).lift[AddResult]
+                  _        <- (!InteriorSpreadCapacity.isReached(count)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AtCapacity))
+                  _        <- (spreads.insert(chapter, fresh) >> spreads.reorder(chapter, order = inserted)).lift[AddResult]
+                yield AddResult.Added(fresh.id): AddResult
+              Transaction[Db, F].run(mutation.merge)
+          case _ => AddResult.Failed.pure[F]
 
     override def changeTemplate(
         album: AlbumId,
         spread: SpreadId,
         template: SpreadTemplateId,
-        confirmPlacements: Boolean,
-        connection: EditorConnection,
-        grant: GrantId
+        confirmPlacements: Boolean
     ): F[ChangeTemplateResult] =
       act[ChangeTemplateResult](ChangeTemplateResult.Failed):
-        sessions.authorizeTarget(connection, EditingTarget.Spread(spread), grant).flatMap:
-          case AuthorizationResult.Authorized =>
-            templates.findTemplate(template).flatMap[ChangeTemplateResult]:
-              case FindTemplateResult.Found(layout) =>
-                buildReplacement(layout).flatMap: replace =>
-                  val mutation =
-                    for
-                      _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
-                      target <- composition.findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
-                      fresh  <-
-                        replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
-                      count = target.spread.placements.size
-                      _ <- checkConfirmation(count = count, confirmed = confirmPlacements).leftMap(ChangeTemplateResult.Occupied(_)).eitherT[Db]
-                      _ <- spreads.replace(fresh).lift[ChangeTemplateResult]
-                    yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
-                  Transaction[Db, F].run(mutation.merge)
-              case FindTemplateResult.NotFound  => (ChangeTemplateResult.Rejected(Conflict.UnknownTemplate): ChangeTemplateResult).pure[F]
-              case FindTemplateResult.Failed(_) => (ChangeTemplateResult.Failed: ChangeTemplateResult).pure[F]
-          case AuthorizationResult.Blocked(_, owner, alias) => ChangeTemplateResult.Locked(owner, alias).pure[F]
-          case AuthorizationResult.Rejected(reason)         => ChangeTemplateResult.OwnershipRejected(reason).pure[F]
+        templates.findTemplate(template).flatMap[ChangeTemplateResult]:
+          case FindTemplateResult.Found(layout) =>
+            buildReplacement(layout).flatMap: replace =>
+              val mutation =
+                for
+                  _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
+                  target <- composition.findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
+                  fresh  <-
+                    replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
+                  count = target.spread.placements.size
+                  _ <- checkConfirmation(count = count, confirmed = confirmPlacements).leftMap(ChangeTemplateResult.Occupied(_)).eitherT[Db]
+                  _ <- spreads.replace(fresh).lift[ChangeTemplateResult]
+                yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
+              Transaction[Db, F].run(mutation.merge)
+          case FindTemplateResult.NotFound  => (ChangeTemplateResult.Rejected(Conflict.UnknownTemplate): ChangeTemplateResult).pure[F]
+          case FindTemplateResult.Failed(_) => (ChangeTemplateResult.Failed: ChangeTemplateResult).pure[F]
 
     override def delete(
         album: AlbumId,
         spread: SpreadId,
-        confirmPlacements: Boolean,
-        connection: EditorConnection,
-        maybeGrant: Option[GrantId]
+        confirmPlacements: Boolean
     ): F[DeleteResult] =
       val mutation =
         for
@@ -149,10 +124,7 @@ object SpreadManager:
           _ <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = remaining)).lift[DeleteResult]
         yield DeleteResult.Deleted: DeleteResult
       act[DeleteResult](DeleteResult.Failed):
-        sessions.authorizeAffected(connection, Set(EditingTarget.Spread(spread)), maybeGrant).flatMap:
-          case AuthorizationResult.Authorized               => Transaction[Db, F].run(mutation.merge)
-          case AuthorizationResult.Blocked(_, owner, alias) => DeleteResult.Locked(owner, alias).pure[F]
-          case AuthorizationResult.Rejected(reason)         => DeleteResult.OwnershipRejected(reason).pure[F]
+        Transaction[Db, F].run(mutation.merge)
 
     override def readPlacements(album: AlbumId, spread: SpreadId): F[PlacementReadResult] =
       val read = composition.hasAlbum(album).flatMap:
@@ -163,24 +135,20 @@ object SpreadManager:
           ))
       act(PlacementReadResult.Failed)(Transaction[Db, F].run(read))
 
-    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): F[PlacementResult] =
+    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult] =
       act(PlacementResult.Failed):
-        sessions.authorizeTarget(connection, EditingTarget.Spread(spread), grant).flatMap:
-          case AuthorizationResult.Authorized =>
-            preparePlacementEdit(request).flatMap: change =>
-              val mutation = composition.hasAlbum(album).flatMap:
-                case false => PlacementResult.AlbumNotFound.pure[Db]
-                case true  =>
-                  composition.findSpread(album, spread).flatMap:
-                    case None         => PlacementResult.SpreadNotFound.pure[Db]
-                    case Some(target) =>
-                      checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
-                        permission.flatMap(_ => change(target.spread)) match
-                          case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
-                          case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
-              Transaction[Db, F].run(mutation)
-          case AuthorizationResult.Blocked(_, owner, alias) => PlacementResult.Locked(owner, alias).pure[F]
-          case AuthorizationResult.Rejected(reason)         => PlacementResult.OwnershipRejected(reason).pure[F]
+        preparePlacementEdit(request).flatMap: change =>
+          val mutation = composition.hasAlbum(album).flatMap:
+            case false => PlacementResult.AlbumNotFound.pure[Db]
+            case true  =>
+              composition.findSpread(album, spread).flatMap:
+                case None         => PlacementResult.SpreadNotFound.pure[Db]
+                case Some(target) =>
+                  checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
+                    permission.flatMap(_ => change(target.spread)) match
+                      case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
+                      case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
+          Transaction[Db, F].run(mutation)
 
     private def isReplacement(expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
       val observed          = expected.toList.map(_.value)
@@ -200,7 +168,7 @@ object SpreadManager:
 
     private def act[A](failed: A)(body: F[A]) =
       MonadCancelThrow[F].uncancelable: _ =>
-        summon[Mutex[F]].lock.surround(body).handleErrorWith(error => Logger[F].error(error)("Spread action failed").as(failed))
+        body.handleErrorWith(error => Logger[F].error(error)("Spread action failed").as(failed))
 
     private type PlacementChange = Spread => Either[Failure, Spread]
 
@@ -362,7 +330,6 @@ object SpreadManager:
 
   enum ReplacementResult derives CanEqual:
     case Saved, Invalid, NotFound, Stale, Failed, Uncertain
-    case OwnershipRejected(reason: EditorSessionManager.Failure)
 
   enum PlacementReadResult:
     case Found(spread: Spread)
@@ -371,8 +338,6 @@ object SpreadManager:
   enum PlacementResult:
     case Saved(spread: Spread)
     case Rejected(reason: Failure)
-    case Locked(owner: EditorId, alias: EditorAlias)
-    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, SpreadNotFound, Failed
 
   enum Failure derives CanEqual:
@@ -384,21 +349,16 @@ object SpreadManager:
   enum AddResult derives CanEqual:
     case Added(id: SpreadId)
     case Rejected(conflict: Conflict)
-    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, ChapterNotFound, SpreadNotFound, Failed
 
   enum ChangeTemplateResult derives CanEqual:
     case Changed(id: SpreadId, template: SpreadTemplateId)
     case Occupied(placements: Int)
     case Rejected(conflict: Conflict)
-    case Locked(owner: EditorId, alias: EditorAlias)
-    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, SpreadNotFound, Failed
 
   enum DeleteResult derives CanEqual:
     case Deleted
     case Occupied(placements: Int)
     case Rejected(conflict: Conflict)
-    case Locked(owner: EditorId, alias: EditorAlias)
-    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, SpreadNotFound, Failed

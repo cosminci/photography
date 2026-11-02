@@ -9,13 +9,11 @@ import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
-import photography.domain.editing.*
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
 import photography.ports.cover.CoverRepository.Composition
 import photography.ports.photo.PhotoPlacementRepository
 import photography.usecases.cover.CoverManager.*
-import photography.usecases.editing.EditorSessionManager
 import java.util.UUID
 
 class CoverManagerComponentTest extends CatsEffectSuite:
@@ -36,8 +34,6 @@ class CoverManagerComponentTest extends CatsEffectSuite:
   private val first      = CoverPlacement(fresh, cover.front.id, photo, adjusted)
   private val second     = CoverPlacement(otherId, cover.back.id, otherPhoto, initial)
   private val empty      = Composition(cover, placements = Vector.empty[CoverPlacement])
-  private val connection = EditorConnection(SessionId(fresh.value), TabId(fresh.value), ConnectionGeneration(fresh.value))
-  private val grant      = GrantId(fresh.value)
 
   test("should initialize, replace, release and re-place photos without changing cover structure"):
     val placed   = empty.copy(placements = Vector(first.copy(transform = initial)))
@@ -46,11 +42,11 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     for
       state       <- Ref.of[IO, Composition](empty)
       manager     <- buildManager(state)
-      saved       <- manager.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
+      saved       <- manager.edit(cover.album, Edit.Place(cover.front.id, photo))
       read        <- manager.read(cover.album)
-      changed     <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto), connection, grant)
-      removed     <- manager.edit(cover.album, Edit.Remove(fresh), connection, grant)
-      freshResult <- manager.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
+      changed     <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto))
+      removed     <- manager.edit(cover.album, Edit.Remove(fresh))
+      freshResult <- manager.edit(cover.album, Edit.Place(cover.front.id, photo))
     yield
       assertEquals(saved, Result.Saved(placed))
       assertEquals(read, ReadResult.Found(placed))
@@ -66,11 +62,11 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     for
       state      <- Ref.of[IO, Composition](occupied)
       manager    <- buildManager(state)
-      swap       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id), connection, grant)
-      same       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id), connection, grant)
-      adjustment <- manager.edit(cover.album, Edit.Adjust(otherId, adjusted), connection, grant)
-      _          <- manager.edit(cover.album, Edit.Remove(otherId), connection, grant)
-      move       <- manager.edit(cover.album, Edit.Move(fresh, cover.front.id), connection, grant)
+      swap       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id))
+      same       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id))
+      adjustment <- manager.edit(cover.album, Edit.Adjust(otherId, adjusted))
+      _          <- manager.edit(cover.album, Edit.Remove(otherId))
+      move       <- manager.edit(cover.album, Edit.Move(fresh, cover.front.id))
     yield
       assertEquals(swap, Result.Saved(swapped))
       assertEquals(same, swap)
@@ -94,7 +90,7 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       for
         state   <- Ref.of[IO, Composition](occupied)
         manager <- buildManager(state)
-        result  <- manager.edit(cover.album, request, connection, grant)
+        result  <- manager.edit(cover.album, request)
         saved   <- state.get
       yield
         assertEquals(result, Result.Rejected(failure))
@@ -105,10 +101,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     for
       state        <- Ref.of[IO, Composition](empty)
       manager      <- buildManager(state, usedElsewhere = Set(otherPhoto))
-      wrongOwner   <- manager.edit(cover.album, Edit.Place(cover.front.id, foreign), connection, grant)
-      missingPhoto <- manager.edit(cover.album, Edit.Place(cover.front.id, PhotoId(new UUID(0L, 999L))), connection, grant)
-      used         <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto), connection, grant)
-      outcomes     <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(cover.album, Edit.Place(slot, photo), connection, grant))
+      wrongOwner   <- manager.edit(cover.album, Edit.Place(cover.front.id, foreign))
+      missingPhoto <- manager.edit(cover.album, Edit.Place(cover.front.id, PhotoId(new UUID(0L, 999L))))
+      used         <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto))
+      outcomes     <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(cover.album, Edit.Place(slot, photo)))
       saved        <- state.get
     yield
       assertEquals(wrongOwner, Result.Rejected(Failure.PhotoNotInCollection))
@@ -124,18 +120,18 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     for
       state            <- Ref.of[IO, Composition](empty)
       manager          <- buildManager(state)
-      absentManager    <- buildManager(state, target = absent)
+      absentManager    <- buildManager(state)
       broken           <- buildManager(state, readFails = true)
       uninspectable    <- buildManager(state, inspectionFails = true)
       unwritable       <- buildManager(state, writeFails = true)
       vanished         <- buildManager(state, replaceMissing = true)
       absentRead       <- manager.read(absent)
-      absentEdit       <- absentManager.edit(absent, Edit.Place(cover.front.id, photo), connection, grant)
+      absentEdit       <- absentManager.edit(absent, Edit.Place(cover.front.id, photo))
       failedRead       <- broken.read(cover.album)
-      failedEdit       <- broken.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
-      failedInspection <- uninspectable.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
-      failedWrite      <- unwritable.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
-      vanishedWrite    <- vanished.edit(cover.album, Edit.Place(cover.front.id, photo), connection, grant)
+      failedEdit       <- broken.edit(cover.album, Edit.Place(cover.front.id, photo))
+      failedInspection <- uninspectable.edit(cover.album, Edit.Place(cover.front.id, photo))
+      failedWrite      <- unwritable.edit(cover.album, Edit.Place(cover.front.id, photo))
+      vanishedWrite    <- vanished.edit(cover.album, Edit.Place(cover.front.id, photo))
       saved            <- state.get
     yield
       assertEquals(absentRead, ReadResult.CoverNotFound)
@@ -154,8 +150,7 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       readFails: Boolean = false,
       inspectionFails: Boolean = false,
       writeFails: Boolean = false,
-      replaceMissing: Boolean = false,
-      target: AlbumId = cover.album
+      replaceMissing: Boolean = false
   ) =
     val repository = new CoverRepository[IO]:
       override def read(album: AlbumId): IO[CoverRepository.ReadResult] =
@@ -182,15 +177,9 @@ class CoverManagerComponentTest extends CatsEffectSuite:
             else PhotoPlacementRepository.InspectResult.Found(inCollection = requested.value =!= foreign.value, placed = used)
     given IdGenerator[IO] with
       override def generateId: IO[UUID] = fresh.value.pure[IO]
-    given Transaction[IO, IO] with
-      override def run[A](program: IO[A]): IO[A]     = program
-      override def resolve[A](program: IO[A]): IO[A] = program
-    Mutex[IO].flatMap: mutex =>
-      given Mutex[IO] = mutex
-      for
-        sessions <- EditorSessionManager.make[IO](lease = 30L)
-        _        <- sessions.register(EditorId(fresh.value), "Owner", maybeSession = None)
-        _        <- sessions.bind(connection.session, connection.tab)
-        _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(target))
-      yield CoverManager.make[IO, IO](repository, photos, sessions)
+    Mutex[IO].map: mutex =>
+      given Transaction[IO, IO] with
+        override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
+        override def resolve[A](program: IO[A]): IO[A] = mutex.lock.surround(program)
+      CoverManager.make[IO, IO](repository, photos)
   // scalafix:on DisableSyntax.defaultArgs

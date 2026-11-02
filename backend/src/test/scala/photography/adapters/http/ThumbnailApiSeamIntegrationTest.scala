@@ -19,7 +19,7 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
   private val uri                           = Uri.unsafeFromString(s"/thumbnails/${location.value}/$version.jpg")
 
   test("should translate versioned delivery into immutable JPEG responses and honor conditional GET and HEAD"):
-    val app        = ThumbnailApi.make(buildStorage(ThumbnailStorage.ReadResult.Read(bytes).pure[IO])).routes.orNotFound
+    val app        = PublicRoutes(ThumbnailApi.make(buildStorage(ThumbnailStorage.ReadResult.Read(bytes).pure[IO]))).orNotFound
     val conditions = Vector("*" -> Status.NotModified, s"""W/"$version"""" -> Status.NotModified, """"different"""" -> Status.Ok)
 
     for
@@ -58,13 +58,13 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
     val failures = Vector(ThumbnailStorage.ReadResult.NotFound -> Status.NotFound, ThumbnailStorage.ReadResult.Failed -> Status.InternalServerError)
 
     paths.traverse_(path =>
-      ThumbnailApi.make(forbidden).routes.orNotFound.run(Request[IO](uri = Uri.unsafeFromString(path))).map(r =>
+      PublicRoutes(ThumbnailApi.make(forbidden)).orNotFound.run(Request[IO](uri = Uri.unsafeFromString(path))).map(r =>
         assertEquals(r.status, Status.NotFound)
       )
     ) >>
       failures.traverse_ { case (result, expected) =>
         val service = buildStorage(result.pure[IO])
-        ThumbnailApi.make(service).routes.orNotFound.run(Request[IO](uri = uri)).map(r => assertEquals(r.status, expected))
+        PublicRoutes(ThumbnailApi.make(service)).orNotFound.run(Request[IO](uri = uri)).map(r => assertEquals(r.status, expected))
       }
 
   private def buildStorage(response: IO[ThumbnailStorage.ReadResult]) =

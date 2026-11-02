@@ -4,20 +4,20 @@ import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.github.iltotore.iron.*
-import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Query, QueryParamDecoder, QueryParameterValue, Request}
+import org.http4s.{CacheDirective, MessageBodyFailure, Query, QueryParamDecoder, QueryParameterValue, Request, Response}
 import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
-import photography.domain.album.{Album, AlbumId, AlbumTitle, AlbumYear, AlbumYearConstraint, Author}
+import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, AlbumYear, AlbumYearConstraint, Author}
 import io.github.iltotore.iron.constraint.all.*
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
-import photography.adapters.http.EditorCredentials.*
+import photography.adapters.http.Routes.Route
+import photography.usecases.editing.EditingAccess.Protection
 import photography.ports.album.AlbumRepository
 import java.util.UUID
 
-trait AlbumApi[F[_]]:
-  def routes: HttpRoutes[F]
+trait AlbumApi[F[_]] extends Routes[F]
 
 object AlbumApi:
   def make[F[_]: Async](albums: AlbumManager[F], metadata: AlbumRepository.MetadataRead[F]): AlbumApi[F] =
@@ -25,21 +25,20 @@ object AlbumApi:
 
   final private class LiveAlbumApi[F[_]: Async](albums: AlbumManager[F], metadata: AlbumRepository.MetadataRead[F])
       extends AlbumApi[F] with Http4sDsl[F]:
-    override def routes: HttpRoutes[F] =
-      HttpRoutes.of[F] {
-        case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => saveSynopsis(AlbumId(id), request)
-        case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
-        case PUT -> Root / "api" / "albums" / _ / "authors"                          =>
-          respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-        case PUT -> Root / "api" / "albums" / _ / "synopsis"             => respondAlbumNotFound
-        case request @ GET -> Root / "api" / "albums"                    => list(request.uri.query)
-        case request @ POST -> Root / "api" / "albums"                   => create(request)
-        case GET -> Root / "api" / "albums" / CanonicalId(id)            => read(AlbumId(id))
-        case GET -> Root / "api" / "albums" / _                          => respondAlbumNotFound
-        case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => rename(id, request)
-        case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => delete(id)
-        case (PATCH | DELETE) -> Root / "api" / "albums" / _             => respondAlbumNotFound
-      }
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => Route.public(saveSynopsis(AlbumId(id), request))
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
+      case PUT -> Root / "api" / "albums" / _ / "authors"                          =>
+        Route.public(respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
+      case PUT -> Root / "api" / "albums" / _ / "synopsis"             => Route.public(respondAlbumNotFound)
+      case request @ GET -> Root / "api" / "albums"                    => Route.public(list(request.uri.query))
+      case request @ POST -> Root / "api" / "albums"                   => Route.public(create(request))
+      case GET -> Root / "api" / "albums" / CanonicalId(id)            => Route.public(read(AlbumId(id)))
+      case GET -> Root / "api" / "albums" / _                          => Route.public(respondAlbumNotFound)
+      case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => Route.public(rename(id, request))
+      case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => Route.public(delete(id))
+      case (PATCH | DELETE) -> Root / "api" / "albums" / _             => Route.public(respondAlbumNotFound)
+    }
 
     private def read(id: AlbumId) =
       metadata.metadata(id).flatMap:
@@ -62,23 +61,23 @@ object AlbumApi:
       }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
 
     private def saveAuthors(album: AlbumId, request: Request[F]) =
-      readConnection(request).fold(
-        message => BadRequest(Map("code" -> message)),
-        connection =>
-          request.as[Json].flatMap { value =>
-            authorsDecoder.decodeJson(value).fold(
-              _ => BadRequest(body = invalidAuthors),
-              authors =>
-                albums.saveAuthors(album, authors, connection).flatMap {
-                  case SaveAuthorsResult.Saved(updated)            => Ok(buildMetadata(updated))
-                  case SaveAuthorsResult.NotFound                  => respondAlbumNotFound
-                  case SaveAuthorsResult.Failed                    => respondServiceFailure
-                  case SaveAuthorsResult.Uncertain                 => respondUncertain
-                  case SaveAuthorsResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
-                }
-            )
-          }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors) }
-      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+      val decode = request.as[Json].flatMap { value =>
+        authorsDecoder.decodeJson(value).fold(
+          _ => BadRequest(body = invalidAuthors).map(_.asLeft[AlbumAuthors]),
+          _.asRight[Response[F]].pure[F]
+        )
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors).map(_.asLeft[AlbumAuthors]) }
+      Route(
+        Routes.Access.Editor(Protection.ActiveTab),
+        decode,
+        (authors: AlbumAuthors) =>
+          albums.saveAuthors(album, authors).flatMap {
+            case SaveAuthorsResult.Saved(updated) => Ok(buildMetadata(updated))
+            case SaveAuthorsResult.NotFound       => respondAlbumNotFound
+            case SaveAuthorsResult.Failed         => respondServiceFailure
+            case SaveAuthorsResult.Uncertain      => respondUncertain
+          }
+      )
 
     private def buildMetadata(album: Album) =
       AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)

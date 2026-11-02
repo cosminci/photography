@@ -1,9 +1,12 @@
 package photography.adapters.http
 
+import photography.adapters.http.Routes.Route
+import org.http4s.Request
+
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Encoder
-import org.http4s.{CacheDirective, HttpRoutes}
+import org.http4s.CacheDirective
 import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
@@ -12,8 +15,7 @@ import photography.ports.spread.SpreadTemplateRepository
 import photography.ports.spread.SpreadTemplateRepository.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
 import photography.ports.spread.SpreadTemplateRepository.ListPhotosOnlyTemplatesResult
 
-trait SpreadTemplateApi[F[_]]:
-  def routes: HttpRoutes[F]
+trait SpreadTemplateApi[F[_]] extends Routes[F]
 
 object SpreadTemplateApi:
   def make[F[_]: Async](templates: SpreadTemplateRepository[F]): SpreadTemplateApi[F] =
@@ -21,19 +23,23 @@ object SpreadTemplateApi:
 
   final private class LiveSpreadTemplateApi[F[_]: Async](templates: SpreadTemplateRepository[F])
       extends SpreadTemplateApi[F] with Http4sDsl[F]:
-    override def routes: HttpRoutes[F] = HttpRoutes.of[F]:
-      case GET -> Root / "api" / "templates" / "album-start" =>
-        templates.listAlbumStartTemplates.flatMap:
-          case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-          case ListAlbumStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
-      case GET -> Root / "api" / "templates" / "chapter-start" =>
-        templates.listChapterStartTemplates.flatMap:
-          case listed: ListChapterStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-          case ListChapterStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
-      case GET -> Root / "api" / "templates" / "photos-only" =>
-        templates.listPhotosOnlyTemplates.flatMap:
-          case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-          case ListPhotosOnlyTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case GET -> Root / "api" / "templates" / "album-start" => Route.public {
+          templates.listAlbumStartTemplates.flatMap:
+            case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case ListAlbumStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+        }
+      case GET -> Root / "api" / "templates" / "chapter-start" => Route.public {
+          templates.listChapterStartTemplates.flatMap:
+            case listed: ListChapterStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case ListChapterStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+        }
+      case GET -> Root / "api" / "templates" / "photos-only" => Route.public {
+          templates.listPhotosOnlyTemplates.flatMap:
+            case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case ListPhotosOnlyTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+        }
+    }
 
     private given Encoder[(String, SlotBox)] = Encoder.forProduct5("kind", "x", "y", "width", "height"): slot =>
       val (kind, box) = slot
