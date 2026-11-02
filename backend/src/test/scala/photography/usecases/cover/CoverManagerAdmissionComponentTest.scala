@@ -1,6 +1,6 @@
 package photography.usecases.cover
 
-import cats.effect.{Deferred, IO, Ref}
+import cats.effect.{Clock, Deferred, IO, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
@@ -48,11 +48,11 @@ class CoverManagerAdmissionComponentTest extends CatsEffectSuite:
         for
           sessions <- EditorSessionManager.make[IO](lease = 30L)
           owner    <- bind(sessions, owner = 1L)
-          other    <- bind(sessions, owner = 2L)
           selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album))
           lock = selected match
             case SelectResult.Owned(value, _) => value
             case _                            => fail("Expected Cover ownership")
+          other          <- bind(sessions, owner = 2L)
           otherSelection <- sessions.select(other, TargetRevision.initial, EditingTarget.Cover(AlbumId(new UUID(0L, 99L))))
           otherLock = otherSelection match
             case SelectResult.Owned(value, _) => value
@@ -119,7 +119,6 @@ class CoverManagerAdmissionComponentTest extends CatsEffectSuite:
           for
             sessions <- EditorSessionManager.make[IO](lease = 30L)
             owner    <- bind(sessions, owner = 1L)
-            other    <- bind(sessions, owner = 2L)
             selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album))
             lock = selected match
               case SelectResult.Owned(value, _) => value
@@ -136,10 +135,12 @@ class CoverManagerAdmissionComponentTest extends CatsEffectSuite:
             contender <- (for
               _          <- attempting.complete(())
               connection <- bind(sessions, owner = 2L)
+              acquiredAt <- Clock[IO].monotonic
               acquired   <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(album))
+              ownership  <- sessions.readTarget(connection)
               saved      <- manager.read(album)
               _          <- completed.complete(())
-            yield (acquired, saved)).start
+            yield (connection, acquiredAt, acquired, ownership, saved)).start
             _         <- attempting.get
             _         <- IO.sleep(1.second)
             waiting   <- completed.tryGet
@@ -149,15 +150,22 @@ class CoverManagerAdmissionComponentTest extends CatsEffectSuite:
             rejected  <- manager.edit(album, place, owner, lock.grant)
             saved     <- state.get
           yield
-            assertEquals(committed, CoverManager.Result.Saved(saved))
+            val placementId = saved.placements match
+              case Vector(value) => value.id
+              case _             => fail("Expected exactly one saved placement")
+            val initial  = PhotoTransform(Shift(x = 0.0, y = 0.0), mirrored = false, zoom = 1.0)
+            val expected = empty.copy(placements = Vector(CoverPlacement(placementId, cover.front.id, photo, initial)))
+            assertEquals(saved, expected)
+            assertEquals(committed, CoverManager.Result.Saved(expected))
             assertEquals(waiting, none[Unit])
-            assertEquals(saved.placements.map(value => (value.slot, value.photo)), Vector((cover.front.id, photo)))
             observed match
-              case (SelectResult.Owned(value, revision), read) =>
-                assertEquals(value.target, EditingTarget.Cover(album))
-                assertEquals(value.session.value === other.session.value, false)
+              case (connection, acquiredAt, SelectResult.Owned(value, revision), ownership, read) =>
+                val expectedLock = EditingLock(EditingTarget.Cover(album), connection.session, value.grant, acquiredAt + 30.seconds)
+                assertEquals(value, expectedLock)
+                assertEquals(value.grant.value =!= lock.grant.value, true)
                 assertEquals(revision, TargetRevision.initial.next)
-                assertEquals(read, CoverManager.ReadResult.Found(saved))
+                assertEquals(ownership, ReadTargetResult.Current(TargetRevision.initial.next, Some(expectedLock)))
+                assertEquals(read, CoverManager.ReadResult.Found(expected))
               case _ => fail("Expected acquisition after committed write")
             assertEquals(rejected, CoverManager.Result.OwnershipRejected(Failure.StaleSession))
         }

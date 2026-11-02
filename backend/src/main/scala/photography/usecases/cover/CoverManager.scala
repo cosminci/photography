@@ -43,22 +43,21 @@ object CoverManager:
       coordinate(Result.Failed):
         sessions.authorizeTarget(connection, EditingTarget.Cover(album), grant).flatMap:
           case AuthorizationResult.Authorized =>
-            prepareEdit(request).flatMap(change => Transaction[Db, F].run(saveEdit(album, request, change)))
+            prepareEdit(request).flatMap: change =>
+              val mutation = covers.read(album).flatMap:
+                case CoverRepository.ReadResult.NotFound       => Result.CoverNotFound.pure[Db]
+                case CoverRepository.ReadResult.Found(current) =>
+                  checkPhoto(album, request).flatMap: permission =>
+                    val slots = Set(current.cover.front.id, current.cover.back.id)
+                    permission.flatMap(_ => change(slots, current.placements)) match
+                      case Left(reason)  => Result.Rejected(reason).pure[Db]
+                      case Right(values) =>
+                        covers.replace(album, placements = values).map[Result]:
+                          case CoverRepository.ReplaceResult.Replaced => Result.Saved(current.copy(placements = values))
+                          case CoverRepository.ReplaceResult.NotFound => Result.CoverNotFound
+              Transaction[Db, F].run(mutation)
           case AuthorizationResult.Blocked(_, owner, alias) => Result.Locked(owner, alias).pure[F]
           case AuthorizationResult.Rejected(reason)         => Result.OwnershipRejected(reason).pure[F]
-
-    private def saveEdit(album: AlbumId, request: Edit, change: Change) =
-      covers.read(album).flatMap:
-        case CoverRepository.ReadResult.NotFound       => Result.CoverNotFound.pure[Db]
-        case CoverRepository.ReadResult.Found(current) =>
-          checkPhoto(album, request).flatMap: permission =>
-            val slots = Set(current.cover.front.id, current.cover.back.id)
-            permission.flatMap(_ => change(slots, current.placements)) match
-              case Left(reason)  => Result.Rejected(reason).pure[Db]
-              case Right(values) =>
-                covers.replace(album, placements = values).map[Result]:
-                  case CoverRepository.ReplaceResult.Replaced => Result.Saved(current.copy(placements = values))
-                  case CoverRepository.ReplaceResult.NotFound => Result.CoverNotFound
 
     private type Change = (Set[CoverSlotId], Vector[CoverPlacement]) => Either[Failure, Vector[CoverPlacement]]
 
