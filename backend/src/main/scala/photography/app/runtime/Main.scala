@@ -13,6 +13,7 @@ import photography.adapters.http.{AlbumApi, AlbumSpreadApi, AlbumCompositionApi,
 import photography.adapters.filesystem.FileThumbnailStorage
 import photography.adapters.http.{AlbumPhotoEventsApi, ThumbnailApi}
 import photography.adapters.http.PhotoPlacementApi
+import photography.adapters.http.EditorSessionApi
 import photography.adapters.http.ChapterCompositionApi
 import photography.adapters.http.PhotoSourceApi
 import photography.adapters.http.{GearApi, PhotosApi}
@@ -63,7 +64,7 @@ object Main extends IOApp.Simple:
     val thumbnailApi = ThumbnailApi.make(thumbnails).routes
     val events       = AlbumPhotoEventsApi.make(managers.photoEvents).routes
     val placements   = PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
-    val api          = HealthRoutes.routes[IO] <+> albums <+> chapters <+> events <+> thumbnailApi <+>
+    val api = HealthRoutes.routes[IO] <+> EditorSessionApi.make(managers.editorSessions) <+> albums <+> chapters <+> events <+> thumbnailApi <+>
       AlbumCompositionApi.make(managers.membership) <+> CountryApi.make(managers.countries) <+> PhotoSourceApi.make(photoRoot) <+>
       SpreadTemplateApi.make(managers.templates).routes <+> GearApi.make(managers.gear).routes <+> photos <+>
       ChapterCompositionApi.make(managers.spreads) <+> AlbumSpreadApi.make(managers.spreads).routes <+> placements
