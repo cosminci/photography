@@ -36,7 +36,8 @@ final case class EditorConnection(session: SessionId, tab: TabId, generation: Co
 
 opaque type TargetRevision = BigInt
 object TargetRevision:
-  val initial: TargetRevision = BigInt(0)
+  val initial: TargetRevision                     = BigInt(0)
+  def from(value: BigInt): Option[TargetRevision] = Option.when(value >= 0)(value)
   extension (revision: TargetRevision)
     def next: TargetRevision = revision + 1
     def value: BigInt        = revision

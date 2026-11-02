@@ -85,6 +85,80 @@
         }
       }
     },
+    "/api/editor-session/target": {
+      "parameters": [
+        { "$ref": "#/components/parameters/EditorSession" },
+        { "$ref": "#/components/parameters/EditorTab" },
+        { "$ref": "#/components/parameters/EditorGeneration" }
+      ],
+      "get": {
+        "operationId": "readEditorTarget",
+        "summary": "Reconcile current target ownership without renewal",
+        "description": "Returns the current session-scoped transition revision and private grant, or null when no target is owned. Use after lost acknowledgements and before deciding on a new transition. This read does not renew either lease. All target responses are Cache-Control: no-store; credentials are single canonical UUID headers, never URL parameters.",
+        "responses": {
+          "200": { "description": "Current target state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EditorTargetState" } } } },
+          "400": { "$ref": "#/components/responses/EditorTargetInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      },
+      "put": {
+        "operationId": "selectEditorTarget",
+        "summary": "Release the previous target and attempt exclusive acquisition",
+        "description": "Supply the last reconciled revision. Success creates a fresh grant even for the same target. Destination contention releases the prior grant and returns an advanced revision with public owner information, never the owner's private session or grant. A stale revision rejects without changing current ownership. Lost acknowledgement requires GET reconciliation, not automatic replay. Selection establishes authority only; clients must separately reconcile saved content before editing.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["revision", "target"], "additionalProperties": false,
+          "properties": {
+            "revision": { "$ref": "#/components/schemas/EditorTargetRevision" },
+            "target": { "$ref": "#/components/schemas/EditingTarget" }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "New exact grant and advanced revision; grant is nonnull", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EditorTargetState" } } } },
+          "400": { "$ref": "#/components/responses/EditorTargetInvalid" },
+          "409": { "description": "Rejected credentials/transition, or destination owned by another session", "content": { "application/json": { "schema": {
+            "oneOf": [
+              { "type": "object", "required": ["code"], "additionalProperties": false,
+                "properties": { "code": { "enum": ["stale_session", "obsolete_connection", "stale_transition", "stale_grant"] } } },
+              { "type": "object", "required": ["code", "ownerId", "alias", "remainingMillis", "revision"], "additionalProperties": false,
+                "properties": {
+                  "code": { "const": "target_locked" }, "ownerId": { "type": "string", "format": "uuid" },
+                  "alias": { "type": "string", "pattern": "\\S" }, "remainingMillis": { "type": "integer", "minimum": 0 },
+                  "revision": { "$ref": "#/components/schemas/EditorTargetRevision" }
+                } }
+            ]
+          } } } }
+        }
+      },
+      "post": {
+        "operationId": "renewEditorTarget",
+        "summary": "Renew only the exact live target grant",
+        "description": "No body. Accepted renewal extends this grant by 30 seconds; send every 10 seconds independently of session heartbeat. Does not renew the session or revive an expired/released grant. An attempted request extends nothing.",
+        "parameters": [{ "name": "X-Editor-Grant", "in": "header", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Renewed private grant", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EditorTargetGrant" } } } },
+          "400": { "$ref": "#/components/responses/EditorTargetInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      },
+      "delete": {
+        "operationId": "releaseEditorTarget",
+        "summary": "Release the exact grant while retaining its session",
+        "description": "Supply the current transition revision and exact grant header. An obsolete grant or revision cannot release newer ownership. Reconcile a lost acknowledgement with GET before further transitions.",
+        "parameters": [{ "name": "X-Editor-Grant", "in": "header", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["revision"], "additionalProperties": false,
+          "properties": { "revision": { "$ref": "#/components/schemas/EditorTargetRevision" } }
+        } } } },
+        "responses": {
+          "200": { "description": "Confirmed release with advanced revision", "content": { "application/json": { "schema": {
+            "type": "object", "required": ["revision"], "additionalProperties": false,
+            "properties": { "revision": { "$ref": "#/components/schemas/EditorTargetRevision" } }
+          } } } },
+          "400": { "$ref": "#/components/responses/EditorTargetInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      }
+    },
     "/api/gear": {
       "get": {
         "operationId": "readGearCatalog",
@@ -1273,6 +1347,14 @@
           }
         } } }
       },
+      "EditorTargetInvalid": {
+        "description": "Malformed target body or missing, malformed or repeated private credentials; authority is not changed",
+        "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+        "content": { "application/json": { "schema": {
+          "type": "object", "required": ["code"], "additionalProperties": false,
+          "properties": { "code": { "enum": ["invalid_target_request", "missing_credentials", "invalid_credentials"] } }
+        } } }
+      },
       "EditorSessionInvalid": {
         "description": "Malformed registration or missing, malformed or repeated credential headers",
         "content": { "application/json": { "schema": {
@@ -1602,6 +1684,32 @@
       }
     },
     "schemas": {
+      "EditorTargetRevision": {
+        "type": "string", "pattern": "^(0|[1-9][0-9]*)$",
+        "description": "Unbounded nonnegative transition counter, encoded as canonical decimal text to avoid JavaScript number precision loss."
+      },
+      "EditingTarget": {
+        "type": "object", "required": ["kind", "id"], "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["spread", "cover"] },
+          "id": { "type": "string", "format": "uuid", "description": "SpreadId for spread; AlbumId for the single full Cover target covering both sides." }
+        }
+      },
+      "EditorTargetGrant": {
+        "type": "object", "required": ["target", "grantId", "remainingMillis"], "additionalProperties": false,
+        "properties": {
+          "target": { "$ref": "#/components/schemas/EditingTarget" },
+          "grantId": { "type": "string", "format": "uuid", "description": "Private exact acquisition credential; subsequent requests carry it in X-Editor-Grant." },
+          "remainingMillis": { "type": "integer", "minimum": 0, "description": "Elapsed-time lease guidance at response encoding, clamped to zero. Never authority to edit or a promise of renewal." }
+        }
+      },
+      "EditorTargetState": {
+        "type": "object", "required": ["revision", "grant"], "additionalProperties": false,
+        "properties": {
+          "revision": { "$ref": "#/components/schemas/EditorTargetRevision" },
+          "grant": { "oneOf": [{ "$ref": "#/components/schemas/EditorTargetGrant" }, { "type": "null" }] }
+        }
+      },
       "Camera": {
         "allOf": [
           {

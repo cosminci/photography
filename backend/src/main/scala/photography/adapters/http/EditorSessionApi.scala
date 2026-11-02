@@ -1,6 +1,6 @@
 package photography.adapters.http
 
-import cats.effect.{Async, Resource}
+import cats.effect.{Async, Clock, Resource}
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.{Decoder, Json}
@@ -10,6 +10,8 @@ import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.typelevel.ci.CIString
 import photography.domain.editing.*
+import photography.domain.album.AlbumId
+import photography.domain.layout.SpreadId
 import photography.usecases.editing.EditorSessionManager
 import photography.usecases.editing.EditorSessionManager.*
 
@@ -42,6 +44,53 @@ object EditorSessionApi:
             case HeartbeatResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
           }
         )
+      case request @ GET -> Root / "api" / "editor-session" / "target" =>
+        withConnection(request)(connection =>
+          sessions.readTarget(connection).flatMap {
+            case ReadTargetResult.Current(revision, maybeLock) =>
+              maybeLock.traverse(encodeGrant).flatMap(lock => Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> lock.getOrElse(Json.Null)))))
+            case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+          }
+        )
+      case request @ PUT -> Root / "api" / "editor-session" / "target" =>
+        withConnection(request)(connection =>
+          withBody(request, selection) { case (revision, target) =>
+            sessions.select(connection, revision, target).flatMap {
+              case SelectResult.Owned(lock, current) =>
+                encodeGrant(lock).flatMap(grant => Ok(encodeRevision(current).deepMerge(Json.obj("grant" -> grant))))
+              case SelectResult.Blocked(owner, alias, expiresAt, current) =>
+                remaining(expiresAt).flatMap(millis =>
+                  Conflict(encodeRevision(current).deepMerge(Json.obj(
+                    "code"            -> Json.fromString("target_locked"),
+                    "ownerId"         -> Json.fromString(owner.value.toString),
+                    "alias"           -> Json.fromString(alias),
+                    "remainingMillis" -> Json.fromLong(millis)
+                  )))
+                )
+              case SelectResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+            }
+          }
+        )
+      case request @ POST -> Root / "api" / "editor-session" / "target" =>
+        withConnection(request)(connection =>
+          withGrant(request)(grant =>
+            sessions.renewTarget(connection, grant).flatMap {
+              case RenewTargetResult.Renewed(lock)    => encodeGrant(lock).flatMap(Ok(_))
+              case RenewTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+            }
+          )
+        )
+      case request @ DELETE -> Root / "api" / "editor-session" / "target" =>
+        withConnection(request)(connection =>
+          withGrant(request)(grant =>
+            withBody(request, releaseRevision)(revision =>
+              sessions.release(connection, revision, grant).flatMap {
+                case ReleaseResult.Released(current) => Ok(encodeRevision(current))
+                case ReleaseResult.Rejected(reason)  => Conflict(code(encodeFailure(reason)))
+              }
+            )
+          )
+        )
 
     private def register(request: Request[F]) =
       request.attemptAs[Json].value.flatMap {
@@ -63,6 +112,53 @@ object EditorSessionApi:
         requiredId(request, "X-Editor-Generation")
       ).mapN((session, tab, generation) => EditorConnection(SessionId(session), TabId(tab), ConnectionGeneration(generation)))
       parsed.fold(message => BadRequest(code(message)), run).map(_.putHeaders("Cache-Control" -> "no-store"))
+
+    private def withGrant(request: Request[F])(run: GrantId => F[Response[F]]) =
+      requiredId(request, "X-Editor-Grant").fold(message => BadRequest(code(message)), id => run(GrantId(id)))
+
+    private def withBody[A](request: Request[F], decoder: Decoder[A])(run: A => F[Response[F]]) =
+      request.attemptAs[Json].value.flatMap {
+        case Left(_)     => BadRequest(code("invalid_target_request"))
+        case Right(body) => decoder.decodeJson(body).fold(_ => BadRequest(code("invalid_target_request")), run)
+      }
+
+    private val revision = Decoder.decodeString.emap(value =>
+      Either.catchOnly[NumberFormatException](BigInt(value)).toOption.flatMap(TargetRevision.from)
+        .filter(_.value.toString === value).toRight("Invalid target revision")
+    )
+
+    private val target = Decoder.forProduct2("kind", "id")((kind: String, id: String) => (kind, id)).emap { case (kind, id) =>
+      parseId(id).flatMap { parsed =>
+        kind match
+          case "spread" => EditingTarget.Spread(SpreadId(parsed)).asRight[String]
+          case "cover"  => EditingTarget.Cover(AlbumId(parsed)).asRight[String]
+          case _        => "Invalid target kind".asLeft[EditingTarget]
+      }
+    }.validate(_.keys.exists(_.toSet === Set("kind", "id")), "Invalid target")
+
+    private val selection = Decoder.forProduct2("revision", "target")((current: TargetRevision, destination: EditingTarget) =>
+      (current, destination)
+    )(using revision, target).validate(_.keys.exists(_.toSet === Set("revision", "target")), "Invalid selection")
+
+    private val releaseRevision = Decoder.forProduct1("revision")((current: TargetRevision) => current)(using revision)
+      .validate(_.keys.exists(_.toSet === Set("revision")), "Invalid release")
+
+    private def encodeRevision(current: TargetRevision) = Json.obj("revision" -> Json.fromString(current.value.toString))
+
+    private def encodeGrant(lock: EditingLock) =
+      val (kind, id) = lock.target match
+        case EditingTarget.Spread(spread) => ("spread", spread.value)
+        case EditingTarget.Cover(album)   => ("cover", album.value)
+      remaining(lock.expiresAt).map(millis =>
+        Json.obj(
+          "target"          -> Json.obj("kind" -> Json.fromString(kind), "id" -> Json.fromString(id.toString)),
+          "grantId"         -> Json.fromString(lock.grant.value.toString),
+          "remainingMillis" -> Json.fromLong(millis)
+        )
+      )
+
+    private def remaining(expiresAt: FiniteDuration) =
+      Clock[F].monotonic.map(now => (expiresAt - now).toMillis.max(0L))
 
     private def bind(session: SessionId, tab: TabId) =
       val binding = Resource.make(sessions.bind(session, tab)) {
