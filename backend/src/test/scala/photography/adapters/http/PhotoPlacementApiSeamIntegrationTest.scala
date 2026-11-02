@@ -593,10 +593,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           chapter: ChapterId,
           expected: NonEmptyList[SpreadId],
-          order: NonEmptyList[SpreadId]
+          order: NonEmptyList[SpreadId],
+          connection: EditorConnection
       ): IO[SpreadManager.ReplacementResult] =
         IO.raiseError[SpreadManager.ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
-      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[SpreadManager.AddResult] =
+      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): IO[SpreadManager.AddResult] =
         IO.raiseError[SpreadManager.AddResult](new AssertionError("Unexpected structural add"))
       override def changeTemplate(
           album: AlbumId,

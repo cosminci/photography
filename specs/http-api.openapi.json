@@ -904,7 +904,11 @@
       "post": {
         "operationId": "addSpread",
         "summary": "Insert a default photo spread after a chapter opening or photo spread",
-        "description": "Inserts the seeded 8-4x2 layout immediately after an owned target in the requested chapter. Openings and other chapter blocks stay in place. The 65-interior-spread limit includes openings and excludes Cover. Invalid or foreign afterSpreadId returns 400 or 404 spread_not_found respectively; an album-opening target returns 400. Each action commits atomically under the single backend instance's chapter-mutation lock.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "description": "Requires a live bound connection, not a target grant; another session's target lock does not block insertion. Admission, current membership/capacity reads and atomic insertion share backend coordination. Inserts the seeded 8-4x2 layout immediately after a target in the requested chapter, preserving existing identities, content, placements and grants. Openings and other chapter blocks stay in place. The 65-interior-spread limit includes openings and excludes Cover. Invalid or foreign afterSpreadId returns 400 or 404 spread_not_found respectively; an album-opening target returns 400. Every matched response is no-store. Reconcile authoritative composition after lost acknowledgement; never automatically replay an uncertain insertion.",
         "requestBody": {
           "required": true,
           "content": {
@@ -925,8 +929,9 @@
         },
         "responses": {
           "201": { "$ref": "#/components/responses/SpreadIdentity" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/AddSpreadTargetNotFound" },
+          "409": { "description": "Rejected before mutation; reconcile current session/tab authority", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["stale_session", "obsolete_connection"] } } } } } },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -939,7 +944,11 @@
       "put": {
         "operationId": "replaceChapterComposition",
         "summary": "Replace a chapter's complete spread order",
-        "description": "Retains the opening first and every existing spread exactly once. expectedSpreadIds is the order the browser observed. A concurrent change returns 409 without writing. Comparison and replacement share backend mutation coordination; replacement commits in a database transaction. Failed pre-write acquisition returns service_failure. Uncertain acknowledgement returns write_uncertain; reread before retrying.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "description": "Requires a live bound connection, not a target grant; target locks do not block reordering or lose their authority when spreads move. Retains the opening first and every existing spread exactly once, preserving identities, content and placements. expectedSpreadIds is the order the browser observed. A concurrent change returns 409 without writing. Admission, comparison and replacement share backend mutation coordination; a live-admitted write may finish across expiry before waiting acquisitions proceed. Replacement commits in a database transaction. Waiting for coordination remains cancellable. Failed pre-write acquisition returns service_failure. Uncertain acknowledgement returns write_uncertain; reread before retrying. Every matched response is no-store.",
         "requestBody": {
           "required": true,
           "content": {
@@ -957,9 +966,9 @@
         },
         "responses": {
           "204": { "description": "Saved order" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/ChapterNotFound" },
-          "409": { "description": "Composition changed since the supplied expected order", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "const": "composition_changed" } } } } } },
+          "409": { "description": "Composition changed since the supplied expected order, or session/tab authority is stale; reconcile without replaying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["composition_changed", "stale_session", "obsolete_connection"] } } } } } },
           "500": { "description": "Pre-write acquisition failed, or write acknowledgement is uncertain; uncertain writes require rereading before retrying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["service_failure", "write_uncertain"] } } } } } }
         }
       }

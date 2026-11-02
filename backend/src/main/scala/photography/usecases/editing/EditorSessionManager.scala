@@ -20,6 +20,7 @@ trait EditorSessionManager[F[_]]:
   def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): F[EditorSessionManager.ReleaseResult]
   def renewTarget(connection: EditorConnection, grant: GrantId): F[EditorSessionManager.RenewTargetResult]
   def readTarget(connection: EditorConnection): F[EditorSessionManager.ReadTargetResult]
+  def authorizeConnection(connection: EditorConnection): F[EditorSessionManager.ConnectionAuthorizationResult]
   def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): F[EditorSessionManager.AuthorizationResult]
   def authorizeAffected(
       connection: EditorConnection,
@@ -127,6 +128,12 @@ object EditorSessionManager:
         yield findConnection(current, connection) match
           case Left(failure)  => ReadTargetResult.Rejected(failure)
           case Right(session) => ReadTargetResult.Current(session.targetRevision, current.locks.find(_.session.value === session.id.value))
+      }
+
+    override def authorizeConnection(connection: EditorConnection): F[ConnectionAuthorizationResult] =
+      inspect(connection).map {
+        case Left(failure) => ConnectionAuthorizationResult.Rejected(failure)
+        case Right(_)      => ConnectionAuthorizationResult.Authorized
       }
 
     override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): F[AuthorizationResult] =
@@ -292,6 +299,10 @@ object EditorSessionManager:
 
   enum ReadTargetResult:
     case Current(revision: TargetRevision, maybeLock: Option[EditingLock])
+    case Rejected(failure: Failure)
+
+  enum ConnectionAuthorizationResult:
+    case Authorized
     case Rejected(failure: Failure)
 
   enum AuthorizationResult:

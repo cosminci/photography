@@ -37,6 +37,102 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
   private val spread  = Spread.PhotosOnly(SpreadId(new UUID(0L, 5L)), SpreadTemplateId(new UUID(0L, 6L)), NonEmptyList.one(slot), Vector.empty)
   private val layout  = SpreadTemplate.PhotosOnly(SpreadTemplateId(new UUID(0L, 7L)), name = "Replacement", NonEmptyList.one(box))
 
+  test("should insert and reorder without a target grant despite another browser's lock, but reject obsolete and expired connections"):
+    TestControl.executeEmbed:
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val order       = NonEmptyList.of(opening, spread.id)
+        for
+          sessions <- EditorSessionManager.make[IO](lease = 30L)
+          owner    <- bind(sessions, owner = 1L)
+          selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Spread(spread.id))
+          editor   <- bind(sessions, owner = 2L)
+          state    <- Ref.of[IO, Option[Spread]](Some(spread))
+          writes   <- Ref.of[IO, Int](0)
+          manager = buildManager(state, sessions, writes.update(_ + 1))
+          added <- manager.add(album, chapter, spread.id, editor)
+          inserted = added match
+            case AddResult.Added(value) => value
+            case other                  => fail(s"Expected insertion, obtained $other")
+          currentOrder = NonEmptyList.of(opening, spread.id, inserted)
+          reordered <- manager.replaceChapterOrder(album, chapter, currentOrder, currentOrder, editor)
+          unchanged <- sessions.readTarget(owner)
+          rebound   <- sessions.bind(editor.session, editor.tab)
+          current = rebound match
+            case BindResult.Active(value) => value
+            case _                        => fail("Expected rebound")
+          obsoleteAdd   <- manager.add(album, chapter, spread.id, editor)
+          obsoleteOrder <- manager.replaceChapterOrder(album, chapter, order, order, editor)
+          restarted     <- EditorSessionManager.make[IO](lease = 30L)
+          staleAdd      <- buildManager(state, restarted, IO.unit).add(album, chapter, spread.id, current)
+          staleOrder    <- buildManager(state, restarted, IO.unit).replaceChapterOrder(album, chapter, order, order, current)
+          _             <- IO.sleep(30.seconds)
+          expiredAdd    <- manager.add(album, chapter, spread.id, current)
+          expiredOrder  <- manager.replaceChapterOrder(album, chapter, order, order, current)
+          saved         <- state.get
+          committed     <- writes.get
+        yield
+          assertEquals(reordered, ReplacementResult.Saved)
+          selected match
+            case SelectResult.Owned(lock, revision) => assertEquals(unchanged, ReadTargetResult.Current(revision, Some(lock)))
+            case _                                  => fail("Expected unchanged ownership")
+          assertEquals(obsoleteAdd, AddResult.OwnershipRejected(SessionFailure.ObsoleteConnection))
+          assertEquals(obsoleteOrder, ReplacementResult.OwnershipRejected(SessionFailure.ObsoleteConnection))
+          assertEquals(staleAdd, AddResult.OwnershipRejected(SessionFailure.StaleSession))
+          assertEquals(staleOrder, ReplacementResult.OwnershipRejected(SessionFailure.StaleSession))
+          assertEquals(expiredAdd, AddResult.OwnershipRejected(SessionFailure.StaleSession))
+          assertEquals(expiredOrder, ReplacementResult.OwnershipRejected(SessionFailure.StaleSession))
+          assertEquals(saved, Some(spread))
+          assertEquals(committed, 3)
+
+  test("should finish an admitted insertion across expiry while queued order admission expires and acquisition waits"):
+    TestControl.executeEmbed:
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val order       = NonEmptyList.of(opening, spread.id)
+        for
+          sessions  <- EditorSessionManager.make[IO](lease = 30L)
+          editor    <- bind(sessions, owner = 1L)
+          _         <- IO.sleep(20.seconds)
+          next      <- bind(sessions, owner = 2L)
+          state     <- Ref.of[IO, Option[Spread]](Some(spread))
+          entered   <- Deferred[IO, Unit]
+          finish    <- Deferred[IO, Unit]
+          attempted <- Deferred[IO, Unit]
+          completed <- Deferred[IO, SelectResult]
+          queued    <- Deferred[IO, Unit]
+          manager = buildManager(state, sessions, entered.complete(()).void >> finish.get)
+          insertion   <- manager.add(album, chapter, spread.id, editor).start
+          _           <- entered.get
+          reordering  <- (queued.complete(()) >> manager.replaceChapterOrder(album, chapter, order, order, editor)).start
+          _           <- queued.get
+          _           <- IO.sleep(11.seconds)
+          acquisition <-
+          (attempted.complete(()) >> sessions.select(next, TargetRevision.initial, EditingTarget.Spread(spread.id))
+            .flatTap(result => completed.complete(result).void)).start
+          _        <- attempted.get
+          _        <- IO.sleep(1.second)
+          waiting  <- completed.tryGet
+          _        <- finish.complete(())
+          added    <- insertion.joinWithNever
+          rejected <- reordering.joinWithNever
+          selected <- acquisition.joinWithNever
+          saved    <- state.get
+          observed <- manager.readPlacements(album, spread.id)
+        yield
+          added match
+            case AddResult.Added(_) => ()
+            case other              => fail(s"Expected committed insertion, obtained $other")
+          assertEquals(rejected, ReplacementResult.OwnershipRejected(SessionFailure.StaleSession))
+          assertEquals(waiting, None)
+          selected match
+            case SelectResult.Owned(lock, revision) =>
+              assertEquals(lock, EditingLock(EditingTarget.Spread(spread.id), next.session, lock.grant, 62.seconds))
+              assertEquals(revision, TargetRevision.initial.next)
+            case _ => fail("Expected successor")
+          assertEquals(saved, Some(spread))
+          assertEquals(observed, PlacementReadResult.Found(spread))
+
   test("should reject structural contention despite confirmation and require proof of an affected own grant"):
     Mutex[IO].flatMap: mutex =>
       given Mutex[IO] = mutex
@@ -191,22 +287,28 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
       case _                        => fail("Expected tab")
 
   private def buildManager(state: Ref[IO, Option[Spread]], sessions: EditorSessionManager[IO], beforeWrite: IO[Unit])(using Mutex[IO]) =
+    val inserted    = Ref.unsafe[IO, Option[Spread.PhotosOnly]](None)
     val composition = new AlbumCompositionRepository[IO]:
-      override def hasAlbum(id: AlbumId): IO[Boolean]         = (id.value === album.value).pure[IO]
-      override def countInteriorSpreads(id: AlbumId): IO[Int] = IO.raiseError[Int](new AssertionError("Unexpected count"))
+      override def hasAlbum(id: AlbumId): IO[Boolean]                                                    = (id.value === album.value).pure[IO]
+      override def countInteriorSpreads(id: AlbumId): IO[Int]                                            = 2.pure[IO]
       override def findChapterOrder(id: AlbumId, chapter: ChapterId): IO[Option[NonEmptyList[SpreadId]]] =
-        Some(NonEmptyList.of(opening, spread.id)).pure[IO]
+        inserted.get.map(value => Some(NonEmptyList(opening, spread.id :: value.toList.map(_.id))))
       override def findSpread(id: AlbumId, target: SpreadId): IO[Option[AlbumCompositionRepository.Located]] =
         state.get.map(_.map {
           case value: Spread.PhotosOnly => AlbumCompositionRepository.Located.Photo(chapter, value)
           case _                        => fail("Expected photo spread")
         })
     val repository = new SpreadRepository[IO]:
-      override def insert(chapter: ChapterId, value: Spread.PhotosOnly): IO[Unit]       = IO.raiseError[Unit](new AssertionError("Unexpected insert"))
+      override def insert(chapter: ChapterId, value: Spread.PhotosOnly): IO[Unit] =
+        val expected = Spread.PhotosOnly(value.id, layout.id, NonEmptyList.one(slot.copy(id = value.photoSlots.head.id)), Vector.empty)
+        IO(assertEquals(value, expected)) >> beforeWrite >> inserted.set(Some(value))
       override def replace(value: Spread): IO[Unit]                                     = beforeWrite >> state.set(Some(value))
       override def remove(target: SpreadId): IO[Unit]                                   = beforeWrite >> state.set(None)
       override def reorder(chapter: ChapterId, order: NonEmptyList[SpreadId]): IO[Unit] =
-        IO(assertEquals(order, NonEmptyList.one(opening)))
+        (state.get, inserted.get).tupled.flatMap { case (maybeCurrent, maybeInserted) =>
+          val expected = NonEmptyList(opening, maybeCurrent.toList.map(_.id) ++ maybeInserted.toList.map(_.id))
+          IO(assertEquals(order, expected)) >> beforeWrite
+        }
     val photos = new PhotoPlacementRepository[IO]:
       override def findPlacedPhotos(chapter: ChapterId): IO[PhotoPlacementRepository.FindResult] =
         IO.raiseError[PhotoPlacementRepository.FindResult](new AssertionError("Unexpected inventory"))

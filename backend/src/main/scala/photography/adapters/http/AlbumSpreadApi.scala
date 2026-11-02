@@ -36,16 +36,21 @@ object AlbumSpreadApi:
       }
 
     private def add(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      decode(request, afterDecoder).flatMap:
-        case Left(message) => BadRequest(Map("message" -> message))
-        case Right(after)  =>
-          spreads.add(album, chapter, after).flatMap:
-            case AddResult.Added(id)          => Created(Map("id" -> id.value.toString))
-            case AddResult.Rejected(conflict) => BadRequest(Map("message" -> explain(conflict)))
-            case AddResult.AlbumNotFound      => albumNotFound
-            case AddResult.ChapterNotFound    => notFound("chapter_not_found")
-            case AddResult.SpreadNotFound     => notFound("spread_not_found")
-            case AddResult.Failed             => serviceFailure
+      readConnection(request).fold(
+        message => BadRequest(Map("code" -> message)),
+        connection =>
+          decode(request, afterDecoder).flatMap:
+            case Left(message) => BadRequest(Map("message" -> message))
+            case Right(after)  =>
+              spreads.add(album, chapter, after, connection).flatMap:
+                case AddResult.Added(id)                 => Created(Map("id" -> id.value.toString))
+                case AddResult.Rejected(conflict)        => BadRequest(Map("message" -> explain(conflict)))
+                case AddResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+                case AddResult.AlbumNotFound             => albumNotFound
+                case AddResult.ChapterNotFound           => notFound("chapter_not_found")
+                case AddResult.SpreadNotFound            => notFound("spread_not_found")
+                case AddResult.Failed                    => serviceFailure
+      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
     private def changeTemplate(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String], request: Request[F]) =
       val parsed = (readConnection(request), requiredId(request, "X-Editor-Grant").map(GrantId(_))).tupled

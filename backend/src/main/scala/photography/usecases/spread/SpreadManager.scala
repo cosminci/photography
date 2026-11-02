@@ -12,7 +12,7 @@ import photography.domain.album.{AlbumId, ChapterId, PhotoId, InteriorSpreadCapa
 import photography.domain.layout.*
 import photography.domain.editing.*
 import photography.usecases.editing.EditorSessionManager
-import photography.usecases.editing.EditorSessionManager.AuthorizationResult
+import photography.usecases.editing.EditorSessionManager.{AuthorizationResult, ConnectionAuthorizationResult}
 import photography.ports.album.AlbumCompositionRepository
 import photography.ports.spread.SpreadRepository
 import photography.ports.photo.PhotoPlacementRepository
@@ -24,8 +24,14 @@ import photography.ports.spread.SpreadTemplateRepository
 import photography.ports.spread.SpreadTemplateRepository.FindTemplateResult
 
 trait SpreadManager[F[_]]:
-  def replaceChapterOrder(album: AlbumId, chapter: ChapterId, expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]): F[ReplacementResult]
-  def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult]
+  def replaceChapterOrder(
+      album: AlbumId,
+      chapter: ChapterId,
+      expected: NonEmptyList[SpreadId],
+      order: NonEmptyList[SpreadId],
+      connection: EditorConnection
+  ): F[ReplacementResult]
+  def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): F[AddResult]
   def changeTemplate(
       album: AlbumId,
       spread: SpreadId,
@@ -61,29 +67,38 @@ object SpreadManager:
         album: AlbumId,
         chapter: ChapterId,
         expected: NonEmptyList[SpreadId],
-        order: NonEmptyList[SpreadId]
+        order: NonEmptyList[SpreadId],
+        connection: EditorConnection
     ): F[ReplacementResult] =
-      if !isReplacement(expected, order) then ReplacementResult.Invalid.pure[F]
-      else summon[Mutex[F]].lock.surround(MonadCancelThrow[F].uncancelable(_ => replaceCurrent(album, chapter, expected, order)))
+      summon[Mutex[F]].lock.surround:
+        MonadCancelThrow[F].uncancelable: _ =>
+          sessions.authorizeConnection(connection).flatMap:
+            case ConnectionAuthorizationResult.Rejected(reason) => ReplacementResult.OwnershipRejected(reason).pure[F]
+            case ConnectionAuthorizationResult.Authorized       =>
+              if !isReplacement(expected, order) then ReplacementResult.Invalid.pure[F]
+              else replaceCurrent(album, chapter, expected, order)
 
-    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): F[AddResult] =
+    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): F[AddResult] =
       act[AddResult](AddResult.Failed):
-        templates.findTemplate(defaultPhotoLayout).flatMap[AddResult]:
-          case FindTemplateResult.Found(layout: SpreadTemplate.PhotosOnly) =>
-            buildPhotoSpread(layout).flatMap: fresh =>
-              val mutation =
-                for
-                  _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
-                  order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
-                  target   <- composition.findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
-                  _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
-                  inserted <- insertAfter(order = order, after, fresh.id).orFail[Db, AddResult](ifEmpty = AddResult.SpreadNotFound)
-                  count    <- composition.countInteriorSpreads(album).lift[AddResult]
-                  _        <- (!InteriorSpreadCapacity.isReached(count)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AtCapacity))
-                  _        <- (spreads.insert(chapter, fresh) >> spreads.reorder(chapter, order = inserted)).lift[AddResult]
-                yield AddResult.Added(fresh.id): AddResult
-              Transaction[Db, F].run(mutation.merge)
-          case _ => AddResult.Failed.pure[F]
+        sessions.authorizeConnection(connection).flatMap:
+          case ConnectionAuthorizationResult.Rejected(reason) => AddResult.OwnershipRejected(reason).pure[F]
+          case ConnectionAuthorizationResult.Authorized       =>
+            templates.findTemplate(defaultPhotoLayout).flatMap[AddResult]:
+              case FindTemplateResult.Found(layout: SpreadTemplate.PhotosOnly) =>
+                buildPhotoSpread(layout).flatMap: fresh =>
+                  val mutation =
+                    for
+                      _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
+                      order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
+                      target   <- composition.findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
+                      _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
+                      inserted <- insertAfter(order = order, after, fresh.id).orFail[Db, AddResult](ifEmpty = AddResult.SpreadNotFound)
+                      count    <- composition.countInteriorSpreads(album).lift[AddResult]
+                      _        <- (!InteriorSpreadCapacity.isReached(count)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AtCapacity))
+                      _        <- (spreads.insert(chapter, fresh) >> spreads.reorder(chapter, order = inserted)).lift[AddResult]
+                    yield AddResult.Added(fresh.id): AddResult
+                  Transaction[Db, F].run(mutation.merge)
+              case _ => AddResult.Failed.pure[F]
 
     override def changeTemplate(
         album: AlbumId,
@@ -347,6 +362,7 @@ object SpreadManager:
 
   enum ReplacementResult derives CanEqual:
     case Saved, Invalid, NotFound, Stale, Failed, Uncertain
+    case OwnershipRejected(reason: EditorSessionManager.Failure)
 
   enum PlacementReadResult:
     case Found(spread: Spread)
@@ -368,6 +384,7 @@ object SpreadManager:
   enum AddResult derives CanEqual:
     case Added(id: SpreadId)
     case Rejected(conflict: Conflict)
+    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case AlbumNotFound, ChapterNotFound, SpreadNotFound, Failed
 
   enum ChangeTemplateResult derives CanEqual:
