@@ -85,9 +85,18 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.NotFound,
         body = """{"code":"photo_not_found"}""",
         MediaType.application.json.some,
-        maybeCacheControl = None
+        maybeCacheControl = Some("no-store")
       )
       send(server, path = s"/api/chapters/${chapter.value}/photos/$id/caption", body = "{}").map(response => assertEquals(response, expected))
+    }
+    val checkChapters = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { id =>
+      val expected = WireResponse(
+        Status.NotFound,
+        body = """{"code":"chapter_not_found"}""",
+        MediaType.application.json.some,
+        maybeCacheControl = Some("no-store")
+      )
+      send(server, path = s"/api/chapters/$id/photos/${photo.value}/caption", body = "{}").map(response => assertEquals(response, expected))
     }
     val checkUnmatched = Vector("/api/chapters", s"/api/chapters/${chapter.value}", s"/api/chapters/${chapter.value}/photo-import")
       .traverse_ { path =>
@@ -98,6 +107,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
     for
       _     <- checkPayloads
       _     <- checkTargets
+      _     <- checkChapters
       _     <- checkUnmatched
       calls <- refs.calls.get
     yield assertEquals(calls, Vector.empty[CaptionCall])

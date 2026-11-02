@@ -29,9 +29,9 @@ object PhotosApi:
       case request @ PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" / CanonicalId(photo) / "caption" =>
         saveCaption(ChapterId(chapter), PhotoId(photo), request)
       case PUT -> Root / "api" / "chapters" / CanonicalId(_) / "photos" / _ / "caption" =>
-        Route.public(NotFound(body = Map("code" -> "photo_not_found")))
+        Route.public(NotFound(body = Map("code" -> "photo_not_found")).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
       case request if invalidChapter(request) =>
-        Route.public(NotFound(body = Map("code" -> "chapter_not_found")))
+        Route.public(NotFound(body = Map("code" -> "chapter_not_found")).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
     }
 
     private def invalidChapter(request: Request[F]) = request.pathInfo.segments.toList match
