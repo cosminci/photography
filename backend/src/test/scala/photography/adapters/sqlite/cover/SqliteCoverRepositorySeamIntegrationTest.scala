@@ -5,6 +5,9 @@ import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
+import io.circe.Json
+import org.http4s.{Method, Request, Status, Uri}
+import org.http4s.circe.CirceEntityCodec.*
 import org.typelevel.doobie.{ConnectionIO, Transactor}
 import org.typelevel.doobie.implicits.*
 import org.typelevel.log4cats.Logger
@@ -16,11 +19,15 @@ import photography.capabilities.{IdGenerator, Transaction}
 import photography.adapters.sqlite.photo.SqlitePhotoPlacementRepository
 import photography.adapters.sqlite.album.SqliteAlbumCompositionRepository
 import photography.adapters.sqlite.spread.{SqliteSpreadRepository, SqliteSpreadTemplateRepository}
+import photography.adapters.http.PhotoPlacementApi
 import photography.domain.album.{AlbumId, PhotoId}
+import photography.domain.editing.*
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult}
 import photography.syntax.SyncSyntax.*
 import photography.usecases.cover.CoverManager
+import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditorSessionManager.*
 import photography.usecases.spread.SpreadManager
 import java.nio.file.{Files, Path}
 import java.util.UUID
@@ -49,6 +56,8 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
   )
   private val opening      = SpreadId(new UUID(0L, 20L))
   private val openingSlot  = PhotoSpreadSlotId(new UUID(0L, 21L))
+  private val connection   = EditorConnection(SessionId(new UUID(0L, 200L)), TabId(new UUID(0L, 201L)), ConnectionGeneration(new UUID(0L, 200L)))
+  private val grant        = GrantId(new UUID(0L, 200L))
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
   private given IdGenerator[IO] with
     override def generateId: IO[UUID] = new UUID(0L, 200L).pure[IO]
@@ -111,13 +120,15 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
       SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 1, maxSessions = 1)).buildTransactor.use: xa =>
         Resource.eval(Mutex[IO]).use: mutex =>
           given Mutex[IO] = mutex
-          val manager     = buildCoverManager(xa)
           val repository  = SqliteCoverRepository.make
 
           for
             _        <- seedComposition.transact(xa)
-            outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(album, CoverManager.Edit.Place(slot, firstPhoto)))
-            current  <- repository.read(album).transact(xa)
+            manager  <- buildCoverManager(xa)
+            outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot =>
+              manager.edit(album, CoverManager.Edit.Place(slot, firstPhoto), connection, grant)
+            )
+            current <- repository.read(album).transact(xa)
           yield
             val savedCount    = outcomes.count { case CoverManager.Result.Saved(_) => true; case _ => false }
             val rejectedCount = outcomes.count { case CoverManager.Result.Rejected(CoverManager.Failure.PhotoAlreadyUsed) => true; case _ => false }
@@ -138,7 +149,7 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           given Mutex[IO] = mutex
           val covers      = buildCoverManager(xa)
           val interiors   = buildSpreadManager(xa)
-          val placeCover  = covers.edit(album, CoverManager.Edit.Place(cover.front.id, firstPhoto)).map:
+          val placeCover  = covers.flatMap(_.edit(album, CoverManager.Edit.Place(cover.front.id, firstPhoto), connection, grant)).map:
             case CoverManager.Result.Saved(_)                                        => "saved"
             case CoverManager.Result.Rejected(CoverManager.Failure.PhotoAlreadyUsed) => "used"
             case _                                                                   => fail("Expected a saved cover or an already-used rejection")
@@ -184,6 +195,116 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           assert(failed.isLeft)
           assertEquals(retained, ReadResult.Found(Composition(cover, placements = Vector(first))))
 
+  test("should protect both Cover sides through real HTTP and SQLite and reconcile a discarded save acknowledgement"):
+    val database = Resource.make(Files.createTempFile(Path.of("target"), "cover-http-admission-", ".sqlite").blocking[IO]): path =>
+      Files.deleteIfExists(path).blocking[IO].void
+    val base = s"/api/albums/${album.value}/cover"
+    val body = Json.obj(
+      "slotId"  -> Json.fromString(cover.front.id.value.toString),
+      "photoId" -> Json.fromString(firstPhoto.value.toString)
+    )
+
+    database.evalTap(path => FlywayMigrator.make[IO](path).use(_.migrate).void).use: path =>
+      SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 1, maxSessions = 1)).buildTransactor.use: xa =>
+        Mutex[IO].flatMap: mutex =>
+          given Mutex[IO] = mutex
+          given IdGenerator[IO] with
+            override def generateId: IO[UUID] = IO(UUID.randomUUID())
+          given Transaction[ConnectionIO, IO] with
+            override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
+            override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
+          val repository = SqliteCoverRepository.make
+
+          for
+            _        <- seedComposition.transact(xa)
+            sessions <- EditorSessionManager.make[IO](lease = 30L)
+            owner    <- bindBrowser(sessions, owner = 1L)
+            other    <- bindBrowser(sessions, owner = 2L)
+            selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album))
+            (lock, revision) = selected match
+              case SelectResult.Owned(value, current) => (value, current)
+              case _                                  => fail("Expected Cover ownership")
+            otherSelection <- sessions.select(other, TargetRevision.initial, EditingTarget.Cover(foreignAlbum))
+            otherLock = otherSelection match
+              case SelectResult.Owned(value, _) => value
+              case _                            => fail("Expected other Cover ownership")
+            covers = CoverManager.make[IO, ConnectionIO](repository, SqlitePhotoPlacementRepository.make, sessions)
+            api    = PhotoPlacementApi.make(buildSpreadManager(xa), covers).orNotFound
+            acknowledged <- api.run(coverRequest(Method.POST, base + "/placements", owner, lock.grant).withEntity(body))
+            saved        <- repository.read(album).transact(xa)
+            reconciled   <- api.run(Request[IO](Method.GET, Uri.unsafeFromString(base)))
+            savedBody    <- reconciled.as[Json]
+            blocked      <- api.run(coverRequest(Method.POST, base + "/placements", other, otherLock.grant).withEntity(
+              body.mapObject(_.add("slotId", Json.fromString(cover.back.id.value.toString)))
+            ))
+            blockedBody <- blocked.as[Json]
+            released    <- sessions.release(owner, revision, lock.grant)
+            nextRevision = released match
+              case ReleaseResult.Released(value) => value
+              case _                             => fail("Expected release")
+            next <- sessions.select(owner, nextRevision, EditingTarget.Cover(album))
+            successor = next match
+              case SelectResult.Owned(value, _) => value
+              case _                            => fail("Expected reacquisition")
+            stale     <- api.run(coverRequest(Method.POST, base + "/placements", owner, lock.grant).withEntity(body))
+            staleBody <- stale.as[Json]
+            retained  <- repository.read(album).transact(xa)
+          yield
+            assertEquals(acknowledged.status, Status.Ok)
+            assertEquals(reconciled.status, Status.Ok)
+            saved match
+              case ReadResult.Found(value) =>
+                val placementJson = value.placements.map(value =>
+                  Json.obj(
+                    "id"        -> Json.fromString(value.id.value.toString),
+                    "slotId"    -> Json.fromString(value.slot.value.toString),
+                    "photoId"   -> Json.fromString(value.photo.value.toString),
+                    "transform" -> Json.obj("x" -> Json.fromInt(0), "y" -> Json.fromInt(0), "zoom" -> Json.fromInt(1), "mirrored" -> Json.False)
+                  )
+                )
+                val expected = Json.obj(
+                  "frontSlotId" -> Json.fromString(cover.front.id.value.toString),
+                  "backSlotId"  -> Json.fromString(cover.back.id.value.toString),
+                  "spineOwner"  -> Json.fromString("back"),
+                  "placements"  -> Json.arr(placementJson*)
+                )
+                assertEquals(value.cover, cover)
+                assertEquals(value.placements.map(value => (value.slot, value.photo, value.transform)), Vector((cover.front.id, firstPhoto, initial)))
+                assertEquals(savedBody, expected)
+              case _ => fail("Expected saved Cover")
+            assertEquals(blocked.status, Status.Conflict)
+            assertEquals(
+              blockedBody,
+              Json.obj(
+                "code"    -> Json.fromString("target_locked"),
+                "ownerId" -> Json.fromString(new UUID(0L, 1L).toString),
+                "alias"   -> Json.fromString("Browser")
+              )
+            )
+            assertEquals(successor.grant.value =!= lock.grant.value, true)
+            assertEquals(stale.status, Status.Conflict)
+            assertEquals(staleBody, Json.obj("code" -> Json.fromString("stale_grant")))
+            assertEquals(retained, saved)
+
+  private def bindBrowser(sessions: EditorSessionManager[IO], owner: Long) =
+    for
+      registered <- sessions.register(EditorId(new UUID(0L, owner)), "Browser", maybeSession = None)
+      session = registered match
+        case RegisterResult.Ready(value) => value
+        case _                           => fail("Expected registration")
+      bound <- sessions.bind(session.id, TabId(new UUID(1L, owner)))
+    yield bound match
+      case BindResult.Active(value) => value
+      case _                        => fail("Expected bound tab")
+
+  private def coverRequest(method: Method, path: String, connection: EditorConnection, grant: GrantId) =
+    Request[IO](method, Uri.unsafeFromString(path)).putHeaders(
+      "X-Editor-Session"    -> connection.session.value.toString,
+      "X-Editor-Tab"        -> connection.tab.value.toString,
+      "X-Editor-Generation" -> connection.generation.value.toString,
+      "X-Editor-Grant"      -> grant.value.toString
+    )
+
   private def seedComposition =
     val template = new UUID(2L, 22L)
     val textSlot = new UUID(0L, 23L)
@@ -214,7 +335,12 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
       override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
     val repository = SqliteCoverRepository.make
     val photos     = SqlitePhotoPlacementRepository.make
-    CoverManager.make[IO, ConnectionIO](repository, photos)
+    for
+      sessions <- EditorSessionManager.make[IO](lease = 30L)
+      _        <- sessions.register(EditorId(new UUID(0L, 202L)), "Owner", maybeSession = None)
+      _        <- sessions.bind(connection.session, connection.tab)
+      _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(album))
+    yield CoverManager.make[IO, ConnectionIO](repository, photos, sessions)
 
   private def buildSpreadManager(xa: Transactor[IO])(using Mutex[IO]) =
     given Transaction[ConnectionIO, IO] with

@@ -508,8 +508,13 @@
       }
     },
     "/api/albums/{id}/cover/placements/{placementId}": {
+      "description": "All mutations require a live session, current bound tab generation and exact full-Cover grant. Admission and atomic persistence share one coordination interval: a live-admitted write may finish across expiry before competing acquisition. Every response is Cache-Control: no-store. Reconcile uncertain outcomes by reading saved Cover state; never automatically replay after ownership loss.",
       "parameters": [
         { "$ref": "#/components/parameters/WorkspaceAlbumId" },
+        { "$ref": "#/components/parameters/EditorSession" },
+        { "$ref": "#/components/parameters/EditorTab" },
+        { "$ref": "#/components/parameters/EditorGeneration" },
+        { "$ref": "#/components/parameters/EditorGrant" },
         { "name": "placementId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
       ],
       "patch": {
@@ -518,15 +523,16 @@
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementChanges" } } } },
         "responses": {
           "200": { "description": "Saved cover", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
+          "400": { "$ref": "#/components/responses/CoverEditInvalid" }, "404": { "$ref": "#/components/responses/PlacementNotFound" },
+          "409": { "$ref": "#/components/responses/CoverEditRejected" }, "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       },
       "delete": {
         "operationId": "deleteCoverPlacement", "summary": "Remove one cover placement",
         "responses": {
           "200": { "description": "Saved cover; removed photo is available again", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "400": { "$ref": "#/components/responses/CoverEditInvalid" },
+          "404": { "$ref": "#/components/responses/PlacementNotFound" }, "409": { "$ref": "#/components/responses/CoverEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -565,17 +571,23 @@
       }
     },
     "/api/albums/{id}/cover/placements": {
-      "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
+      "parameters": [
+        { "$ref": "#/components/parameters/WorkspaceAlbumId" },
+        { "$ref": "#/components/parameters/EditorSession" },
+        { "$ref": "#/components/parameters/EditorTab" },
+        { "$ref": "#/components/parameters/EditorGeneration" },
+        { "$ref": "#/components/parameters/EditorGrant" }
+      ],
       "post": {
         "operationId": "createCoverPlacement",
         "summary": "Place or replace a photo on either cover side",
-        "description": "Uses album-wide photos and the same atomic placement, transform and recovery guarantees as interior edits. Movement and swaps are confined to the two cover sides and preserve transforms. Title, credits and spine ownership remain unchanged. Cover placements have no caption corner.",
+        "description": "Requires the live session, current tab generation and exact full-Cover grant, including when no other session owns the Cover. Credentials are single lowercase canonical UUID headers, never URL parameters; all responses are Cache-Control: no-store. Authorization and atomic persistence share the runtime coordination interval. Uses album-wide photos and preserves title, credits and spine ownership. Cover placements have no caption corner. An uncertain save requires authoritative saved-Cover reconciliation, not automatic replay after loss/reacquisition.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlacementCreation" } } } },
         "responses": {
           "200": { "description": "Saved cover composition", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/CoverEditInvalid" },
           "404": { "$ref": "#/components/responses/PlacementNotFound" },
-          "409": { "$ref": "#/components/responses/PlacementRejected" },
+          "409": { "$ref": "#/components/responses/CoverEditRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -1242,6 +1254,11 @@
         "description": "One private connection generation from the bound SSE event, lowercase canonical UUID.",
         "schema": { "type": "string", "format": "uuid" }
       },
+      "EditorGrant": {
+        "name": "X-Editor-Grant", "in": "header", "required": true,
+        "description": "One private exact target acquisition credential, lowercase canonical UUID; never place in a URL.",
+        "schema": { "type": "string", "format": "uuid" }
+      },
       "CameraId": {
         "name": "cameraId",
         "in": "path",
@@ -1519,6 +1536,24 @@
       "PlacementRejected": {
         "description": "Current ownership or identity validation rejected the edit without partial writes. Reload authoritative state before choosing another action.",
         "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["photo_not_in_collection", "photo_already_used", "slot_not_found", "placement_not_found", "invalid_transform"] } } } } }
+      },
+      "CoverEditInvalid": {
+        "description": "Malformed placement JSON returns message. Missing, duplicated, comma-combined or noncanonical private headers return a credential code before body decoding.",
+        "content": { "application/json": { "schema": { "oneOf": [
+          { "type": "object", "required": ["message"], "additionalProperties": false, "properties": { "message": { "type": "string" } } },
+          { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["missing_credentials", "invalid_credentials"] } } }
+        ] } } }
+      },
+      "CoverEditRejected": {
+        "description": "No partial writes. Stale credentials or grants require authoritative reconciliation. Public contention exposes only owner identity and alias, never private session or grant. Placement constraints retain their existing codes.",
+        "content": { "application/json": { "schema": { "oneOf": [
+          { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": {
+            "enum": ["stale_session", "obsolete_connection", "stale_grant", "stale_transition", "photo_not_in_collection", "photo_already_used", "slot_not_found", "placement_not_found", "invalid_transform"]
+          } } },
+          { "type": "object", "required": ["code", "ownerId", "alias"], "additionalProperties": false, "properties": {
+            "code": { "const": "target_locked" }, "ownerId": { "type": "string", "format": "uuid" }, "alias": { "type": "string", "pattern": "\\S" }
+          } }
+        ] } } }
       },
       "SpreadIdentity": {
         "description": "Saved spread identity",

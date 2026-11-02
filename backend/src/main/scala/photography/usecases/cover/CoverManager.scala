@@ -8,25 +8,30 @@ import io.github.iltotore.iron.autoRefine
 import org.typelevel.log4cats.Logger
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
+import photography.domain.editing.*
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
 import photography.ports.cover.CoverRepository.Composition
 import photography.ports.photo.PhotoPlacementRepository
 import photography.usecases.cover.CoverManager.*
+import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditorSessionManager.AuthorizationResult
 
 trait CoverManager[F[_]]:
   def read(album: AlbumId): F[ReadResult]
-  def edit(album: AlbumId, request: Edit): F[Result]
+  def edit(album: AlbumId, request: Edit, connection: EditorConnection, grant: GrantId): F[Result]
 
 object CoverManager:
   def make[F[_]: MonadCancelThrow: Mutex: IdGenerator: Logger, Db[_]: MonadThrow](
       covers: CoverRepository[Db],
-      photos: PhotoPlacementRepository[Db]
-  )(using Transaction[Db, F]): CoverManager[F] = new LiveCoverManager(covers, photos)
+      photos: PhotoPlacementRepository[Db],
+      sessions: EditorSessionManager[F]
+  )(using Transaction[Db, F]): CoverManager[F] = new LiveCoverManager(covers, photos, sessions)
 
   final private class LiveCoverManager[F[_]: MonadCancelThrow: Mutex: IdGenerator: Logger, Db[_]: MonadThrow](
       covers: CoverRepository[Db],
-      photos: PhotoPlacementRepository[Db]
+      photos: PhotoPlacementRepository[Db],
+      sessions: EditorSessionManager[F]
   )(using Transaction[Db, F]) extends CoverManager[F]:
     override def read(album: AlbumId): F[ReadResult] =
       val read = covers.read(album).map:
@@ -34,21 +39,25 @@ object CoverManager:
         case CoverRepository.ReadResult.NotFound     => ReadResult.CoverNotFound
       coordinate(ReadResult.Failed)(Transaction[Db, F].run(read))
 
-    override def edit(album: AlbumId, request: Edit): F[Result] =
+    override def edit(album: AlbumId, request: Edit, connection: EditorConnection, grant: GrantId): F[Result] =
       coordinate(Result.Failed):
-        prepareEdit(request).flatMap: change =>
-          val mutation = covers.read(album).flatMap:
-            case CoverRepository.ReadResult.NotFound       => Result.CoverNotFound.pure[Db]
-            case CoverRepository.ReadResult.Found(current) =>
-              checkPhoto(album, request).flatMap: permission =>
-                val slots = Set(current.cover.front.id, current.cover.back.id)
-                permission.flatMap(_ => change(slots, current.placements)) match
-                  case Left(reason)  => Result.Rejected(reason).pure[Db]
-                  case Right(values) =>
-                    covers.replace(album, placements = values).map[Result]:
-                      case CoverRepository.ReplaceResult.Replaced => Result.Saved(current.copy(placements = values))
-                      case CoverRepository.ReplaceResult.NotFound => Result.CoverNotFound
-          Transaction[Db, F].run(mutation)
+        sessions.authorizeTarget(connection, EditingTarget.Cover(album), grant).flatMap:
+          case AuthorizationResult.Authorized =>
+            prepareEdit(request).flatMap: change =>
+              val mutation = covers.read(album).flatMap:
+                case CoverRepository.ReadResult.NotFound       => Result.CoverNotFound.pure[Db]
+                case CoverRepository.ReadResult.Found(current) =>
+                  checkPhoto(album, request).flatMap: permission =>
+                    val slots = Set(current.cover.front.id, current.cover.back.id)
+                    permission.flatMap(_ => change(slots, current.placements)) match
+                      case Left(reason)  => Result.Rejected(reason).pure[Db]
+                      case Right(values) =>
+                        covers.replace(album, placements = values).map[Result]:
+                          case CoverRepository.ReplaceResult.Replaced => Result.Saved(current.copy(placements = values))
+                          case CoverRepository.ReplaceResult.NotFound => Result.CoverNotFound
+              Transaction[Db, F].run(mutation)
+          case AuthorizationResult.Blocked(_, owner, alias) => Result.Locked(owner, alias).pure[F]
+          case AuthorizationResult.Rejected(reason)         => Result.OwnershipRejected(reason).pure[F]
 
     private type Change = (Set[CoverSlotId], Vector[CoverPlacement]) => Either[Failure, Vector[CoverPlacement]]
 
@@ -120,6 +129,8 @@ object CoverManager:
   enum Result:
     case Saved(composition: Composition)
     case Rejected(reason: Failure)
+    case Locked(owner: EditorId, alias: EditorAlias)
+    case OwnershipRejected(reason: EditorSessionManager.Failure)
     case CoverNotFound, Failed
 
   enum Failure derives CanEqual:

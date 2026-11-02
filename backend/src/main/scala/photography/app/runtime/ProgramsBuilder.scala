@@ -114,7 +114,7 @@ object ProgramsBuilder:
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
-          coverPlacements = CoverManager.make(coverRepository, placements),
+          coverPlacements = CoverManager.make(coverRepository, placements, sessions),
           editorSessions = sessions
         )
 
