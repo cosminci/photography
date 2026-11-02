@@ -4,10 +4,12 @@ import cats.data.NonEmptyList
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, Json}
-import org.http4s.{HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.{AlbumId, ChapterId}
+import photography.adapters.http.EditorCredentials.*
 import photography.domain.layout.SpreadId
 import photography.usecases.spread.SpreadManager
 import java.util.UUID
@@ -22,16 +24,21 @@ object ChapterCompositionApi:
     }
 
     private def replace(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      decode(request).flatMap:
-        case Left(message) => BadRequest(Map("message" -> message))
-        case Right(order)  =>
-          spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed).flatMap:
-            case SpreadManager.ReplacementResult.Saved     => NoContent()
-            case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
-            case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
-            case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
-            case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
-            case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
+      readConnection(request).fold(
+        message => BadRequest(Map("code" -> message)),
+        connection =>
+          decode(request).flatMap:
+            case Left(message) => BadRequest(Map("message" -> message))
+            case Right(order)  =>
+              spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed, connection).flatMap:
+                case SpreadManager.ReplacementResult.Saved     => NoContent()
+                case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
+                case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
+                case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
+                case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
+                case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
+                case SpreadManager.ReplacementResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
+      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
 
     private def decode(request: Request[F]) =
       request.as[Json].map(value => Decoder[Order].decodeJson(value).leftMap(_.message))

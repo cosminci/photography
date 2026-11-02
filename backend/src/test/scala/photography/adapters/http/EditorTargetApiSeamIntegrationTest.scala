@@ -381,6 +381,8 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       renewed: RenewTargetResult,
       released: ReleaseResult
   ) = new EditorSessionManager[IO]:
+    override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
+      IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
       refs.update(calls => calls.copy(selections = calls.selections :+ (connection, revision, target))).as(selected)
     override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =

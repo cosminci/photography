@@ -320,6 +320,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
   private def rejectRequests(manager: EditorSessionManager[IO], failure: Failure) = new EditorSessionManager[IO]:
+    override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] = manager.authorizeConnection(connection)
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
       manager.register(owner, alias, maybeSession)
     override def bind(session: SessionId, tab: TabId): IO[BindResult]         = manager.bind(session, tab)
@@ -341,6 +342,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     ): IO[AuthorizationResult] = manager.authorizeAffected(connection, targets, maybeGrant)
 
   private def buildService(refs: Ref[IO, Calls], session: EditorSession, connection: EditorConnection) = new EditorSessionManager[IO]:
+    override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
+      IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
       refs.update(calls => calls.copy(registrations = calls.registrations :+ (owner, alias, maybeSession))).as(RegisterResult.Ready(session))
     override def bind(session: SessionId, tab: TabId): IO[BindResult] =

@@ -59,6 +59,12 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       (AddResult.AlbumNotFound, Status.NotFound, parseJson("""{"code":"album_not_found"}""")),
       (AddResult.ChapterNotFound, Status.NotFound, parseJson("""{"code":"chapter_not_found"}""")),
       (AddResult.SpreadNotFound, Status.NotFound, parseJson("""{"code":"spread_not_found"}""")),
+      (AddResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, parseJson("""{"code":"stale_session"}""")),
+      (
+        AddResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection),
+        Status.Conflict,
+        parseJson("""{"code":"obsolete_connection"}""")
+      ),
       (AddResult.Failed, Status.InternalServerError, parseJson("""{"code":"service_failure"}"""))
     ).traverse_ { case (outcome, status, expected) =>
       for
@@ -68,7 +74,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       yield assertEquals(result, status -> expected.some)
     } >> {
       val malformed = Request[IO](Method.POST, Uri.unsafeFromString(s"$albumUrl/chapters/$chapter/spreads"))
-        .withBodyStream(buildRawJson).putHeaders(`Content-Type`(MediaType.application.json))
+        .withHeaders(credentials).withBodyStream(buildRawJson).putHeaders(`Content-Type`(MediaType.application.json))
 
       for
         calls <- Ref.of[IO, Vector[String]](Vector.empty)
@@ -229,10 +235,34 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(template, expected)
       assertEquals(deletion, expected)
 
+  test("should reject missing or malformed insertion credentials before decoding or dispatch"):
+    val request = post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString("invalid")))
+    val invalid = credentials.headers.filterNot(_.name === CIString("X-Editor-Grant")).flatMap { header =>
+      val remaining = request.headers.headers.filterNot(_.name === header.name)
+      Vector(
+        (Headers(remaining), "missing_credentials"),
+        (Headers(header.copy(value = "invalid") :: remaining), "invalid_credentials"),
+        (Headers(request.headers.headers ++ List(header)), "invalid_credentials"),
+        (Headers(header.copy(value = s"${header.value},${header.value}") :: remaining), "invalid_credentials")
+      )
+    }
+
+    for
+      calls <- Ref.of[IO, Vector[String]](Vector.empty)
+      server = buildApi(calls)
+      _ <- invalid.traverse_ { case (headers, code) =>
+        respond(server, request.withHeaders(headers)).map(result =>
+          assertEquals(result, Status.BadRequest -> Json.obj("code" -> Json.fromString(code)).some)
+        )
+      }
+      seen <- calls.get
+    yield assertEquals(seen, Vector.empty[String])
+
   private def buildRawJson = Stream.emits("{".getBytes(StandardCharsets.UTF_8).toSeq).covary[IO]
 
   private def post(path: String, body: Json) =
-    Request[IO](Method.POST, Uri.unsafeFromString(path)).withEntity(body)
+    Request[IO](Method.POST, Uri.unsafeFromString(path))
+      .withHeaders(Headers(credentials.headers.filterNot(_.name === CIString("X-Editor-Grant")))).withEntity(body)
 
   private def put(path: String, body: Json) =
     Request[IO](Method.PUT, Uri.unsafeFromString(path), headers = credentials).withEntity(body)
@@ -243,8 +273,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def respond(app: HttpApp[IO], request: Request[IO]) =
     app.run(request).flatMap: response =>
-      if request.method === Method.PUT || request.method === Method.DELETE then
-        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+      assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
       response.bodyText.compile.toList.map(chunks => (response.status, parse(chunks.mkString).toOption))
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -263,7 +292,8 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           chapter: ChapterId,
           expected: NonEmptyList[SpreadId],
-          order: NonEmptyList[SpreadId]
+          order: NonEmptyList[SpreadId],
+          connection: EditorConnection
       ): IO[ReplacementResult] =
         IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
@@ -276,7 +306,8 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
           grant: GrantId
       ): IO[PlacementResult] =
         IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
-      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
+      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, editor: EditorConnection): IO[AddResult] =
+        assertEquals(editor, connection)
         calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
       override def changeTemplate(
           album: AlbumId,
