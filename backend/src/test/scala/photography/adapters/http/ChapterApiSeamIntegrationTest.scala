@@ -617,7 +617,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         refs.gearCalls.update(_ :+ GearCall.Read(album, chapter)) >> gearReadResult
       override def replaceGear(album: AlbumId, chapter: ChapterId, selection: GearSelection): IO[GearReplaceResult] =
         refs.gearCalls.update(_ :+ GearCall.Replace(album, chapter, selection = selection)) >> gearReplaceResult
-    ChapterApi.make(chapters, metadata, gear).routes.orNotFound
+    PublicRoutes(ChapterApi.make(chapters, metadata, gear)).orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs

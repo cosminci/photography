@@ -11,14 +11,13 @@ import org.http4s.{Header, HttpRoutes, MediaType, Method, Request, Status, Uri}
 import org.http4s.CacheDirective
 import org.http4s.headers.`Cache-Control`
 import org.http4s.headers.`Content-Type`
-import org.typelevel.ci.CIString
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository.Composition
 import photography.usecases.cover.CoverManager
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditingAccess
 import photography.usecases.spread.SpreadManager
 import java.util.UUID
 import java.nio.charset.StandardCharsets
@@ -308,11 +307,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       (CoverManager.Result.Rejected(CoverManager.Failure.PhotoAlreadyUsed), Status.Conflict, "photo_already_used"),
       (CoverManager.Result.Rejected(CoverManager.Failure.SlotNotFound), Status.Conflict, "slot_not_found"),
       (CoverManager.Result.Rejected(CoverManager.Failure.PlacementNotFound), Status.Conflict, "placement_not_found"),
-      (CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform), Status.Conflict, "invalid_transform"),
-      (CoverManager.Result.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, "stale_session"),
-      (CoverManager.Result.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection), Status.Conflict, "obsolete_connection"),
-      (CoverManager.Result.OwnershipRejected(EditorSessionManager.Failure.StaleGrant), Status.Conflict, "stale_grant"),
-      (CoverManager.Result.OwnershipRejected(EditorSessionManager.Failure.StaleTransition), Status.Conflict, "stale_transition")
+      (CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform), Status.Conflict, "invalid_transform")
     )
     val spreadEdits = Vector(
       (SpreadManager.PlacementResult.AlbumNotFound, Status.NotFound, "album_not_found"),
@@ -322,11 +317,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       (SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.PhotoAlreadyUsed), Status.Conflict, "photo_already_used"),
       (SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.SlotNotFound), Status.Conflict, "slot_not_found"),
       (SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.PlacementNotFound), Status.Conflict, "placement_not_found"),
-      (SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.InvalidTransform), Status.Conflict, "invalid_transform"),
-      (SpreadManager.PlacementResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, "stale_session"),
-      (SpreadManager.PlacementResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection), Status.Conflict, "obsolete_connection"),
-      (SpreadManager.PlacementResult.OwnershipRejected(EditorSessionManager.Failure.StaleGrant), Status.Conflict, "stale_grant"),
-      (SpreadManager.PlacementResult.OwnershipRejected(EditorSessionManager.Failure.StaleTransition), Status.Conflict, "stale_transition")
+      (SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.InvalidTransform), Status.Conflict, "invalid_transform")
     )
     val spreadReads = Vector(
       (SpreadManager.PlacementReadResult.AlbumNotFound, Status.NotFound, "album_not_found"),
@@ -363,61 +354,6 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
     coverFailures >> spreadFailures >> missingSpreads >> missingCovers
-
-  test("should expose only the public target owner when a live target blocks editing"):
-    val api = buildApi(
-      result = CoverManager.Result.Locked(EditorId(new UUID(0L, 24L)), "Other browser"),
-      spreadResult = SpreadManager.PlacementResult.Locked(EditorId(new UUID(0L, 24L)), "Other browser")
-    )
-    val expected = Json.obj(
-      "code"    -> Json.fromString("target_locked"),
-      "ownerId" -> Json.fromString(new UUID(0L, 24L).toString),
-      "alias"   -> Json.fromString("Other browser")
-    )
-
-    Vector(coverPath, spreadPath).traverse_ { path =>
-      send(api, Request[IO](Method.DELETE, Uri.unsafeFromString(s"$path/placements/${placement.id.value}"))).map(response =>
-        assertEquals(response, (Status.Conflict, expected))
-      )
-    }
-
-  test("should reject missing, duplicate and noncanonical private credentials on every target mutation before dispatch"):
-    val names   = Vector("X-Editor-Session", "X-Editor-Tab", "X-Editor-Generation", "X-Editor-Grant")
-    val headers = Vector(
-      "X-Editor-Session"    -> connection.session.value.toString,
-      "X-Editor-Tab"        -> connection.tab.value.toString,
-      "X-Editor-Generation" -> connection.generation.value.toString,
-      "X-Editor-Grant"      -> grant.value.toString
-    )
-    val refs     = Refs()
-    val api      = buildApi(refs, result = CoverManager.Result.Failed)
-    val requests = Vector(coverPath, spreadPath).flatMap { path =>
-      editScenarios.flatMap { scenario =>
-        val valid = Request[IO](scenario.request.method, Uri.unsafeFromString(path + scenario.request.suffix))
-          .withEntity(scenario.request.body).withHeaders(headers.map { case (name, value) => Header.Raw(CIString(name), value) })
-        names.flatMap { name =>
-          val missing = valid.removeHeader(CIString(name))
-          val invalid = Vector("invalid", "0-0-0-0-1", "AAAAAAAA-AAAA-4AAA-AAAA-AAAAAAAAAAAA", s"${grant.value},${grant.value}")
-            .map(value => valid.putHeaders(name -> value))
-          val duplicate = valid.withHeaders(Header.Raw(CIString(name), grant.value.toString) :: valid.headers.headers)
-          Vector((missing, "missing_credentials"), (duplicate, "invalid_credentials")) ++
-            invalid.map(request => (request, "invalid_credentials"))
-        }
-      }
-    }
-
-    for
-      _ <- requests.traverse_ { case (request, code) =>
-        for
-          response <- api.orNotFound.run(request)
-          body     <- response.as[Json]
-        yield
-          assertEquals(response.status, Status.BadRequest)
-          assertEquals(body, Json.obj("code" -> Json.fromString(code)))
-          assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
-      }
-      calls <- refs.calls.get
-    yield assertEquals(calls, Vector.empty[PlacementCall])
 
   test("should read album and chapter opening geometry from the individual spread resource"):
     val box      = SlotBox(x = 0.0, y = 0.0, width = 50.0, height = 100.0)
@@ -582,10 +518,8 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       override def read(id: AlbumId): IO[CoverManager.ReadResult] =
         assertEquals(id, album)
         refs.calls.update(_ :+ PlacementCall.ReadCover(id)).as(coverRead)
-      override def edit(id: AlbumId, request: CoverManager.Edit, actualConnection: EditorConnection, actualGrant: GrantId): IO[CoverManager.Result] =
+      override def edit(id: AlbumId, request: CoverManager.Edit): IO[CoverManager.Result] =
         assertEquals(id, album)
-        assertEquals(actualConnection, connection)
-        assertEquals(actualGrant, grant)
         maybeCoverEdit.foreach(expected => assertEquals(request, expected))
         refs.calls.update(_ :+ PlacementCall.EditCover(id, request)).as(result)
     val spreads = new SpreadManager[IO]:
@@ -593,27 +527,22 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           chapter: ChapterId,
           expected: NonEmptyList[SpreadId],
-          order: NonEmptyList[SpreadId],
-          connection: EditorConnection
+          order: NonEmptyList[SpreadId]
       ): IO[SpreadManager.ReplacementResult] =
         IO.raiseError[SpreadManager.ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
-      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): IO[SpreadManager.AddResult] =
+      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[SpreadManager.AddResult] =
         IO.raiseError[SpreadManager.AddResult](new AssertionError("Unexpected structural add"))
       override def changeTemplate(
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
-          confirmPlacements: Boolean,
-          connection: EditorConnection,
-          grant: GrantId
+          confirmPlacements: Boolean
       ): IO[SpreadManager.ChangeTemplateResult] =
         IO.raiseError[SpreadManager.ChangeTemplateResult](new AssertionError("Unexpected structural template change"))
       override def delete(
           album: AlbumId,
           spread: SpreadId,
-          confirmPlacements: Boolean,
-          connection: EditorConnection,
-          maybeGrant: Option[GrantId]
+          confirmPlacements: Boolean
       ): IO[SpreadManager.DeleteResult] =
         IO.raiseError[SpreadManager.DeleteResult](new AssertionError("Unexpected structural delete"))
       override def readPlacements(id: AlbumId, spread: SpreadId): IO[SpreadManager.PlacementReadResult] =
@@ -623,17 +552,33 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       override def editPlacements(
           id: AlbumId,
           spread: SpreadId,
-          request: SpreadManager.Edit,
-          actualConnection: EditorConnection,
-          actualGrant: GrantId
+          request: SpreadManager.Edit
       ): IO[SpreadManager.PlacementResult] =
         assertEquals(id, album)
         assertEquals(spread, SpreadId(new UUID(0L, 6L)))
-        assertEquals(actualConnection, connection)
-        assertEquals(actualGrant, grant)
         maybeSpreadEdit.foreach(expected => assertEquals(request, expected))
         refs.calls.update(_ :+ PlacementCall.Edit(id, spread, request)).as(spreadResult)
-    PhotoPlacementApi.make(spreads, covers)
+    val access = new EditingAccess[IO]:
+      override def run[A](
+          editor: EditorConnection,
+          protection: EditingAccess.Protection,
+          maybeGrant: Option[GrantId]
+      )(write: IO[A]): IO[EditingAccess.Result[A]] =
+        assertEquals(editor, connection)
+        assertEquals(maybeGrant, Some(grant))
+        protection match
+          case EditingAccess.Protection.OwnSpread(target) =>
+            assert(Set(EditingTarget.Cover(album), EditingTarget.Spread(spread.id)).contains(target))
+          case other => fail(s"Expected spread ownership declaration, obtained $other")
+        write.map(EditingAccess.Result.Completed(_))
+    val definitions = PhotoPlacementApi.make(spreads, covers)
+    Vector(coverPath -> EditingTarget.Cover(album), spreadPath -> EditingTarget.Spread(spread.id)).foreach { case (path, target) =>
+      editScenarios.foreach { scenario =>
+        val request = Request[IO](scenario.request.method, Uri.unsafeFromString(path + scenario.request.suffix))
+        assertEquals(definitions.routes.lift(request).map(_.access), Some(Routes.Access.Editor(EditingAccess.Protection.OwnSpread(target))))
+      }
+    }
+    Routes.make(access)(definitions)
   // scalafix:on DisableSyntax.defaultArgs
 
   private def send(api: HttpRoutes[IO], request: Request[IO]) =

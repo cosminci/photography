@@ -252,7 +252,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         IO.raiseError[PhotoManager.RefreshResult](new AssertionError("Unexpected photo import"))
     val inventories = new ChapterPhotoInventory[IO]:
       override def read(chapter: ChapterId): IO[ChapterPhotoInventory.Result] = inventoryResult
-    PhotosApi.mount(PhotosApi.make(inventories, photos)).orNotFound
+    PublicRoutes(PhotosApi.make(inventories, photos)).orNotFound
 
   private def sendJson(server: HttpApp[IO], method: Method, path: String) =
     sendRaw(server, method, path = path, body = "").map { response =>

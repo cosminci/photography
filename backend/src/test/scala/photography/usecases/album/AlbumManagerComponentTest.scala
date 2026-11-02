@@ -3,9 +3,7 @@ package photography.usecases.album
 import photography.ports.spread.SpreadTemplateRepository
 
 import cats.data.NonEmptyList
-import cats.effect.{Deferred, IO, Outcome, Ref}
-import cats.effect.std.Mutex
-import cats.effect.testkit.TestControl
+import cats.effect.{IO, Ref}
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
@@ -15,9 +13,6 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.capabilities.{Clock, IdGenerator}
 import photography.domain.album.*
 import photography.domain.layout.*
-import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
-import photography.usecases.editing.EditorSessionManager.{BindResult, RegisterResult, SelectResult, ReadTargetResult}
 import photography.ports.album.AlbumRepository
 import photography.ports.album.AlbumRepository.{AlbumPageSlice, Failure}
 import photography.usecases.album.AlbumManager.*
@@ -25,12 +20,9 @@ import photography.ports.spread.SpreadTemplateRepository.ListAlbumStartTemplates
 
 import java.time.Instant
 import java.util.UUID
-import scala.concurrent.duration.*
 
 final class AlbumManagerComponentTest extends CatsEffectSuite:
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
-  private given Clock[IO] with
-    override def readInstant: IO[Instant] = Instant.parse("2026-10-07T12:00:00Z").pure[IO]
 
   private val pageSize                = 6.refineUnsafe[Positive]
   private val createdAt               = Instant.parse("2026-10-07T12:00:00Z")
@@ -38,7 +30,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   private val photoBox                = SlotBox(x = 0.0.refineUnsafe, y = 0.0.refineUnsafe, width = 0.5.refineUnsafe, height = 1.0.refineUnsafe)
   private val selectedYear: AlbumYear = 2026
   private val thirteenAlbums          = Vector.tabulate(13)(buildAlbum).reverse
-  private val connection              = EditorConnection(SessionId(buildUuid(900)), TabId(buildUuid(900)), ConnectionGeneration(buildUuid(900)))
 
   test(s"should page albums newest-first with $pageSize per page and clamp requests to the last page"):
     val refs      = Refs()
@@ -186,7 +177,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
       for
         manager <- buildManager(refs, authorsResult = response)
-        result  <- manager.saveAuthors(album.id, Author.all, connection)
+        result  <- manager.saveAuthors(album.id, Author.all)
         calls   <- refs.authorsCalls.get
       yield
         assertEquals(calls, Vector(album.id -> Author.all))
@@ -199,166 +190,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     yield
       assertEquals(synopsis.size, synopsisCases.size)
       assertEquals(authors.size, authorsCases.size)
-
-  test("should save authors without a grant despite another browser's Cover lock, rejecting obsolete, restarted and expired sessions"):
-    TestControl.executeEmbed:
-      Mutex[IO].flatMap: mutex =>
-        given Mutex[IO] = mutex
-        given IdGenerator[IO] with
-          override def generateId: IO[UUID] = IO(UUID.randomUUID())
-        val refs                  = Refs()
-        val album                 = buildAlbum(index = 1)
-        val authors: AlbumAuthors = Set(Author.Mara).refineUnsafe
-        val updated               = album.copy(authors = authors)
-        for
-          sessions <- EditorSessionManager.make[IO](lease = 30L)
-          owner    <- bind(sessions, owner = 1)
-          selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album.id))
-          editor   <- bind(sessions, owner = 2)
-          manager = AlbumManager.make(
-            buildRepository(refs, authorsResult = AlbumRepository.SaveAuthorsResult.Saved(updated)),
-            buildTemplates(),
-            pageSize,
-            sessions
-          )
-          saved     <- manager.saveAuthors(album.id, authors, editor)
-          unchanged <- sessions.readTarget(owner)
-          rebound   <- sessions.bind(editor.session, editor.tab)
-          current = rebound match
-            case BindResult.Active(value) => value
-            case other                    => fail(s"Expected current connection, obtained $other")
-          obsolete  <- manager.saveAuthors(album.id, authors, editor)
-          restarted <- EditorSessionManager.make[IO](lease = 30L)
-          stale     <- AlbumManager.make(buildRepository(refs), buildTemplates(), pageSize, restarted).saveAuthors(album.id, authors, current)
-          _         <- IO.sleep(30.seconds)
-          expired   <- manager.saveAuthors(album.id, authors, current)
-          calls     <- refs.authorsCalls.get
-        yield
-          assertEquals(saved, SaveAuthorsResult.Saved(updated))
-          selected match
-            case SelectResult.Owned(lock, revision) => assertEquals(unchanged, ReadTargetResult.Current(revision, Some(lock)))
-            case other                              => fail(s"Expected retained lock, obtained $other")
-          assertEquals(obsolete, SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection))
-          assertEquals(stale, SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession))
-          assertEquals(expired, SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession))
-          assertEquals(calls, Vector(album.id -> authors))
-
-  test("should finish admitted author persistence across expiry while acquisition waits, queued admission expires and waiting can cancel"):
-    TestControl.executeEmbed:
-      Mutex[IO].flatMap: mutex =>
-        given Mutex[IO] = mutex
-        given IdGenerator[IO] with
-          override def generateId: IO[UUID] = IO(UUID.randomUUID())
-        val refs  = Refs()
-        val album = buildAlbum(index = 1)
-        for
-          sessions  <- EditorSessionManager.make[IO](lease = 30L)
-          editor    <- bind(sessions, owner = 1)
-          _         <- IO.sleep(20.seconds)
-          next      <- bind(sessions, owner = 2)
-          entered   <- Deferred[IO, Unit]
-          finish    <- Deferred[IO, Unit]
-          completed <- Deferred[IO, SelectResult]
-          attempted <- Deferred[IO, Unit]
-          queued    <- Deferred[IO, Unit]
-          manager = AlbumManager.make(
-            buildRepository(
-              refs,
-              authorsResult = AlbumRepository.SaveAuthorsResult.Saved(album),
-              beforeAuthors = entered.complete(()).void >> finish.get
-            ),
-            buildTemplates(),
-            pageSize,
-            sessions
-          )
-          writing      <- manager.saveAuthors(album.id, Author.all, editor).start
-          _            <- entered.get
-          canceling    <- manager.saveAuthors(album.id, Author.all, editor).start
-          _            <- IO.sleep(1.second)
-          _            <- canceling.cancel
-          canceled     <- canceling.join
-          waitingWrite <- (queued.complete(()) >> manager.saveAuthors(album.id, Author.all, editor)).start
-          _            <- queued.get
-          _            <- IO.sleep(10.seconds)
-          acquiring    <-
-          (attempted.complete(()) >> sessions.select(next, TargetRevision.initial, EditingTarget.Cover(album.id))
-            .flatTap(result => completed.complete(result).void)).start
-          _             <- attempted.get
-          _             <- IO.sleep(1.second)
-          maybeAcquired <- completed.tryGet
-          _             <- finish.complete(())
-          saved         <- writing.joinWithNever
-          rejected      <- waitingWrite.joinWithNever
-          selected      <- acquiring.joinWithNever
-          calls         <- refs.authorsCalls.get
-        yield
-          assertEquals(saved, SaveAuthorsResult.Saved(album))
-          assertEquals(rejected, SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession))
-          assertEquals(maybeAcquired, None)
-          canceled match
-            case Outcome.Canceled() => ()
-            case other              => fail(s"Expected canceled waiter, obtained $other")
-          selected match
-            case SelectResult.Owned(lock, revision) =>
-              assertEquals(lock, EditingLock(EditingTarget.Cover(album.id), next.session, lock.grant, 62.seconds))
-              assertEquals(revision, TargetRevision.initial.next)
-            case other => fail(s"Expected successor, obtained $other")
-          assertEquals(calls, Vector(album.id -> Author.all))
-
-  test("should complete admitted author persistence before cancellation releases coordination to acquisition"):
-    TestControl.executeEmbed:
-      Mutex[IO].flatMap: mutex =>
-        given Mutex[IO] = mutex
-        given IdGenerator[IO] with
-          override def generateId: IO[UUID] = IO(UUID.randomUUID())
-        val refs  = Refs()
-        val album = buildAlbum(index = 1)
-        for
-          sessions  <- EditorSessionManager.make[IO](lease = 30L)
-          editor    <- bind(sessions, owner = 1)
-          next      <- bind(sessions, owner = 2)
-          entered   <- Deferred[IO, Unit]
-          finish    <- Deferred[IO, Unit]
-          requested <- Deferred[IO, Unit]
-          canceled  <- Deferred[IO, Unit]
-          attempted <- Deferred[IO, Unit]
-          acquired  <- Deferred[IO, (SelectResult, Vector[(AlbumId, AlbumAuthors)])]
-          manager = AlbumManager.make(
-            buildRepository(
-              refs,
-              authorsResult = AlbumRepository.SaveAuthorsResult.Saved(album),
-              beforeAuthors = entered.complete(()).void >> finish.get
-            ),
-            buildTemplates(),
-            pageSize,
-            sessions
-          )
-          writing      <- manager.saveAuthors(album.id, Author.all, editor).start
-          _            <- entered.get
-          cancellation <- (requested.complete(()) >> writing.cancel >> canceled.complete(())).start
-          _            <- requested.get
-          acquiring    <-
-          (attempted.complete(()) >> sessions.select(next, TargetRevision.initial, EditingTarget.Cover(album.id))
-            .flatMap(result => refs.authorsCalls.get.flatMap(calls => acquired.complete((result, calls)).void))).start
-          _             <- attempted.get
-          _             <- IO.sleep(1.second)
-          maybeCanceled <- canceled.tryGet
-          maybeAcquired <- acquired.tryGet
-          _             <- IO(assertEquals(maybeCanceled, None))
-          _             <- IO(assertEquals(maybeAcquired, None))
-          _             <- finish.complete(())
-          _             <- cancellation.joinWithNever
-          saved         <- writing.joinWithNever
-          _             <- acquiring.joinWithNever
-          observed      <- acquired.get
-        yield
-          assertEquals(saved, SaveAuthorsResult.Saved(album))
-          observed match
-            case (SelectResult.Owned(lock, revision), calls) =>
-              assertEquals(lock, EditingLock(EditingTarget.Cover(album.id), next.session, lock.grant, 31.seconds))
-              assertEquals(revision, TargetRevision.initial.next)
-              assertEquals(calls, Vector(album.id -> Author.all))
-            case other => fail(s"Expected acquisition after committed authors, obtained $other")
 
   final private case class Refs():
     val synopsisCalls: Ref[IO, Vector[(AlbumId, String)]]      = Ref.unsafe(Vector.empty)
@@ -400,20 +231,9 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       synopsisResult,
       authorsResult
     )
-    Mutex[IO].flatMap: mutex =>
-      given Mutex[IO]                 = mutex
-      val sessionIds: IdGenerator[IO] = new IdGenerator[IO]:
-        override def generateId: IO[UUID] = buildUuid(900).pure[IO]
-      for
-        sessions <- EditorSessionManager.make[IO](lease = 30L)(using summon, sessionIds, summon)
-        _        <- sessions.register(EditorId(buildUuid(900)), "Owner", maybeSession = None)
-        _        <- sessions.bind(connection.session, connection.tab)
-      yield AlbumManager.make(repository, buildTemplates(listResult), pageSize, sessions)
+    AlbumManager.make(repository, buildTemplates(listResult), pageSize).pure[IO]
 
-  private def buildTemplates(
-      listResult: ListAlbumStartTemplatesResult =
-        ListAlbumStartTemplatesResult.Listed(NonEmptyList.of(buildAlbumStartTemplate(index = 20), buildAlbumStartTemplate(index = 21)))
-  ) =
+  private def buildTemplates(listResult: ListAlbumStartTemplatesResult) =
     new SpreadTemplateRepository[IO]:
       override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
         IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
@@ -425,21 +245,20 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
   private def buildRepository(
       refs: Refs,
-      albums: Vector[Album] = Vector.empty[Album],
-      maybeListFailureOffset: Option[Int] = None,
-      createResult: AlbumRepository.CreateResult = AlbumRepository.CreateResult.Created,
-      getResult: AlbumRepository.GetResult = AlbumRepository.GetResult.NotFound,
-      renameResult: AlbumRepository.RenameResult = AlbumRepository.RenameResult.NotFound,
-      deleteResult: AlbumRepository.DeleteResult = AlbumRepository.DeleteResult.NotFound,
-      synopsisResult: AlbumRepository.SaveSynopsisResult = AlbumRepository.SaveSynopsisResult.NotFound,
-      authorsResult: AlbumRepository.SaveAuthorsResult = AlbumRepository.SaveAuthorsResult.NotFound,
-      beforeAuthors: IO[Unit] = IO.unit
+      albums: Vector[Album],
+      maybeListFailureOffset: Option[Int],
+      createResult: AlbumRepository.CreateResult,
+      getResult: AlbumRepository.GetResult,
+      renameResult: AlbumRepository.RenameResult,
+      deleteResult: AlbumRepository.DeleteResult,
+      synopsisResult: AlbumRepository.SaveSynopsisResult,
+      authorsResult: AlbumRepository.SaveAuthorsResult
   ) =
     new AlbumRepository[IO]:
       override def saveSynopsis(album: AlbumId, text: String): IO[AlbumRepository.SaveSynopsisResult] =
         refs.synopsisCalls.update(_ :+ (album -> text)).as(synopsisResult)
       override def saveAuthors(album: AlbumId, authors: AlbumAuthors): IO[AlbumRepository.SaveAuthorsResult] =
-        beforeAuthors >> refs.authorsCalls.update(_ :+ (album -> authors)).as(authorsResult)
+        refs.authorsCalls.update(_ :+ (album -> authors)).as(authorsResult)
       override def list(offset: Int, limit: Int): IO[AlbumRepository.ListResult] =
         refs.listCalls.update(_ :+ (offset -> limit)).as(
           if maybeListFailureOffset.contains(offset) then AlbumRepository.ListResult.Failed(Failure.DatabaseFailure)
@@ -458,17 +277,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def delete(id: AlbumId): IO[AlbumRepository.DeleteResult] =
         refs.maybeDeletedId.set(id.some).as(deleteResult)
   // scalafix:on DisableSyntax.defaultArgs
-
-  private def bind(sessions: EditorSessionManager[IO], owner: Int) =
-    for
-      registered <- sessions.register(EditorId(buildUuid(owner)), "Owner", maybeSession = None)
-      session = registered match
-        case RegisterResult.Ready(value) => value.id
-        case other                       => fail(s"Expected session, obtained $other")
-      bound <- sessions.bind(session, TabId(buildUuid(owner)))
-    yield bound match
-      case BindResult.Active(value) => value
-      case other                    => fail(s"Expected binding, obtained $other")
 
   private def buildAlbumStartTemplate(index: Int) =
     val name = s"Template $index".refineUnsafe[Not[Empty]]

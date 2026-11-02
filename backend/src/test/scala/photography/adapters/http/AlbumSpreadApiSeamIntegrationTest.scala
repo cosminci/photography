@@ -6,7 +6,6 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Json
 import io.circe.jawn.parse
-import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.`Content-Type`
@@ -15,7 +14,7 @@ import org.http4s.{Header, Headers}
 import org.typelevel.ci.CIString
 import photography.domain.album.{AlbumId, ChapterId}
 import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditingAccess
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -59,12 +58,6 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       (AddResult.AlbumNotFound, Status.NotFound, parseJson("""{"code":"album_not_found"}""")),
       (AddResult.ChapterNotFound, Status.NotFound, parseJson("""{"code":"chapter_not_found"}""")),
       (AddResult.SpreadNotFound, Status.NotFound, parseJson("""{"code":"spread_not_found"}""")),
-      (AddResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, parseJson("""{"code":"stale_session"}""")),
-      (
-        AddResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection),
-        Status.Conflict,
-        parseJson("""{"code":"obsolete_connection"}""")
-      ),
       (AddResult.Failed, Status.InternalServerError, parseJson("""{"code":"service_failure"}"""))
     ).traverse_ { case (outcome, status, expected) =>
       for
@@ -164,100 +157,6 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(deleted, expected)
       assertEquals(seen, Vector.empty[String])
 
-  test("should require canonical connection headers before decoding structural requests and allow an absent deletion grant"):
-    val body            = Json.obj("templateId" -> Json.fromString(layout.toString))
-    val templateRequest = put(s"$albumUrl/spreads/$spread/template", body)
-    val requests        = Vector(templateRequest, delete(s"$albumUrl/spreads/$spread"))
-    val invalid         = credentials.headers.flatMap { header =>
-      val missing    = credentials.headers.filterNot(_.name === header.name)
-      val malformed  = header.copy(value = "invalid") :: missing
-      val duplicated = credentials.headers ++ List(header)
-      val combined   = header.copy(value = s"${header.value},${header.value}") :: missing
-      Vector(
-        (Headers(missing), "missing_credentials"),
-        (Headers(malformed), "invalid_credentials"),
-        (Headers(duplicated), "invalid_credentials"),
-        (Headers(combined), "invalid_credentials")
-      ).filterNot { case (_, code) => header.name === CIString("X-Editor-Grant") && code === "missing_credentials" }
-    }
-
-    for
-      calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server = buildApi(calls)
-      _ <- requests.traverse_ { request =>
-        invalid.traverse_ { case (headers, code) =>
-          respond(server, request.withHeaders(headers)).map(result =>
-            assertEquals(result, Status.BadRequest -> Json.obj("code" -> Json.fromString(code)).some)
-          )
-        }
-      }
-      missingGrant <- respond(server, templateRequest.withHeaders(Headers(credentials.headers.filterNot(_.name === CIString("X-Editor-Grant")))))
-      seen         <- calls.get
-      unlocked     <- respond(
-        buildApi(calls, delete = DeleteResult.Deleted, maybeDeleteGrant = None),
-        delete(s"$albumUrl/spreads/$spread").withHeaders(Headers(credentials.headers.filterNot(_.name === CIString("X-Editor-Grant"))))
-      )
-    yield
-      assertEquals(missingGrant, Status.BadRequest -> parseJson("""{"code":"missing_credentials"}""").some)
-      assertEquals(seen, Vector.empty[String])
-      assertEquals(unlocked, Status.NoContent -> None)
-
-  test("should expose only the public locked owner and exact structural recovery failures"):
-    val owner    = EditorId(new UUID(0L, 20L))
-    val body     = Json.obj("templateId" -> Json.fromString(layout.toString))
-    val failures = Vector(
-      EditorSessionManager.Failure.StaleSession       -> "stale_session",
-      EditorSessionManager.Failure.ObsoleteConnection -> "obsolete_connection",
-      EditorSessionManager.Failure.StaleGrant         -> "stale_grant",
-      EditorSessionManager.Failure.StaleTransition    -> "stale_transition"
-    )
-
-    for
-      calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server = buildApi(calls, change = ChangeTemplateResult.Locked(owner, "Other"), delete = DeleteResult.Locked(owner, "Other"))
-      template <- respond(server, put(s"$albumUrl/spreads/$spread/template?confirmPlacements=true", body))
-      deletion <- respond(server, delete(s"$albumUrl/spreads/$spread?confirmPlacements=true"))
-      _        <- failures.traverse_ { case (failure, code) =>
-        val rejected = buildApi(calls, change = ChangeTemplateResult.OwnershipRejected(failure), delete = DeleteResult.OwnershipRejected(failure))
-        val expected = Status.Conflict -> Json.obj("code" -> Json.fromString(code)).some
-        (respond(rejected, put(s"$albumUrl/spreads/$spread/template", body)), respond(rejected, delete(s"$albumUrl/spreads/$spread")))
-          .tupled.map { case (changed, deleted) =>
-            assertEquals(changed, expected)
-            assertEquals(deleted, expected)
-          }
-      }
-    yield
-      val expected = Status.Conflict -> Json.obj(
-        "code"    -> Json.fromString("target_locked"),
-        "ownerId" -> Json.fromString(owner.value.toString),
-        "alias"   -> Json.fromString("Other")
-      ).some
-      assertEquals(template, expected)
-      assertEquals(deletion, expected)
-
-  test("should reject missing or malformed insertion credentials before decoding or dispatch"):
-    val request = post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString("invalid")))
-    val invalid = credentials.headers.filterNot(_.name === CIString("X-Editor-Grant")).flatMap { header =>
-      val remaining = request.headers.headers.filterNot(_.name === header.name)
-      Vector(
-        (Headers(remaining), "missing_credentials"),
-        (Headers(header.copy(value = "invalid") :: remaining), "invalid_credentials"),
-        (Headers(request.headers.headers ++ List(header)), "invalid_credentials"),
-        (Headers(header.copy(value = s"${header.value},${header.value}") :: remaining), "invalid_credentials")
-      )
-    }
-
-    for
-      calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server = buildApi(calls)
-      _ <- invalid.traverse_ { case (headers, code) =>
-        respond(server, request.withHeaders(headers)).map(result =>
-          assertEquals(result, Status.BadRequest -> Json.obj("code" -> Json.fromString(code)).some)
-        )
-      }
-      seen <- calls.get
-    yield assertEquals(seen, Vector.empty[String])
-
   private def buildRawJson = Stream.emits("{".getBytes(StandardCharsets.UTF_8).toSeq).covary[IO]
 
   private def post(path: String, body: Json) =
@@ -281,8 +180,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       calls: Ref[IO, Vector[String]],
       add: AddResult = AddResult.Failed,
       change: ChangeTemplateResult = ChangeTemplateResult.Failed,
-      delete: DeleteResult = DeleteResult.Failed,
-      maybeDeleteGrant: Option[GrantId] = Some(grant)
+      delete: DeleteResult = DeleteResult.Failed
   ) =
     val addOutcome    = add
     val changeOutcome = change
@@ -292,8 +190,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           chapter: ChapterId,
           expected: NonEmptyList[SpreadId],
-          order: NonEmptyList[SpreadId],
-          connection: EditorConnection
+          order: NonEmptyList[SpreadId]
       ): IO[ReplacementResult] =
         IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
@@ -301,34 +198,49 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       override def editPlacements(
           album: AlbumId,
           spread: SpreadId,
-          request: Edit,
-          connection: EditorConnection,
-          grant: GrantId
+          request: Edit
       ): IO[PlacementResult] =
         IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
-      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, editor: EditorConnection): IO[AddResult] =
-        assertEquals(editor, connection)
+      override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
         calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
       override def changeTemplate(
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
-          confirmPlacements: Boolean,
-          editor: EditorConnection,
-          proof: GrantId
+          confirmPlacements: Boolean
       ): IO[ChangeTemplateResult] =
-        assertEquals(editor, connection)
-        assertEquals(proof, grant)
         calls.update(_ :+ s"change:${album.value}:${spread.value}:${template.value}:$confirmPlacements").as(changeOutcome)
       override def delete(
           album: AlbumId,
           spread: SpreadId,
-          confirmPlacements: Boolean,
-          editor: EditorConnection,
-          maybeGrant: Option[GrantId]
+          confirmPlacements: Boolean
       ): IO[DeleteResult] =
-        assertEquals(editor, connection)
-        assertEquals(maybeGrant, maybeDeleteGrant)
         calls.update(_ :+ s"delete:${album.value}:${spread.value}:$confirmPlacements").as(deleteOutcome)
-    AlbumSpreadApi.make(spreads).routes.orNotFound
+    val access = new EditingAccess[IO]:
+      override def run[A](
+          editor: EditorConnection,
+          protection: EditingAccess.Protection,
+          maybeGrant: Option[GrantId]
+      )(write: IO[A]): IO[EditingAccess.Result[A]] =
+        assertEquals(editor, connection)
+        protection match
+          case EditingAccess.Protection.ActiveTab         => assertEquals(maybeGrant, None)
+          case EditingAccess.Protection.OwnSpread(target) =>
+            assertEquals(target, EditingTarget.Spread(SpreadId(spread)))
+            assertEquals(maybeGrant, Some(grant))
+          case EditingAccess.Protection.ChangeSpreads(targets) =>
+            assertEquals(targets, Set(EditingTarget.Spread(SpreadId(spread))))
+            assertEquals(maybeGrant, Some(grant))
+        write.map(EditingAccess.Result.Completed(_))
+    val definitions = AlbumSpreadApi.make(spreads)
+    val policies    = Vector(
+      (Method.POST, s"/api/albums/$album/chapters/$chapter/spreads", EditingAccess.Protection.ActiveTab),
+      (Method.PUT, s"/api/albums/$album/spreads/$spread/template", EditingAccess.Protection.OwnSpread(EditingTarget.Spread(SpreadId(spread)))),
+      (Method.DELETE, s"/api/albums/$album/spreads/$spread", EditingAccess.Protection.ChangeSpreads(Set(EditingTarget.Spread(SpreadId(spread)))))
+    )
+    policies.foreach { case (method, path, protection) =>
+      val declaration = definitions.routes.lift(Request[IO](method, Uri.unsafeFromString(path))).map(_.access)
+      assertEquals(declaration, Some(Routes.Access.Editor(protection)))
+    }
+    Routes.make(access)(definitions).orNotFound
   // scalafix:on DisableSyntax.defaultArgs

@@ -12,8 +12,6 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.*
 import photography.domain.layout.*
-import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
 import photography.ports.album.AlbumCompositionRepository
 import photography.ports.spread.SpreadRepository
 import photography.ports.photo.PhotoPlacementRepository
@@ -45,11 +43,9 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     SpreadTemplate.AlbumStart(albumLayout, name = "2 x (L/L) + Text", photoSlots = Vector(box), textSlot = wideBox),
     SpreadTemplate.AlbumStart(altAlbumLayout, name = "Synopsis", photoSlots = Vector(box, wideBox), textSlot = box)
   )
-  private val untouched  = PhotoTransform(Shift(x = 0.0, y = 0.0), mirrored = false, zoom = 1.0)
-  private val newId      = SpreadId(buildUuid(index = 1000L))
-  private val country    = Country(CountryId(buildUuid(index = 22L)), code = "JP", name = "Japan", AbsoluteLocation(Path.of("/flags/jp.svg")))
-  private val connection = EditorConnection(SessionId(buildUuid(900L)), TabId(buildUuid(900L)), ConnectionGeneration(buildUuid(900L)))
-  private val grant      = GrantId(buildUuid(900L))
+  private val untouched = PhotoTransform(Shift(x = 0.0, y = 0.0), mirrored = false, zoom = 1.0)
+  private val newId     = SpreadId(buildUuid(index = 1000L))
+  private val country   = Country(CountryId(buildUuid(index = 22L)), code = "JP", name = "Japan", AbsoluteLocation(Path.of("/flags/jp.svg")))
 
   private val albumOpening = Spread.AlbumStart(
     SpreadId(buildUuid(index = 2L)),
@@ -110,7 +106,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
       for
         manager <- buildManager(refs)
-        result  <- manager.add(album.id, chapter.id, after, connection)
+        result  <- manager.add(album.id, chapter.id, after)
         inserts <- refs.inserts.get
         orders  <- refs.orders.get
       yield
@@ -125,7 +121,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs)
-      result  <- manager.add(album.id, chapter.id, after = albumOpening.id, connection)
+      result  <- manager.add(album.id, chapter.id, after = albumOpening.id)
       inserts <- refs.inserts.get
       orders  <- refs.orders.get
     yield
@@ -147,7 +143,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
       for
         manager <- buildManager(refs, maybeAlbum = current.some)
-        result  <- manager.add(current.id, chapter.id, after = chapterOpening.id, connection)
+        result  <- manager.add(current.id, chapter.id, after = chapterOpening.id)
         inserts <- refs.inserts.get
       yield
         assertEquals(result, expected)
@@ -158,10 +154,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val refs = Refs()
 
     for
-      missingAlbum   <- buildManager(refs, maybeAlbum = none[Album]).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id, connection))
-      missingChapter <- buildManager(refs).flatMap(_.add(album.id, ChapterId(buildUuid(index = 999L)), after = chapterOpening.id, connection))
-      unknownSpread  <- buildManager(refs).flatMap(_.add(album.id, chapter.id, after = SpreadId(buildUuid(index = 999L)), connection))
-      foreignSpread  <- buildManager(refs).flatMap(_.add(album.id, chapter.id, after = foreign.id, connection))
+      missingAlbum   <- buildManager(refs, maybeAlbum = none[Album]).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id))
+      missingChapter <- buildManager(refs).flatMap(_.add(album.id, ChapterId(buildUuid(index = 999L)), after = chapterOpening.id))
+      unknownSpread  <- buildManager(refs).flatMap(_.add(album.id, chapter.id, after = SpreadId(buildUuid(index = 999L))))
+      foreignSpread  <- buildManager(refs).flatMap(_.add(album.id, chapter.id, after = foreign.id))
     yield
       assertEquals(missingAlbum, AddResult.AlbumNotFound)
       assertEquals(missingChapter, AddResult.ChapterNotFound)
@@ -175,8 +171,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       unavailable <-
-        buildManager(refs, maybeTemplateResult = missing.some).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id, connection))
-      wrong <- buildManager(refs, maybeTemplateResult = wrongKind.some).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id, connection))
+        buildManager(refs, maybeTemplateResult = missing.some).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id))
+      wrong <- buildManager(refs, maybeTemplateResult = wrongKind.some).flatMap(_.add(album.id, chapter.id, after = chapterOpening.id))
     yield
       assertEquals(unavailable, AddResult.Failed)
       assertEquals(wrong, AddResult.Failed)
@@ -193,7 +189,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
       for
         manager      <- buildManager(refs, maybeAlbum = occupied.some)
-        result       <- manager.editPlacements(album.id, first.id, Edit.SetCaptionCorner(selected.id, corner), connection, grant)
+        result       <- manager.editPlacements(album.id, first.id, Edit.SetCaptionCorner(selected.id, corner))
         replacements <- refs.replacements.get
       yield
         assertEquals(result, PlacementResult.Saved(expected))
@@ -205,7 +201,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager      <- buildManager(refs)
-      result       <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
+      result       <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false)
       replacements <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Changed(first.id, singleLayout))
@@ -223,7 +219,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeAlbum = occupied.some)
-      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
+      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = false)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Occupied(2))
@@ -235,7 +231,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeAlbum = occupied.some)
-      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = true, connection, grant)
+      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = true)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Changed(first.id, singleLayout))
@@ -258,8 +254,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       val refs = Refs()
 
       for
-        manager  <- buildManager(refs, target = spread)
-        result   <- manager.changeTemplate(album.id, spread, template, confirmPlacements = false, connection, grant)
+        manager  <- buildManager(refs)
+        result   <- manager.changeTemplate(album.id, spread, template, confirmPlacements = false)
         replaced <- refs.replacements.get
       yield
         assertEquals(result, ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
@@ -273,10 +269,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val missingAlbum    = buildManager(refs, maybeAlbum = none[Album])
 
     for
-      unknownTemplate <- missingTemplate.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant))
+      unknownTemplate <- missingTemplate.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false))
       unknownSpread   <-
-        buildManager(refs, target = unknown).flatMap(_.changeTemplate(album.id, unknown, singleLayout, confirmPlacements = false, connection, grant))
-      absentAlbum <- missingAlbum.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant))
+        buildManager(refs).flatMap(_.changeTemplate(album.id, unknown, singleLayout, confirmPlacements = false))
+      absentAlbum <- missingAlbum.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false))
     yield
       assertEquals(unknownTemplate, ChangeTemplateResult.Rejected(Conflict.UnknownTemplate))
       assertEquals(unknownSpread, ChangeTemplateResult.SpreadNotFound)
@@ -290,8 +286,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       val refs = Refs()
 
       for
-        manager  <- buildManager(refs, target = openingId)
-        result   <- manager.changeTemplate(album.id, openingId, template, confirmPlacements = false, connection, grant)
+        manager  <- buildManager(refs)
+        result   <- manager.changeTemplate(album.id, openingId, template, confirmPlacements = false)
         replaced <- refs.replacements.get
       yield
         val actual = replaced.map:
@@ -308,7 +304,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeTemplateResult = FindTemplateResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).some)
-      result   <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
+      result   <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Failed)
@@ -319,7 +315,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs)
-      result  <- manager.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant))
+      result  <- manager.delete(album.id, first.id, confirmPlacements = false)
       removed <- refs.removals.get
       orders  <- refs.orders.get
     yield
@@ -335,12 +331,12 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       unconfirmed <- buildManager(
         refs,
         maybeAlbum = occupied.some
-      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = false))
       removedBefore <- refs.removals.get
       confirmed     <- buildManager(
         refs,
         maybeAlbum = occupied.some
-      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = true, connection, maybeGrant = Some(grant)))
+      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = true))
       removed <- refs.removals.get
     yield
       assertEquals(unconfirmed, DeleteResult.Occupied(2))
@@ -353,15 +349,13 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       chapterOpeningDelete <-
-        buildManager(refs).flatMap(_.delete(album.id, chapterOpening.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+        buildManager(refs).flatMap(_.delete(album.id, chapterOpening.id, confirmPlacements = false))
       albumOpeningDelete <-
-        buildManager(refs).flatMap(_.delete(album.id, albumOpening.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+        buildManager(refs).flatMap(_.delete(album.id, albumOpening.id, confirmPlacements = false))
       unknown <- buildManager(refs).flatMap(_.delete(
         album.id,
         SpreadId(buildUuid(index = 999L)),
-        confirmPlacements = false,
-        connection,
-        maybeGrant = Some(grant)
+        confirmPlacements = false
       ))
     yield
       assertEquals(chapterOpeningDelete, DeleteResult.Rejected(Conflict.OpeningDelete))
@@ -375,7 +369,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       missing <- buildManager(
         refs,
         maybeAlbum = none[Album]
-      ).flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      ).flatMap(_.delete(album.id, first.id, confirmPlacements = false))
       removed <- refs.removals.get
     yield
       assertEquals(missing, DeleteResult.AlbumNotFound)
@@ -388,8 +382,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val unwritable = buildManager(refs, maybeWriteError = failure.some)
 
     for
-      readFailed  <- unreadable.flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
-      writeFailed <- unwritable.flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      readFailed  <- unreadable.flatMap(_.delete(album.id, first.id, confirmPlacements = false))
+      writeFailed <- unwritable.flatMap(_.delete(album.id, first.id, confirmPlacements = false))
       removed     <- refs.removals.get
     yield
       assertEquals(readFailed, DeleteResult.Failed)
@@ -416,11 +410,11 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       val expected = SpreadPlacement(SpreadPlacementId(buildUuid(index = 1000L)), slot, photo, untouched, CaptionCorner.BottomRight)
 
       for
-        manager <- buildManager(refs, maybeAlbum = current.some, target = target.id)
-        placed  <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo), connection, grant)
+        manager <- buildManager(refs, maybeAlbum = current.some)
+        placed  <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo))
         read    <- manager.readPlacements(album.id, target.id)
-        removed <- manager.editPlacements(album.id, target.id, Edit.Remove(expected.id), connection, grant)
-        fresh   <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo), connection, grant)
+        removed <- manager.editPlacements(album.id, target.id, Edit.Remove(expected.id))
+        fresh   <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo))
       yield
         assertEquals(describePlacementResult(placed), Vector(expected))
         assertEquals(read, PlacementReadResult.Found(replaceTestPlacements(target, placements = Vector(expected))))
@@ -442,12 +436,12 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager      <- buildManager(refs, maybeAlbum = current.some)
-      saved        <- manager.editPlacements(album.id, first.id, Edit.Adjust(source.id, adjusted), connection, grant)
-      moved        <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot), connection, grant)
-      same         <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot), connection, grant)
-      replaced     <- manager.editPlacements(album.id, first.id, Edit.Place(source.slot, replacement), connection, grant)
-      removed      <- manager.editPlacements(album.id, first.id, Edit.Remove(incoming.id), connection, grant)
-      movedToEmpty <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, source.slot), connection, grant)
+      saved        <- manager.editPlacements(album.id, first.id, Edit.Adjust(source.id, adjusted))
+      moved        <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot))
+      same         <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot))
+      replaced     <- manager.editPlacements(album.id, first.id, Edit.Place(source.slot, replacement))
+      removed      <- manager.editPlacements(album.id, first.id, Edit.Remove(incoming.id))
+      movedToEmpty <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, source.slot))
     yield
       assertEquals(saved, PlacementResult.Saved(firstOccupied.copy(placements = changed)))
       assertEquals(moved, PlacementResult.Saved(firstOccupied.copy(placements = swapped)))
@@ -477,7 +471,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
       for
         manager <- buildManager(refs, maybeAlbum = occupied.some)
-        result  <- manager.editPlacements(album.id, first.id, request, connection, grant)
+        result  <- manager.editPlacements(album.id, first.id, request)
         writes  <- refs.replacements.get
       yield
         assertEquals(result, PlacementResult.Rejected(failure))
@@ -491,13 +485,13 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager       <- buildManager(refs)
-      secondManager <- buildManager(refs, target = second.id)
-      foreignResult <- manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, foreignPhoto), connection, grant)
+      secondManager <- buildManager(refs)
+      foreignResult <- manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, foreignPhoto))
       missingPhoto  <-
-        manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, PhotoId(buildUuid(index = 9999L))), connection, grant)
+        manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, PhotoId(buildUuid(index = 9999L))))
       outcomes <-
-        first.photoSlots.toList.parTraverse(slot => manager.editPlacements(album.id, first.id, Edit.Place(slot.id, photo), connection, grant))
-      used <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo), connection, grant)
+        first.photoSlots.toList.parTraverse(slot => manager.editPlacements(album.id, first.id, Edit.Place(slot.id, photo)))
+      used <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo))
     yield
       assertEquals(foreignResult, PlacementResult.Rejected(Failure.PhotoNotInCollection))
       assertEquals(missingPhoto, PlacementResult.Rejected(Failure.PhotoNotInCollection))
@@ -513,19 +507,19 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager          <- buildManager(refs)
-      absentManager    <- buildManager(refs, target = absent)
+      absentManager    <- buildManager(refs)
       missingAlbum     <- buildManager(refs, maybeAlbum = none[Album])
       broken           <- buildManager(refs, maybeReadError = error.some)
       uninspectable    <- buildManager(refs, maybeInspectionError = error.some)
       unwritable       <- buildManager(refs, maybeWriteError = error.some)
       absentRead       <- manager.readPlacements(album.id, absent)
-      absentWrite      <- absentManager.editPlacements(album.id, absent, request, connection, grant)
+      absentWrite      <- absentManager.editPlacements(album.id, absent, request)
       noAlbumRead      <- missingAlbum.readPlacements(album.id, first.id)
-      noAlbumWrite     <- missingAlbum.editPlacements(album.id, first.id, request, connection, grant)
+      noAlbumWrite     <- missingAlbum.editPlacements(album.id, first.id, request)
       failedRead       <- broken.readPlacements(album.id, first.id)
-      failedEdit       <- broken.editPlacements(album.id, first.id, request, connection, grant)
-      failedInspection <- uninspectable.editPlacements(album.id, first.id, request, connection, grant)
-      failedWrite      <- unwritable.editPlacements(album.id, first.id, request, connection, grant)
+      failedEdit       <- broken.editPlacements(album.id, first.id, request)
+      failedInspection <- uninspectable.editPlacements(album.id, first.id, request)
+      failedWrite      <- unwritable.editPlacements(album.id, first.id, request)
     yield
       assertEquals(absentRead, PlacementReadResult.SpreadNotFound)
       assertEquals(absentWrite, PlacementResult.SpreadNotFound)
@@ -543,8 +537,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs)
-      saved   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed, connection)
-      stale   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed, connection)
+      saved   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
+      stale   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
       orders  <- refs.orders.get
     yield
       assertEquals(saved, ReplacementResult.Saved)
@@ -563,7 +557,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs, maybeReadError = new AssertionError("Unexpected read").some)
-      results <- invalid.traverse(order => manager.replaceChapterOrder(album.id, chapter.id, observed, order, connection))
+      results <- invalid.traverse(order => manager.replaceChapterOrder(album.id, chapter.id, observed, order))
       orders  <- refs.orders.get
     yield
       assertEquals(results, Vector.fill(invalid.size)(ReplacementResult.Invalid))
@@ -575,7 +569,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs, maybeAlbum = none[Album])
-      result  <- manager.replaceChapterOrder(album.id, chapter.id, observed, observed, connection)
+      result  <- manager.replaceChapterOrder(album.id, chapter.id, observed, observed)
       orders  <- refs.orders.get
     yield
       assertEquals(result, ReplacementResult.NotFound)
@@ -589,10 +583,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       unreadable <- buildManager(refs, maybeReadError = unavailable.some)
-      failed     <- unreadable.replaceChapterOrder(album.id, chapter.id, observed, proposed, connection)
+      failed     <- unreadable.replaceChapterOrder(album.id, chapter.id, observed, proposed)
       before     <- refs.orders.get
       unwritable <- buildManager(refs, maybeWriteError = unavailable.some)
-      uncertain  <- unwritable.replaceChapterOrder(album.id, chapter.id, observed, proposed, connection)
+      uncertain  <- unwritable.replaceChapterOrder(album.id, chapter.id, observed, proposed)
       after      <- refs.orders.get
     yield
       assertEquals(failed, ReplacementResult.Failed)
@@ -646,8 +640,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       maybeReadError: Option[Throwable] = None,
       maybeWriteError: Option[Throwable] = None,
       maybeTemplateResult: Option[FindTemplateResult] = None,
-      maybeInspectionError: Option[Throwable] = None,
-      target: SpreadId = first.id
+      maybeInspectionError: Option[Throwable] = None
   ) =
     given ids: IdGenerator[IO] with
       private val next                  = Ref.unsafe[IO, Long](1000L)
@@ -707,19 +700,11 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
                   inCollection = eligible,
                   placed = current.exists(_.placements.exists(_.photo.value === photo.value))
                 )
-    Mutex[IO].flatMap: mutex =>
-      given coordination: Mutex[IO] = mutex
+    Mutex[IO].map: mutex =>
       given transaction: Transaction[IO, IO] with
-        override def run[A](program: IO[A]): IO[A]     = program
-        override def resolve[A](program: IO[A]): IO[A] = program
-      val sessionIds: IdGenerator[IO] = new IdGenerator[IO]:
-        override def generateId: IO[UUID] = buildUuid(900L).pure[IO]
-      for
-        sessions <- EditorSessionManager.make[IO](lease = 30L)(using summon, sessionIds, summon)
-        _        <- sessions.register(EditorId(buildUuid(900L)), "Owner", maybeSession = None)
-        _        <- sessions.bind(connection.session, connection.tab)
-        _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Spread(target))
-      yield SpreadManager.make(templates, composition, repository, placements, defaultLayout, sessions)
+        override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
+        override def resolve[A](program: IO[A]): IO[A] = mutex.lock.surround(program)
+      SpreadManager.make(templates, composition, repository, placements, defaultLayout)
   // scalafix:on DisableSyntax.defaultArgs
 
   private def resolveCatalog(id: SpreadTemplateId) =

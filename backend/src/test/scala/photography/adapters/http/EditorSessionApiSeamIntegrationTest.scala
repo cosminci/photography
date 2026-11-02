@@ -29,7 +29,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
   test("should register and privately resume a remembered browser without returning a tab credential"):
     for
       manager <- buildManager
-      app = EditorSessionApi.make(manager).orNotFound
+      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
       first       <- app.run(register("Cosmin"))
       session     <- first.as[Json]
       credential  <- IO.fromEither(session.hcursor.get[String]("sessionId"))
@@ -61,7 +61,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
 
     for
       manager <- buildManager
-      app = EditorSessionApi.make(manager).orNotFound
+      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
       results <- invalidBodies.traverse(body =>
         app.run(Request[IO](Method.POST, Uri.unsafeFromString(base)).withEntity(body)).flatMap(response =>
           response.as[Json].tupleLeft(response.status)
@@ -96,7 +96,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
   test("should bind only while consuming SSE, block a different document and release on cancellation"):
     for
       manager <- buildManager
-      app = EditorSessionApi.make(manager).orNotFound
+      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
       session <- registerSession(manager)
       ready   <- Deferred[IO, Json]
       stream  <- app.run(bind(session.id, tab))
@@ -125,7 +125,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
   test("should fence obsolete stream cleanup and requests after same-document reconnect"):
     for
       manager <- buildManager
-      app = EditorSessionApi.make(manager).orNotFound
+      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
       session    <- registerSession(manager)
       firstReady <- Deferred[IO, Json]
       first      <- app.run(bind(session.id, tab))
@@ -153,7 +153,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     TestControl.executeEmbed {
       for
         manager <- buildManager
-        app = EditorSessionApi.make(manager).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
         session  <- registerSession(manager)
         ready    <- Deferred[IO, Json]
         events   <- Ref.of[IO, Vector[String]](Vector.empty)
@@ -172,7 +172,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         current   <- app.run(connected(Method.GET, "", binding))
         queryOnly <- app.run(Request[IO](uri = Uri.unsafeFromString(s"$base?sessionId=${session.id.value}")))
         restarted <- buildManager
-        old       <- EditorSessionApi.make(restarted).orNotFound.run(connected(Method.GET, "", binding))
+        old       <- PublicRoutes(EditorSessionApi.make(restarted)).orNotFound.run(connected(Method.GET, "", binding))
         _         <- IO.sleep(20.seconds)
         _         <- fiber.joinWithNever
         seen      <- events.get
@@ -189,7 +189,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
   test("should report a stale session on stream acquisition without opening application access"):
     for
       manager  <- buildManager
-      response <- EditorSessionApi.make(manager).orNotFound.run(bind(SessionId(UUID.fromString(owner)), tab))
+      response <- PublicRoutes(EditorSessionApi.make(manager)).orNotFound.run(bind(SessionId(UUID.fromString(owner)), tab))
       events   <- response.body.through(ServerSentEvent.decoder[IO]).compile.toVector
     yield assertEquals(
       events.filter(_.eventType.nonEmpty),
@@ -208,7 +208,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           manager <- buildManager
           session <- registerSession(manager)
           service = rejectRequests(manager, failure)
-          app     = EditorSessionApi.make(service).orNotFound
+          app     = PublicRoutes(EditorSessionApi.make(service)).orNotFound
           response  <- app.run(bind(session.id, tab))
           events    <- response.body.through(ServerSentEvent.decoder[IO]).compile.toVector
           bound     <- IO.fromEither(events.flatMap(_.data).headOption.toRight[Throwable](new AssertionError("Missing bound event")).flatMap(parse))
@@ -241,7 +241,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
 
       for
         refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
-        app = EditorSessionApi.make(buildService(refs, session, connection)).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(buildService(refs, session, connection))).orNotFound
         registered <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
         response   <- app.run(bind(sessionId, tab))
         before     <- refs.get

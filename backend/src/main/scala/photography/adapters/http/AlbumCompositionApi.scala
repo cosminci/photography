@@ -1,9 +1,12 @@
 package photography.adapters.http
 
+import photography.adapters.http.Routes.Route
+import org.http4s.Request
+
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Json
-import org.http4s.{CacheDirective, HttpRoutes}
+import org.http4s.CacheDirective
 import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
@@ -12,13 +15,14 @@ import photography.ports.album.AlbumCompositionRepository
 import java.util.UUID
 
 object AlbumCompositionApi:
-  def make[F[_]: Async](composition: AlbumCompositionRepository.MembershipRead[F]): HttpRoutes[F] =
-    new LiveAlbumCompositionApi(composition).routes
+  def make[F[_]: Async](composition: AlbumCompositionRepository.MembershipRead[F]): Routes[F] =
+    new LiveAlbumCompositionApi(composition)
 
-  final private class LiveAlbumCompositionApi[F[_]: Async](composition: AlbumCompositionRepository.MembershipRead[F]) extends Http4sDsl[F]:
-    val routes: HttpRoutes[F] = HttpRoutes.of[F] {
-      case GET -> Root / "api" / "albums" / CanonicalId(id) / "composition" => read(AlbumId(id))
-      case GET -> Root / "api" / "albums" / _ / "composition"               => missing
+  final private class LiveAlbumCompositionApi[F[_]: Async](composition: AlbumCompositionRepository.MembershipRead[F]) extends Routes[F]
+      with Http4sDsl[F]:
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case GET -> Root / "api" / "albums" / CanonicalId(id) / "composition" => Route.public(read(AlbumId(id)))
+      case GET -> Root / "api" / "albums" / _ / "composition"               => Route.public(missing)
     }
 
     private def read(id: AlbumId) =

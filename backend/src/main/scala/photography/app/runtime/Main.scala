@@ -3,7 +3,7 @@ package photography.app.runtime
 import cats.effect.{IO, IOApp}
 import cats.syntax.all.*
 import fs2.io.net.Network
-import org.http4s.HttpApp
+import org.http4s.{HttpApp, HttpRoutes}
 import org.http4s.ember.server.EmberServerBuilder
 import org.typelevel.log4cats.StructuredLogger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
@@ -16,6 +16,7 @@ import photography.adapters.http.PhotoPlacementApi
 import photography.adapters.http.EditorSessionApi
 import photography.adapters.http.ChapterCompositionApi
 import photography.adapters.http.PhotoSourceApi
+import photography.adapters.http.Routes
 import photography.adapters.http.{GearApi, PhotosApi}
 import photography.adapters.sqlite.photo.SqlitePhotoRepository
 import photography.app.config.{AppConfig, HttpServerConfig}
@@ -58,16 +59,24 @@ object Main extends IOApp.Simple:
         yield ()
 
   private def buildHttpApp(managers: Programs[IO], thumbnails: ThumbnailStorage[IO], photoRoot: photography.domain.album.PhotoSource) =
-    val albums       = AlbumApi.make(managers.albums, managers.metadata).routes
-    val chapters     = ChapterApi.make(managers.chapters, managers.chapterMetadata, managers.chapterGear).routes
-    val photos       = PhotosApi.mount(PhotosApi.make(managers.inventories, managers.photos))
-    val thumbnailApi = ThumbnailApi.make(thumbnails).routes
-    val events       = AlbumPhotoEventsApi.make(managers.photoEvents).routes
-    val placements   = PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
-    val api = HealthRoutes.routes[IO] <+> EditorSessionApi.make(managers.editorSessions) <+> albums <+> chapters <+> events <+> thumbnailApi <+>
-      AlbumCompositionApi.make(managers.membership) <+> CountryApi.make(managers.countries) <+> PhotoSourceApi.make(photoRoot) <+>
-      SpreadTemplateApi.make(managers.templates).routes <+> GearApi.make(managers.gear).routes <+> photos <+>
-      ChapterCompositionApi.make(managers.spreads) <+> AlbumSpreadApi.make(managers.spreads).routes <+> placements
+    val definitions: List[Routes[IO]] = List(
+      HealthRoutes.routes[IO],
+      EditorSessionApi.make(managers.editorSessions),
+      AlbumApi.make(managers.albums, managers.metadata),
+      ChapterApi.make(managers.chapters, managers.chapterMetadata, managers.chapterGear),
+      PhotosApi.make(managers.inventories, managers.photos),
+      ThumbnailApi.make(thumbnails),
+      AlbumPhotoEventsApi.make(managers.photoEvents),
+      AlbumCompositionApi.make(managers.membership),
+      CountryApi.make(managers.countries),
+      PhotoSourceApi.make(photoRoot),
+      SpreadTemplateApi.make(managers.templates),
+      GearApi.make(managers.gear),
+      ChapterCompositionApi.make(managers.spreads),
+      AlbumSpreadApi.make(managers.spreads),
+      PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
+    )
+    val api = definitions.map(Routes.make(managers.editingAccess)).foldLeft(HttpRoutes.empty[IO])(_ <+> _)
     StaticSite.make(api, assetRoot = "frontend").map(_.app)
 
   private def buildHttpServer(config: HttpServerConfig, app: HttpApp[IO]) =

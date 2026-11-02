@@ -33,7 +33,7 @@ import photography.adapters.imageio.ImageIoPhotoThumbnailGenerator
 import photography.adapters.sqlite.gear.SqliteGearRepository
 import photography.usecases.gear.GearManager
 import photography.usecases.chapter.ChapterManager
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.{EditingAccess, EditorSessionManager}
 import io.github.iltotore.iron.autoRefine
 
 final case class Programs[F[_]](
@@ -51,7 +51,8 @@ final case class Programs[F[_]](
     photoEvents: AlbumPhotoEvents[F],
     spreads: SpreadManager[F],
     coverPlacements: CoverManager[F],
-    editorSessions: EditorSessionManager[F]
+    editorSessions: EditorSessionManager[F],
+    editingAccess: EditingAccess[F]
 )
 
 trait ProgramsBuilder[F[_]]:
@@ -101,7 +102,7 @@ object ProgramsBuilder:
         given Mutex[F] = mutex
         val gear       = GearManager.make(gearRepository, chapterRepository)
         Programs(
-          albums = AlbumManager.make(albumRepository, templates, pageSize, sessions),
+          albums = AlbumManager.make(albumRepository, templates, pageSize),
           chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
           gear = gear,
           chapterGear = ChapterManager.make(chapterRepository, gear),
@@ -113,9 +114,10 @@ object ProgramsBuilder:
           membership = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite),
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
-          spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout, sessions),
-          coverPlacements = CoverManager.make(coverRepository, placements, sessions),
-          editorSessions = sessions
+          spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
+          coverPlacements = CoverManager.make(coverRepository, placements),
+          editorSessions = sessions,
+          editingAccess = EditingAccess.make(sessions)
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =

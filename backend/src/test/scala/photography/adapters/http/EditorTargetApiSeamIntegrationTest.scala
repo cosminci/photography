@@ -50,7 +50,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
             RenewTargetResult.Renewed(lock),
             ReleaseResult.Released(revision.next)
           )
-          app = EditorSessionApi.make(service).orNotFound
+          app = PublicRoutes(EditorSessionApi.make(service)).orNotFound
           selected     <- app.run(request(Method.PUT).withEntity(selection(kind, revision = "0")))
           selectedBody <- selected.as[Json]
           read         <- app.run(request(Method.GET))
@@ -91,7 +91,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           RenewTargetResult.Rejected(Failure.StaleGrant),
           ReleaseResult.Rejected(Failure.StaleTransition)
         )
-        app = EditorSessionApi.make(service).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(service)).orNotFound
         response <- app.run(request(Method.PUT).withEntity(selection("spread", revision = "0")))
         body     <- response.as[Json]
         read     <- app.run(request(Method.GET))
@@ -127,7 +127,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           RenewTargetResult.Rejected(failure),
           ReleaseResult.Rejected(failure)
         )
-        app = EditorSessionApi.make(service).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(service)).orNotFound
         responses <- Vector(
           request(Method.GET),
           request(Method.PUT).withEntity(selection("cover", revision = "0")),
@@ -167,7 +167,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         RenewTargetResult.Rejected(Failure.StaleSession),
         ReleaseResult.Rejected(Failure.StaleSession)
       )
-      app = EditorSessionApi.make(service).orNotFound
+      app = PublicRoutes(EditorSessionApi.make(service)).orNotFound
       invalid   <- invalidBodies.traverse(body => app.run(request(Method.PUT).withEntity(body)).flatMap(_.as[Json]))
       malformed <- app.run(request(Method.PUT).withBodyStream(Stream.emit("{").covary[IO].through(text.utf8.encode))
         .putHeaders("Content-Type" -> "application/json"))
@@ -215,7 +215,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         active <- bound match
           case BindResult.Active(value) => IO.pure(value)
           case _                        => IO.raiseError[EditorConnection](new AssertionError("Expected tab binding"))
-        app    = EditorSessionApi.make(manager).orNotFound
+        app    = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
         select = connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "0"))
         selected  <- app.run(select)
         _         <- selected.body.compile.drain
@@ -270,7 +270,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           RenewTargetResult.Renewed(lock),
           ReleaseResult.Released(revision.next)
         )
-        app = EditorSessionApi.make(service).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(service)).orNotFound
         _        <- IO.sleep(2.seconds)
         response <- app.run(request(Method.PUT).withEntity(selection("cover", revision = decimal)))
         body     <- response.as[Json]
@@ -298,7 +298,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         }
         first  <- registerConnection(manager, owner, connection.tab)
         second <- registerConnection(manager, EditorId(new UUID(0L, 7L)), TabId(new UUID(0L, 8L)))
-        app = EditorSessionApi.make(manager).orNotFound
+        app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
         (firstResponse, secondResponse) <- (
           app.run(connectedRequest(Method.PUT, first).withEntity(selection("spread", revision = "0"))),
           app.run(connectedRequest(Method.PUT, second).withEntity(selection("spread", revision = "0")))

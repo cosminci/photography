@@ -19,14 +19,14 @@ import photography.capabilities.{IdGenerator, Transaction}
 import photography.adapters.sqlite.photo.SqlitePhotoPlacementRepository
 import photography.adapters.sqlite.album.SqliteAlbumCompositionRepository
 import photography.adapters.sqlite.spread.{SqliteSpreadRepository, SqliteSpreadTemplateRepository}
-import photography.adapters.http.PhotoPlacementApi
+import photography.adapters.http.{PhotoPlacementApi, Routes}
 import photography.domain.album.{AlbumId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult}
 import photography.syntax.SyncSyntax.*
 import photography.usecases.cover.CoverManager
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.{EditingAccess, EditorSessionManager}
 import photography.usecases.editing.EditorSessionManager.*
 import photography.usecases.spread.SpreadManager
 import java.nio.file.{Files, Path}
@@ -125,13 +125,21 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           for
             _        <- seedComposition.transact(xa)
             manager  <- buildCoverManager(xa)
+            sessions <- EditorSessionManager.make[IO](lease = 30L)
+            _        <- sessions.register(EditorId(new UUID(0L, 202L)), "Owner", maybeSession = None)
+            _        <- sessions.bind(connection.session, connection.tab)
+            _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(album))
+            api = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(buildSpreadManager(xa), manager)).orNotFound
             outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot =>
-              manager.edit(album, CoverManager.Edit.Place(slot, firstPhoto), connection, grant)
+              api.run(coverRequest(Method.POST, s"/api/albums/${album.value}/cover/placements", connection, grant).withEntity(Json.obj(
+                "slotId"  -> Json.fromString(slot.value.toString),
+                "photoId" -> Json.fromString(firstPhoto.value.toString)
+              )))
             )
             current <- repository.read(album).transact(xa)
           yield
-            val savedCount    = outcomes.count { case CoverManager.Result.Saved(_) => true; case _ => false }
-            val rejectedCount = outcomes.count { case CoverManager.Result.Rejected(CoverManager.Failure.PhotoAlreadyUsed) => true; case _ => false }
+            val savedCount    = outcomes.count(_.status === Status.Ok)
+            val rejectedCount = outcomes.count(_.status === Status.Conflict)
             val currentPhotos = current match
               case ReadResult.Found(value) => value.placements.map(_.photo)
               case ReadResult.NotFound     => fail("Expected the saved cover")
@@ -166,18 +174,29 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             spreadLock = spreadSelection match
               case SelectResult.Owned(value, _) => value
               case _                            => fail("Expected spread ownership")
-            covers    = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make, sessions)
-            interiors = buildSpreadManager(xa, sessions)
-            outcomes <- (
-              covers.edit(album, CoverManager.Edit.Place(cover.front.id, firstPhoto), coverOwner, coverLock.grant),
-              interiors.editPlacements(album, opening, SpreadManager.Edit.Place(openingSlot, firstPhoto), spreadOwner, spreadLock.grant)
+            covers    = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make)
+            interiors = buildSpreadManager(xa)
+            api       = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(interiors, covers)).orNotFound
+            (coverResponse, spreadResponse) <- (
+              api.run(coverRequest(Method.POST, s"/api/albums/${album.value}/cover/placements", coverOwner, coverLock.grant).withEntity(Json.obj(
+                "slotId"  -> Json.fromString(cover.front.id.value.toString),
+                "photoId" -> Json.fromString(firstPhoto.value.toString)
+              ))),
+              api.run(coverRequest(
+                Method.POST,
+                s"/api/albums/${album.value}/spreads/${opening.value}/placements",
+                spreadOwner,
+                spreadLock.grant
+              ).withEntity(Json.obj(
+                "slotId"  -> Json.fromString(openingSlot.value.toString),
+                "photoId" -> Json.fromString(firstPhoto.value.toString)
+              )))
             ).parTupled
+            rejected       <- (if coverResponse.status === Status.Conflict then coverResponse else spreadResponse).as[Json]
             placementCount <- sql"SELECT COUNT(*) FROM placement WHERE photo_id = ${firstPhoto.value}".query[Int].unique.transact(xa)
           yield
-            outcomes match
-              case (CoverManager.Result.Saved(_), SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.PhotoAlreadyUsed)) => ()
-              case (CoverManager.Result.Rejected(CoverManager.Failure.PhotoAlreadyUsed), SpreadManager.PlacementResult.Saved(_))  => ()
-              case _ => fail("Expected one saved composition and one already-used rejection")
+            assertEquals(Set(coverResponse.status, spreadResponse.status), Set(Status.Ok, Status.Conflict))
+            assertEquals(rejected, Json.obj("code" -> Json.fromString("photo_already_used")))
             assertEquals(placementCount, 1)
 
   test("should reject invalid persisted cover shape, identities and transforms and propagate unavailable reads"):
@@ -241,8 +260,8 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             otherLock = otherSelection match
               case SelectResult.Owned(value, _) => value
               case _                            => fail("Expected other Cover ownership")
-            covers = CoverManager.make[IO, ConnectionIO](repository, SqlitePhotoPlacementRepository.make, sessions)
-            api    = PhotoPlacementApi.make(buildSpreadManager(xa, sessions), covers).orNotFound
+            covers = CoverManager.make[IO, ConnectionIO](repository, SqlitePhotoPlacementRepository.make)
+            api    = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(buildSpreadManager(xa), covers)).orNotFound
             acknowledged <- api.run(coverRequest(Method.POST, base + "/placements", owner, lock.grant).withEntity(body))
             saved        <- repository.read(album).transact(xa)
             reconciled   <- api.run(Request[IO](Method.GET, Uri.unsafeFromString(base)))
@@ -326,10 +345,10 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             otherLock = otherSelection match
               case SelectResult.Owned(value, _) => value
               case _                            => fail("Expected Cover ownership")
-            covers  = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make, sessions)
-            spreads = buildSpreadManager(xa, sessions)
-            api     = PhotoPlacementApi.make(spreads, covers).orNotFound
-            placed <- spreads.editPlacements(album, opening, SpreadManager.Edit.Place(openingSlot, firstPhoto), owner, lock.grant)
+            covers  = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make)
+            spreads = buildSpreadManager(xa)
+            api     = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(spreads, covers)).orNotFound
+            placed <- spreads.editPlacements(album, opening, SpreadManager.Edit.Place(openingSlot, firstPhoto))
             savedPlacement = placed match
               case SpreadManager.PlacementResult.Saved(value) => value.placements.headOption.getOrElse(fail("Expected placement"))
               case _                                          => fail("Expected saved placement")
@@ -449,20 +468,15 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
       sql"INSERT INTO spread_photo_slot VALUES (${openingSlot.value}, ${opening.value}, 0, 0, 50, 100)".update.run >>
       sql"INSERT INTO spread_text_slot VALUES ($textSlot, ${opening.value}, 50, 0, 50, 100)".update.run
 
-  private def buildCoverManager(xa: Transactor[IO])(using Mutex[IO]) =
+  private def buildCoverManager(xa: Transactor[IO]) =
     given Transaction[ConnectionIO, IO] with
       override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
       override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
     val repository = SqliteCoverRepository.make
     val photos     = SqlitePhotoPlacementRepository.make
-    for
-      sessions <- EditorSessionManager.make[IO](lease = 30L)
-      _        <- sessions.register(EditorId(new UUID(0L, 202L)), "Owner", maybeSession = None)
-      _        <- sessions.bind(connection.session, connection.tab)
-      _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(album))
-    yield CoverManager.make[IO, ConnectionIO](repository, photos, sessions)
+    CoverManager.make[IO, ConnectionIO](repository, photos).pure[IO]
 
-  private def buildSpreadManager(xa: Transactor[IO], sessions: EditorSessionManager[IO])(using Mutex[IO]) =
+  private def buildSpreadManager(xa: Transactor[IO]) =
     given Transaction[ConnectionIO, IO] with
       override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
       override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
@@ -472,4 +486,4 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
     val templateRepository = SqliteSpreadTemplateRepository.make[IO](xa)
     val templates          = templateRepository
     val defaultLayout      = SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000113"))
-    SpreadManager.make[IO, ConnectionIO](templates, composition, spreads, photos, defaultLayout, sessions)
+    SpreadManager.make[IO, ConnectionIO](templates, composition, spreads, photos, defaultLayout)

@@ -3,7 +3,6 @@ package photography.usecases.album
 import photography.ports.spread.SpreadTemplateRepository
 
 import cats.effect.kernel.MonadCancelThrow
-import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
@@ -11,9 +10,6 @@ import photography.capabilities.{Clock, IdGenerator}
 import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, AlbumYear, Author, Chapter}
 import org.typelevel.log4cats.Logger
 import photography.domain.layout.*
-import photography.domain.editing.EditorConnection
-import photography.usecases.editing.EditorSessionManager
-import photography.usecases.editing.EditorSessionManager.ConnectionAuthorizationResult
 import photography.ports.album.AlbumRepository
 import photography.usecases.album.AlbumManager.*
 import photography.ports.spread.SpreadTemplateRepository.ListAlbumStartTemplatesResult
@@ -25,25 +21,23 @@ trait AlbumManager[F[_]]:
   def create(year: AlbumYear, title: AlbumTitle): F[CreateAlbumResult]
   def rename(id: AlbumId, title: AlbumTitle): F[RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult]
-  def saveAuthors(album: AlbumId, authors: AlbumAuthors, connection: EditorConnection): F[SaveAuthorsResult]
+  def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult]
   def delete(id: AlbumId): F[DeleteAlbumResult]
 
 type AlbumPageSize = Int :| Positive
 
 object AlbumManager:
-  def make[F[_]: MonadCancelThrow: IdGenerator: Clock: Logger: Mutex](
+  def make[F[_]: MonadCancelThrow: IdGenerator: Clock: Logger](
       repository: AlbumRepository[F],
       spreads: SpreadTemplateRepository[F],
-      pageSize: AlbumPageSize,
-      sessions: EditorSessionManager[F]
+      pageSize: AlbumPageSize
   ): AlbumManager[F] =
-    new LiveAlbumManager(repository, spreads, pageSize, sessions)
+    new LiveAlbumManager(repository, spreads, pageSize)
 
-  final private class LiveAlbumManager[F[_]: MonadCancelThrow: IdGenerator: Clock: Logger: Mutex](
+  final private class LiveAlbumManager[F[_]: MonadCancelThrow: IdGenerator: Clock: Logger](
       repository: AlbumRepository[F],
       spreads: SpreadTemplateRepository[F],
-      pageSize: AlbumPageSize,
-      sessions: EditorSessionManager[F]
+      pageSize: AlbumPageSize
   ) extends AlbumManager[F]:
 
     override def list(page: Int): F[ListAlbumsResult] =
@@ -96,19 +90,14 @@ object AlbumManager:
         case AlbumRepository.SaveSynopsisResult.Uncertain =>
           Logger[F].error(s"Album synopsis save acknowledgement uncertain for ${album.value}").as(SaveSynopsisResult.Uncertain)
 
-    override def saveAuthors(album: AlbumId, authors: AlbumAuthors, connection: EditorConnection): F[SaveAuthorsResult] =
-      summon[Mutex[F]].lock.surround:
-        MonadCancelThrow[F].uncancelable: _ =>
-          sessions.authorizeConnection(connection).flatMap:
-            case ConnectionAuthorizationResult.Rejected(reason) => SaveAuthorsResult.OwnershipRejected(reason).pure[F]
-            case ConnectionAuthorizationResult.Authorized       =>
-              repository.saveAuthors(album, authors).flatMap:
-                case AlbumRepository.SaveAuthorsResult.Saved(updated) => SaveAuthorsResult.Saved(updated).pure[F]
-                case AlbumRepository.SaveAuthorsResult.NotFound       => SaveAuthorsResult.NotFound.pure[F]
-                case AlbumRepository.SaveAuthorsResult.Failed(reason) =>
-                  Logger[F].error(s"Album authors save failed for ${album.value}: $reason").as(SaveAuthorsResult.Failed)
-                case AlbumRepository.SaveAuthorsResult.Uncertain =>
-                  Logger[F].error(s"Album authors save acknowledgement uncertain for ${album.value}").as(SaveAuthorsResult.Uncertain)
+    override def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult] =
+      repository.saveAuthors(album, authors).flatMap:
+        case AlbumRepository.SaveAuthorsResult.Saved(updated) => SaveAuthorsResult.Saved(updated).pure[F]
+        case AlbumRepository.SaveAuthorsResult.NotFound       => SaveAuthorsResult.NotFound.pure[F]
+        case AlbumRepository.SaveAuthorsResult.Failed(reason) =>
+          Logger[F].error(s"Album authors save failed for ${album.value}: $reason").as(SaveAuthorsResult.Failed)
+        case AlbumRepository.SaveAuthorsResult.Uncertain =>
+          Logger[F].error(s"Album authors save acknowledgement uncertain for ${album.value}").as(SaveAuthorsResult.Uncertain)
 
     private def buildInitialComposition(
         year: AlbumYear,
@@ -159,4 +148,3 @@ object AlbumManager:
   enum SaveAuthorsResult derives CanEqual:
     case Saved(album: Album)
     case NotFound, Failed, Uncertain
-    case OwnershipRejected(reason: EditorSessionManager.Failure)

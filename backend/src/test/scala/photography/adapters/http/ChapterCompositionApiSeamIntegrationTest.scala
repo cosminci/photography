@@ -13,7 +13,7 @@ import org.typelevel.ci.CIString
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId}
 import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditingAccess
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -67,24 +67,19 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
       ReplacementResult.Uncertain,
       Status.InternalServerError,
       Json.obj("code" -> Json.fromString("write_uncertain")).some
-    ),
-    Scenario(
-      "reject an expired session",
-      ReplacementResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession),
-      Status.Conflict,
-      Json.obj("code" -> Json.fromString("stale_session")).some
-    ),
-    Scenario(
-      "reject an obsolete tab generation",
-      ReplacementResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection),
-      Status.Conflict,
-      Json.obj("code" -> Json.fromString("obsolete_connection")).some
     )
   )
   scenarios.foreach { scenario =>
     test(s"should ${scenario.name}"):
-      val program = buildManager(scenario.result)
-      ChapterCompositionApi.make(program).orNotFound.run(Request[IO](Method.PUT, Uri.unsafeFromString(path), headers = credentials).withEntity(body))
+      val program     = buildManager(scenario.result)
+      val definitions = ChapterCompositionApi.make(program)
+      val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access)
+      assertEquals(declaration, Some(Routes.Access.Editor(EditingAccess.Protection.ActiveTab)))
+      Routes.make(buildAccess)(definitions).orNotFound.run(Request[IO](
+        Method.PUT,
+        Uri.unsafeFromString(path),
+        headers = credentials
+      ).withEntity(body))
         .flatMap(response =>
           response.bodyText.compile.string.map: body =>
             assertEquals(response.status, scenario.status)
@@ -95,7 +90,7 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
 
   test("should reject malformed JSON, empty orders and noncanonical member IDs before mutation"):
     val program = buildManager(ReplacementResult.Failed)
-    val routes  = ChapterCompositionApi.make(program).orNotFound
+    val routes  = Routes.make(buildAccess)(ChapterCompositionApi.make(program)).orNotFound
     val invalid = Vector(
       "{}",
       "{",
@@ -120,61 +115,46 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
 
   final private case class Scenario(name: String, result: ReplacementResult, status: Status, maybeBody: Option[Json])
 
-  test("should reject missing and malformed connection headers before decoding an order"):
-    val invalid = credentials.headers.flatMap { header =>
-      val remaining = credentials.headers.filterNot(_.name === header.name)
-      Vector(
-        (Headers(remaining), "missing_credentials"),
-        (Headers(header.copy(value = "invalid") :: remaining), "invalid_credentials"),
-        (Headers(credentials.headers ++ List(header)), "invalid_credentials"),
-        (Headers(header.copy(value = s"${header.value},${header.value}") :: remaining), "invalid_credentials")
-      )
-    }
-    val routes = ChapterCompositionApi.make(buildManager(ReplacementResult.Failed)).orNotFound
-
-    invalid.traverse_ { case (headers, code) =>
-      routes.run(Request[IO](Method.PUT, Uri.unsafeFromString(path), headers = headers).withEntity(Json.Null)).flatMap: response =>
-        response.as[Json].map: actual =>
-          assertEquals(response.status, Status.BadRequest)
-          assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
-          assertEquals(actual, Json.obj("code" -> Json.fromString(code)))
-    }
-
   private def buildManager(result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
     override def replaceChapterOrder(
         id: AlbumId,
         target: ChapterId,
         previous: NonEmptyList[SpreadId],
-        order: NonEmptyList[SpreadId],
-        editor: EditorConnection
+        order: NonEmptyList[SpreadId]
     ): IO[ReplacementResult] =
       IO:
         assertEquals(id.value, album.value)
         assertEquals(target.value, chapter.value)
         assertEquals(previous.map(_.value), NonEmptyList.one(opening.value))
         assertEquals(order.map(_.value), NonEmptyList.one(opening.value))
-        assertEquals(editor, connection)
       .as(result)
-    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId, connection: EditorConnection): IO[AddResult] =
+    override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
       IO.raiseError[AddResult](new AssertionError("Unexpected add"))
     override def changeTemplate(
         album: AlbumId,
         spread: SpreadId,
         template: SpreadTemplateId,
-        confirmPlacements: Boolean,
-        connection: EditorConnection,
-        grant: GrantId
+        confirmPlacements: Boolean
     ): IO[ChangeTemplateResult] =
       IO.raiseError[ChangeTemplateResult](new AssertionError("Unexpected template change"))
     override def delete(
         album: AlbumId,
         spread: SpreadId,
-        confirmPlacements: Boolean,
-        connection: EditorConnection,
-        maybeGrant: Option[GrantId]
+        confirmPlacements: Boolean
     ): IO[DeleteResult] =
       IO.raiseError[DeleteResult](new AssertionError("Unexpected deletion"))
     override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
       IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
-    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit, connection: EditorConnection, grant: GrantId): IO[PlacementResult] =
+    override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
       IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
+
+  private def buildAccess: EditingAccess[IO] = new EditingAccess[IO]:
+    override def run[A](
+        editor: EditorConnection,
+        protection: EditingAccess.Protection,
+        maybeGrant: Option[GrantId]
+    )(write: IO[A]): IO[EditingAccess.Result[A]] =
+      assertEquals(editor, connection)
+      assertEquals(protection, EditingAccess.Protection.ActiveTab)
+      assertEquals(maybeGrant, None)
+      write.map(EditingAccess.Result.Completed(_))

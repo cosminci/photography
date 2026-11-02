@@ -12,7 +12,7 @@ import org.http4s.headers.`Content-Type`
 import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, AlbumYear, Author, Chapter}
 import photography.domain.layout.*
 import photography.domain.editing.*
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.EditingAccess
 import photography.usecases.album.AlbumManager
 import photography.usecases.album.AlbumManager.*
 import photography.ports.album.AlbumRepository
@@ -88,7 +88,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls   <- refs.calls.get
       yield
         assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
-        assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors, connection)))
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors)))
         assertEquals(otherCalls, Vector.empty[String])
   }
 
@@ -115,13 +115,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   Vector(
     AuthorsScenario(SaveAuthorsResult.NotFound, Status.NotFound, code = "album_not_found"),
     AuthorsScenario(SaveAuthorsResult.Failed, Status.InternalServerError, code = "service_failure"),
-    AuthorsScenario(SaveAuthorsResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain"),
-    AuthorsScenario(SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession), Status.Conflict, code = "stale_session"),
-    AuthorsScenario(
-      SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.ObsoleteConnection),
-      Status.Conflict,
-      code = "obsolete_connection"
-    )
+    AuthorsScenario(SaveAuthorsResult.Uncertain, Status.InternalServerError, code = "mutation_uncertain")
   ).foreach { scenario =>
     test(s"should deliver authors ${scenario.result} without retry or postwrite read"):
       val refs                   = Refs()
@@ -135,38 +129,9 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       yield
         val expected = ApiResponse(scenario.status, jsonMediaType, Json.obj("code" -> Json.fromString(scenario.code)).some)
         assertEquals(response, expected)
-        assertEquals(contentCalls, Vector(ContentCall.Authors(id, selected, connection)))
+        assertEquals(contentCalls, Vector(ContentCall.Authors(id, selected)))
         assertEquals(otherCalls, Vector.empty[String])
   }
-
-  test("should reject missing and noncanonical author credentials before decoding or dispatch, marking every outcome no-store"):
-    val refs    = Refs()
-    val server  = buildAlbumApi(refs)
-    val request = Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/authors")).withEntity("{")
-    val invalid = credentials.flatMap { header =>
-      val remaining = credentials.filterNot(_.name === header.name)
-      Vector(
-        (remaining, "missing_credentials"),
-        (remaining :+ header.copy(value = "invalid"), "invalid_credentials"),
-        (remaining :+ header.copy(value = "00000000-0000-0000-0000-00000000000A"), "invalid_credentials"),
-        (remaining :+ header.copy(value = "1-1-1-1-1"), "invalid_credentials"),
-        (remaining ++ Vector(header, header), "invalid_credentials"),
-        (remaining :+ header.copy(value = s"${header.value},${header.value}"), "invalid_credentials")
-      )
-    }
-
-    for
-      _ <- invalid.traverse_ { case (headers, code) =>
-        for
-          response <- server.run(request.withHeaders(Headers(headers)))
-          body     <- response.as[String]
-        yield
-          assertEquals(response.status, Status.BadRequest)
-          assertEquals(json(body), Json.obj("code" -> Json.fromString(code)))
-          assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
-      }
-      calls <- refs.contentCalls.get
-    yield assertEquals(calls, Vector.empty[ContentCall])
 
   test("should reject malformed content and noncanonical targets before any application call"):
     val refs             = Refs()
@@ -398,7 +363,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
 
   private enum ContentCall:
     case Synopsis(album: AlbumId, text: String)
-    case Authors(album: AlbumId, authors: AlbumAuthors, connection: EditorConnection)
+    case Authors(album: AlbumId, authors: AlbumAuthors)
 
   final private case class SynopsisScenario(result: SaveSynopsisResult, status: Status, code: String)
   final private case class AuthorsScenario(result: SaveAuthorsResult, status: Status, code: String)
@@ -429,8 +394,8 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val albums = new AlbumManager[IO]:
       override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =
         refs.contentCalls.update(_ :+ ContentCall.Synopsis(id, text = text)) >> synopsisResult
-      override def saveAuthors(id: AlbumId, authors: AlbumAuthors, connection: EditorConnection): IO[AlbumManager.SaveAuthorsResult] =
-        refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors, connection)) >> authorsResult
+      override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumManager.SaveAuthorsResult] =
+        refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors)) >> authorsResult
       override def list(page: Int): IO[ListAlbumsResult]                             = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
       override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] =
         refs.calls.update(_ :+ s"create:$year:$title").as(createAlbumResult)
@@ -440,7 +405,20 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val metadata = new AlbumRepository.MetadataRead[IO]:
       override def metadata(album: AlbumId): IO[AlbumRepository.MetadataResult] =
         refs.calls.update(_ :+ s"metadata:${album.value}").as(metadataResult)
-    AlbumApi.make(albums, metadata).routes.orNotFound
+    val access = new EditingAccess[IO]:
+      override def run[A](
+          editor: EditorConnection,
+          protection: EditingAccess.Protection,
+          maybeGrant: Option[GrantId]
+      )(write: IO[A]): IO[EditingAccess.Result[A]] =
+        assertEquals(editor, connection)
+        assertEquals(protection, EditingAccess.Protection.ActiveTab)
+        assertEquals(maybeGrant, None)
+        write.map(EditingAccess.Result.Completed(_))
+    val definitions = AlbumApi.make(albums, metadata)
+    val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/authors"))).map(_.access)
+    assertEquals(declaration, Some(Routes.Access.Editor(EditingAccess.Protection.ActiveTab)))
+    Routes.make(access)(definitions).orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   private def send(server: HttpApp[IO], method: Method, path: String, body: String) =

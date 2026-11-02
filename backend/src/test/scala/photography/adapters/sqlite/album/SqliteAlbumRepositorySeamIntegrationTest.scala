@@ -23,10 +23,10 @@ import photography.domain.album.*
 import photography.domain.layout.*
 import photography.domain.editing.*
 import photography.capabilities.{Clock, IdGenerator}
-import photography.adapters.http.AlbumApi
+import photography.adapters.http.{AlbumApi, Routes}
 import photography.adapters.sqlite.spread.SqliteSpreadTemplateRepository
 import photography.usecases.album.AlbumManager
-import photography.usecases.editing.EditorSessionManager
+import photography.usecases.editing.{EditingAccess, EditorSessionManager}
 import photography.usecases.editing.EditorSessionManager.{BindResult, RegisterResult, SelectResult, ReadTargetResult}
 import org.http4s.{Header, Headers, Method, Request, Status, Uri}
 import org.typelevel.ci.CIString
@@ -687,8 +687,8 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
             owner    <- bind(sessions, owner = 901)
             locked   <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album.id))
             editor   <- bind(sessions, owner = 902)
-            manager = AlbumManager.make(uncertain, SqliteSpreadTemplateRepository.make[IO](xa), pageSize = 6, sessions)
-            server  = AlbumApi.make(manager, repository).routes.orNotFound
+            manager = AlbumManager.make(uncertain, SqliteSpreadTemplateRepository.make[IO](xa), pageSize = 6)
+            server  = Routes.make(EditingAccess.make(sessions))(AlbumApi.make(manager, repository)).orNotFound
             request = Request[IO](Method.PUT, Uri.unsafeFromString(s"/api/albums/${album.id.value}/authors"))
               .withEntity(Json.obj("authors" -> Json.arr(Json.fromString("Mara"))))
               .withHeaders(Headers(

@@ -1,11 +1,14 @@
 package photography.adapters.http
 
+import photography.adapters.http.Routes.Route
+import org.http4s.Request
+
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, Encoder, Json}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
+import org.http4s.{CacheDirective, MessageBodyFailure}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.http4s.headers.`Cache-Control`
@@ -14,25 +17,23 @@ import photography.usecases.gear.GearManager
 import photography.usecases.gear.GearManager.*
 import java.util.UUID
 
-trait GearApi[F[_]]:
-  def routes: HttpRoutes[F]
+trait GearApi[F[_]] extends Routes[F]
 
 object GearApi:
   def make[F[_]: Async](gear: GearManager[F]): GearApi[F] = new LiveGearApi(gear)
 
   final private class LiveGearApi[F[_]: Async](gear: GearManager[F]) extends GearApi[F] with Http4sDsl[F]:
-    override def routes: HttpRoutes[F] =
-      HttpRoutes.of[F] {
-        case GET -> Root / "api" / "gear"                                => readCatalog
-        case request @ POST -> Root / "api" / "cameras"                  => createCamera(request)
-        case request @ POST -> Root / "api" / "lenses"                   => createLens(request)
-        case request @ PUT -> Root / "api" / "cameras" / CanonicalId(id) => updateCamera(CameraId(value = id), request)
-        case request @ PUT -> Root / "api" / "lenses" / CanonicalId(id)  => updateLens(LensId(value = id), request)
-        case DELETE -> Root / "api" / "cameras" / CanonicalId(id)        => deleteCamera(CameraId(value = id))
-        case DELETE -> Root / "api" / "lenses" / CanonicalId(id)         => deleteLens(LensId(value = id))
-        case (PUT | DELETE) -> Root / "api" / "cameras" / _              => respondCameraNotFound
-        case (PUT | DELETE) -> Root / "api" / "lenses" / _               => respondLensNotFound
-      }
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case GET -> Root / "api" / "gear"                                => Route.public(readCatalog)
+      case request @ POST -> Root / "api" / "cameras"                  => Route.public(createCamera(request))
+      case request @ POST -> Root / "api" / "lenses"                   => Route.public(createLens(request))
+      case request @ PUT -> Root / "api" / "cameras" / CanonicalId(id) => Route.public(updateCamera(CameraId(value = id), request))
+      case request @ PUT -> Root / "api" / "lenses" / CanonicalId(id)  => Route.public(updateLens(LensId(value = id), request))
+      case DELETE -> Root / "api" / "cameras" / CanonicalId(id)        => Route.public(deleteCamera(CameraId(value = id)))
+      case DELETE -> Root / "api" / "lenses" / CanonicalId(id)         => Route.public(deleteLens(LensId(value = id)))
+      case (PUT | DELETE) -> Root / "api" / "cameras" / _              => Route.public(respondCameraNotFound)
+      case (PUT | DELETE) -> Root / "api" / "lenses" / _               => Route.public(respondLensNotFound)
+    }
 
     private def readCatalog =
       gear.readCatalog.flatMap:

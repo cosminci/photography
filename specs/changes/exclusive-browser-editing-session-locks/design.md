@@ -2,7 +2,7 @@
 
 ## Existing model
 
-`EditorSession` relates `SessionId` to `EditorId` and a last heartbeat; `SessionLease` is a positive value with no consumer-defined unit. `EditingTarget` already distinguishes an interior `SpreadId` from an album's full Cover, and `EditingLock` associates a target with a session.
+`EditorSession` relates `SessionId` to `EditorId` and a last heartbeat; `SessionLease` is a positive value with no consumer-defined unit. `EditingTarget` already distinguishes an interior `SpreadId` from an album's exterior cover spread, and `EditingLock` associates a target with a session.
 
 `EditorSessionState` holds browser-owner sessions and locks, but has no runtime consumer. Its unused `EditorTabState.TakeoverRequired` conflicts with the approved no-takeover behavior.
 
@@ -20,35 +20,33 @@ The V1 SQLite representation already has session and spread/Cover lock tables. N
 | `SessionId`, `EditorSession` | Backend-issued private session credential, validated alias and live-session deadline. | One live session per browser identity; resume requires its retained credential, not merely an EditorId or alias. | Session HTTP boundary, tab lifecycle and existing application state. |
 | `EditorSession` live-tab binding | Add a fresh document identity and backend-issued connection generation, distinct from remembered browser identity. | One active tab connection per browser session; a different live tab is blocked, and older connection credentials cannot authorize requests. | Session event-stream acquisition/release, heartbeat and every browser mutation. |
 | `SessionLease` | Define seconds explicitly and enforce 30-second session and target leases with 10-second heartbeat guidance. | Successful session heartbeat and target renewal are separate transitions; elapsed-time expiry is backend-authoritative. | Composition supplies validated fixed lease policy; session responses supply timing to the browser. |
-| `EditingTarget` | Reuse Spread and full Cover without another session-target model. | Cover's two sides form one target; target membership is read from existing saved owners. | Session acquisition, SpreadManager, CoverManager and content protection. |
+| `EditingTarget` | Reuse Spread and Cover without another session-target model. | The exterior spread's two sides form one target; target membership is read from existing saved owners. | Session acquisition, route declarations, background protection and existing content owners. |
 | `EditingLock` | Add unique acquisition identity and independently renewable deadline. | Every new acquisition gets a different grant; SessionId alone never authorizes a protected target write. | Mutation credentials, heartbeat/release requests and browser ownership state. |
 | `EditorSessionState`, `EditorTabState` | Evolve into authoritative live transitions and explicit active, blocked, stale and failed results; remove takeover semantics. | At most one target per live session and one owner per target; each target transition has a session-scoped fencing revision. | New `EditorSessionManager` operations and the runtime's single state instance. |
-| `EditorSessionManager` | New behavior for the existing state owner: register/resume, read ownership, heartbeat, switch/acquire and release; expose checked mutation authorization. | Lifecycle transitions acquire the shared Mutex; mutation owners authorize inside their existing interval, never before it or through a second independent guard. | HTTP session boundary, existing mutation managers and ownership-event publication. |
+| `EditorSessionManager` | New behavior for the existing state owner: register/resume, read ownership, heartbeat, switch/acquire and release; expose checked mutation authorization. | Lifecycle transitions and the shared editing executor use the same Mutex; authorization and admitted mutation completion occupy one interval. | HTTP session boundary, `EditingAccess` and ownership-event publication. |
 | `AlbumCompositionRepository`, `PhotoPlacementRepository`, chapter/gear repositories | Evolve reads to retain affected target identities rather than only membership/used booleans. | Derive protection from current authoritative relationships; missing or failed acquisition is explicit and cannot become an empty affected set. | Content, structural and background mutation owners; SQLite adapters. |
-| Spread/Cover placement and lifecycle operations | Accept live session and exact target-grant evidence; template replacement and deletion use the same guard. | Preserve collection checks and atomic writes; confirmation never overrides ownership. | PhotoPlacementApi, AlbumSpreadApi, HTTP clients, placement/structural browser consumers. |
-| Album, chapter, photo-caption and gear operations | Check their actual content dependencies against current locks in the same interval as writing. | Keep each resource's domain owner; authors and nondestructive order/insertion are explicit exceptions, not permission to bypass destructive checks. | Existing content APIs, managers, repository adapters and content editors. |
+| Spread/Cover placement and lifecycle operations | Declare required ownership at their routes; centralized enforcement validates live connection and exact grant evidence before calling existing content owners. | Preserve collection checks and atomic writes; confirmation never overrides ownership. | PhotoPlacementApi, AlbumSpreadApi, shared executor, HTTP clients and placement/structural browser consumers. |
+| Album synopsis, chapter, photo-caption and gear operations | Declare their actual content dependencies for centralized protection in the same interval as writing. | Keep each resource's domain owner; authors and nondestructive order/insertion remain independently writable. | Policy-declaring routes, shared enforcement, repository adapters and content editors. |
 | `ChapterPhotoImport`, `PhotoManager` | Guard affected publication/removal transactions; retain initiating grant evidence when work can affect its owner's target. | Background work cannot impersonate a newer grant; another owner's affected lock preserves saved data and produces processing feedback. | Import requests, transaction guard, photo repositories and inventory events. |
 | `AlbumPhotoEvents` | Evolve the existing invalidation owner into `AlbumEvents`, with committed content/composition and ownership events plus session/global subscriptions. | Notifications follow commits or authority transitions and carry resource identity, not a second saved-state projection; bounded coalescing and failed-delivery feedback remain explicit. | Existing photo-event consumers, session SSE boundary, LiveWorkspace, catalog/Cover and gear consumers. |
 | Browser session/ownership consumer | Retain browser identity, alias and resumable credential, then establish an exclusive backend-bound tab connection before exposing application routes. | Duplicate tabs have different document identities and cannot share active access; browser identity alone never authorizes a tab. | Application entrypoint, editor, catalog and Reader. |
 | `PlacementSession`, `ContentSave`, workspace selection | Add grant-aware availability, retained loss drafts, acquisition reconciliation and explicit resubmission. | A draft belongs to its target and acquisition; later ownership never legitimizes automatic replay or older history. | Text/caption/photo controls, navigation, recovery and later history integration. |
 
-`EditorSessionManager` is a lifecycle responsibility missing from the existing static state, not a parallel domain model or authentication service. Its authorization result is consumed by the manager that owns the mutation and already coordinates the current read/decision/write.
+`EditorSessionManager` is a lifecycle responsibility missing from the existing static state, not a parallel domain model or authentication service. `EditingAccess` consumes its authorization result while existing business managers retain content validation and persistence.
 
 ## Protection map
 
 | Mutation | Affected target authority |
 | --- | --- |
 | Interior placements, transforms, swaps, caption corners and template replacement | The current spread; require its exact grant even when no competing lock exists. |
-| Cover placements, transforms and side swaps | Full Cover; require its exact grant. |
-| Photo caption | The photo's current placement target, including writes through the chapter/photo endpoint; an unplaced photo has no spread target. |
+| Cover placements, transforms and side swaps | The exterior spread; require its exact grant. |
+| Photo caption | The spread containing the photo, including writes through the chapter/photo endpoint; an unplaced photo has no spread to protect. |
 | Album synopsis | Album opening. |
-| Album title | Album opening and Cover. |
 | Author selection | Independently writable by explicit maintainer exception; notify other browsers of saved credits. |
 | Chapter description and gear selection | The chapter opening whose content changes. |
 | Referenced camera/lens catalog edits | Chapter openings whose rendered gear changes; preserve existing compatibility and used-entry checks. |
 | Chapter metadata/source replacement | Targets whose owner text, source/placement references or identity changes, including Synopsis/Cover use of retired photos. |
 | Spread deletion | The deleted spread; other-session ownership rejects deletion even with placement confirmation. |
-| Album deletion | All contained spread/Cover targets; acquisition and deletion share coordination. |
 | Nondestructive chapter/spread insertion or order changes | Remain independent of locks while preserving target identity/content; use existing capacity, membership and stale-order checks. |
 | Background photo publication/removal | Current targets referencing the changed photo; guard each real transaction and retain existing per-photo progress semantics. |
 
@@ -88,6 +86,24 @@ Authority uses backend elapsed-time deadlines; displayed expiry is guidance rath
 Each target transition advances a session-scoped revision, including release and unsuccessful destination contention after release. This prevents a delayed acquisition from recreating an old target after a newer navigation cycle has released it.
 
 Every browser mutation validates its current session and tab binding, including permitted author/order changes. Protected admissions additionally check the exact target grant and current affected relationships under the mutation's shared Mutex.
+
+## Central route enforcement amendment
+
+One active application tab per browser profile and protection of a spread from another browser's edits are separate rules; the cover is an exterior spread, with both sides protected together.
+
+Each route declares its access requirement beside its handler through `Routes`, without a default policy or separate URL table; the route aggregator installs enforcement, while session lifecycle endpoints retain their own connection and lease transitions.
+
+`EditingAccess` reuses the existing authority and shared coordination: request decoding precedes coordination, and current relationship reads, authorization and mutation completion share one interval with competing acquisition.
+
+Ordinary business managers retain their content decisions and persistence outcomes without browser credentials or access-error variants; their previous nested coordination moves to the shared executor as each operation migrates.
+
+Background photo publication/removal uses the same protection per photo transaction, retaining initiating ownership evidence; source discovery, decoding and entire import lifetimes remain outside coordination.
+
+The shared enforcement suite owns generic credentials, fencing, expiry and cancellation scenarios; route declarations, resource relationships and real HTTP/SQLite races retain focused proofs instead of repeating that matrix through business suites.
+
+The refactoring delivery migrates all previously protected operations together and requires explicit declarations for every API route; public declarations preserve the behavior of routes whose protection has not yet been implemented. Remaining caption, owner-text, gear, source/background and live-update work stays with the approved feature rather than being represented as delivered protection.
+
+Album title editing and album deletion are outside this feature's scope; their existing behavior is unchanged.
 
 A write admitted live can complete atomically across expiry; competing acquisition waits and observes its committed result. Expired sessions, target grants and replaced tab bindings reject later admissions.
 

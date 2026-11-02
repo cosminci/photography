@@ -1,12 +1,11 @@
 package photography.adapters.http
 
-import cats.data.{Kleisli, OptionT}
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Json
-import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request, Response, Status}
+import org.http4s.{CacheDirective, MessageBodyFailure, Request}
 import org.http4s.headers.`Cache-Control`
-import org.http4s.server.Router
+import photography.adapters.http.Routes.Route
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.*
@@ -15,31 +14,30 @@ import photography.usecases.photo.ChapterPhotoInventory.{Snapshot as ChapterPhot
 import photography.usecases.photo.PhotoManager.SaveCaptionResult
 import java.util.UUID
 
-trait PhotosApi[F[_]]:
-  def routes(chapter: ChapterId): HttpRoutes[F]
+trait PhotosApi[F[_]] extends Routes[F]
 
 object PhotosApi:
   def make[F[_]: Async](inventories: ChapterPhotoInventory[F], photos: PhotoManager[F]): PhotosApi[F] =
     new LivePhotosApi(inventories, photos)
 
-  def mount[F[_]: Async](photos: PhotosApi[F]): HttpRoutes[F] =
-    val scoped: HttpRoutes[F] = Kleisli { request =>
-      request.pathInfo.segments.toList match
-        case segment :: remaining if remaining.headOption.exists(_.decoded() === "photos") =>
-          CanonicalId.unapply(segment.decoded()) match
-            case Some(id) => Router(s"/${segment.decoded()}" -> photos.routes(ChapterId(id))).run(request)
-            case None     => OptionT.pure[F](Response[F](Status.NotFound).withEntity(Map("code" -> "chapter_not_found")))
-        case _ => OptionT.none[F, Response[F]]
-    }
-    Router("/api/chapters" -> scoped)
-
   final private class LivePhotosApi[F[_]: Async](inventories: ChapterPhotoInventory[F], photos: PhotoManager[F])
       extends PhotosApi[F] with Http4sDsl[F]:
-    override def routes(chapter: ChapterId): HttpRoutes[F] = HttpRoutes.of[F] {
-      case GET -> Root / "photos"                                            => listChapter(chapter)
-      case request @ PUT -> Root / "photos" / CanonicalId(photo) / "caption" => saveCaption(chapter, PhotoId(photo), request)
-      case PUT -> Root / "photos" / _ / "caption"                            => NotFound(body = Map("code" -> "photo_not_found"))
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case GET -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" =>
+        Route.public(listChapter(ChapterId(chapter)))
+      case request @ PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" / CanonicalId(photo) / "caption" =>
+        Route.public(saveCaption(ChapterId(chapter), PhotoId(photo), request))
+      case PUT -> Root / "api" / "chapters" / CanonicalId(_) / "photos" / _ / "caption" =>
+        Route.public(NotFound(body = Map("code" -> "photo_not_found")))
+      case request if invalidChapter(request) =>
+        Route.public(NotFound(body = Map("code" -> "chapter_not_found")))
     }
+
+    private def invalidChapter(request: Request[F]) = request.pathInfo.segments.toList match
+      case api :: chapters :: chapter :: photos :: _ =>
+        api.decoded() === "api" && chapters.decoded() === "chapters" && photos.decoded() === "photos" &&
+        CanonicalId.unapply(chapter.decoded()).isEmpty
+      case _ => false
 
     private def listChapter(chapter: ChapterId) =
       inventories.read(chapter).flatMap:

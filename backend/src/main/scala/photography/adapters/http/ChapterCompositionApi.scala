@@ -4,45 +4,43 @@ import cats.data.NonEmptyList
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, Json}
-import org.http4s.{CacheDirective, HttpRoutes, MessageBodyFailure, Request}
-import org.http4s.headers.`Cache-Control`
+import org.http4s.{MessageBodyFailure, Request, Response}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.{AlbumId, ChapterId}
-import photography.adapters.http.EditorCredentials.*
+import photography.adapters.http.Routes.Route
+import photography.usecases.editing.EditingAccess.Protection
 import photography.domain.layout.SpreadId
 import photography.usecases.spread.SpreadManager
 import java.util.UUID
 
 object ChapterCompositionApi:
-  def make[F[_]: Async](spreads: SpreadManager[F]): HttpRoutes[F] = new LiveChapterCompositionApi(spreads).routes
+  def make[F[_]: Async](spreads: SpreadManager[F]): Routes[F] = new LiveChapterCompositionApi(spreads)
 
-  final private class LiveChapterCompositionApi[F[_]: Async](spreads: SpreadManager[F]) extends Http4sDsl[F]:
-    val routes: HttpRoutes[F] = HttpRoutes.of[F] {
+  final private class LiveChapterCompositionApi[F[_]: Async](spreads: SpreadManager[F]) extends Routes[F] with Http4sDsl[F]:
+    override def routes: PartialFunction[Request[F], Route[F, ?]] = {
       case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "composition" =>
         replace(AlbumId(album), ChapterId(chapter), request)
     }
 
     private def replace(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      readConnection(request).fold(
-        message => BadRequest(Map("code" -> message)),
-        connection =>
-          decode(request).flatMap:
-            case Left(message) => BadRequest(Map("message" -> message))
-            case Right(order)  =>
-              spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed, connection).flatMap:
-                case SpreadManager.ReplacementResult.Saved     => NoContent()
-                case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
-                case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
-                case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
-                case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
-                case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
-                case SpreadManager.ReplacementResult.OwnershipRejected(reason) => Conflict(Map("code" -> encodeFailure(reason)))
-      ).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+      Route(
+        Routes.Access.Editor(Protection.ActiveTab),
+        decode(request),
+        (order: Order) =>
+          spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed).flatMap:
+            case SpreadManager.ReplacementResult.Saved     => NoContent()
+            case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
+            case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
+            case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
+            case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
+            case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
+      )
 
     private def decode(request: Request[F]) =
       request.as[Json].map(value => Decoder[Order].decodeJson(value).leftMap(_.message))
         .recover { case _: MessageBodyFailure => "Supply a valid composition".asLeft[Order] }
+        .flatMap(_.fold(message => BadRequest(Map("message" -> message)).map(_.asLeft[Order]), _.asRight[Response[F]].pure[F]))
 
     private object CanonicalId:
       def unapply(value: String): Option[UUID] =

@@ -41,4 +41,4 @@ final class CountryApiSeamIntegrationTest extends CatsEffectSuite:
   private def read(result: CountryRepository.ListResult) =
     val repository = new CountryRepository[IO]:
       override def list: IO[CountryRepository.ListResult] = result.pure[IO]
-    CountryApi.make(repository).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString("/api/countries")))
+    PublicRoutes(CountryApi.make(repository)).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString("/api/countries")))
