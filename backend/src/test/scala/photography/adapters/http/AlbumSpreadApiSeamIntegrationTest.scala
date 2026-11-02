@@ -11,6 +11,7 @@ import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.headers.`Content-Type`
 import org.http4s.{HttpApp, MediaType, Method, Request, Status, Uri}
 import photography.domain.album.{AlbumId, ChapterId}
+import photography.domain.editing.{EditorConnection, GrantId}
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.*
@@ -181,7 +182,13 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
         IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
         IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
-      override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
+      override def editPlacements(
+          album: AlbumId,
+          spread: SpreadId,
+          request: Edit,
+          connection: EditorConnection,
+          grant: GrantId
+      ): IO[PlacementResult] =
         IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
       override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
         calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)

@@ -113,7 +113,7 @@ object ProgramsBuilder:
           membership = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite),
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
-          spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
+          spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout, sessions),
           coverPlacements = CoverManager.make(coverRepository, placements, sessions),
           editorSessions = sessions
         )
