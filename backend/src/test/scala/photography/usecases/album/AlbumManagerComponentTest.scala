@@ -283,18 +283,18 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
           acquiring    <-
           (attempted.complete(()) >> sessions.select(next, TargetRevision.initial, EditingTarget.Cover(album.id))
             .flatTap(result => completed.complete(result).void)).start
-          _        <- attempted.get
-          _        <- IO.sleep(1.second)
-          waiting  <- completed.tryGet
-          _        <- finish.complete(())
-          saved    <- writing.joinWithNever
-          rejected <- waitingWrite.joinWithNever
-          selected <- acquiring.joinWithNever
-          calls    <- refs.authorsCalls.get
+          _             <- attempted.get
+          _             <- IO.sleep(1.second)
+          maybeAcquired <- completed.tryGet
+          _             <- finish.complete(())
+          saved         <- writing.joinWithNever
+          rejected      <- waitingWrite.joinWithNever
+          selected      <- acquiring.joinWithNever
+          calls         <- refs.authorsCalls.get
         yield
           assertEquals(saved, SaveAuthorsResult.Saved(album))
           assertEquals(rejected, SaveAuthorsResult.OwnershipRejected(EditorSessionManager.Failure.StaleSession))
-          assertEquals(waiting, None)
+          assertEquals(maybeAcquired, None)
           canceled match
             case Outcome.Canceled() => ()
             case other              => fail(s"Expected canceled waiter, obtained $other")
@@ -304,6 +304,61 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
               assertEquals(revision, TargetRevision.initial.next)
             case other => fail(s"Expected successor, obtained $other")
           assertEquals(calls, Vector(album.id -> Author.all))
+
+  test("should complete admitted author persistence before cancellation releases coordination to acquisition"):
+    TestControl.executeEmbed:
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        given IdGenerator[IO] with
+          override def generateId: IO[UUID] = IO(UUID.randomUUID())
+        val refs  = Refs()
+        val album = buildAlbum(index = 1)
+        for
+          sessions  <- EditorSessionManager.make[IO](lease = 30L)
+          editor    <- bind(sessions, owner = 1)
+          next      <- bind(sessions, owner = 2)
+          entered   <- Deferred[IO, Unit]
+          finish    <- Deferred[IO, Unit]
+          requested <- Deferred[IO, Unit]
+          canceled  <- Deferred[IO, Unit]
+          attempted <- Deferred[IO, Unit]
+          acquired  <- Deferred[IO, (SelectResult, Vector[(AlbumId, AlbumAuthors)])]
+          manager = AlbumManager.make(
+            buildRepository(
+              refs,
+              authorsResult = AlbumRepository.SaveAuthorsResult.Saved(album),
+              beforeAuthors = entered.complete(()).void >> finish.get
+            ),
+            buildTemplates(),
+            pageSize,
+            sessions
+          )
+          writing      <- manager.saveAuthors(album.id, Author.all, editor).start
+          _            <- entered.get
+          cancellation <- (requested.complete(()) >> writing.cancel >> canceled.complete(())).start
+          _            <- requested.get
+          acquiring    <-
+          (attempted.complete(()) >> sessions.select(next, TargetRevision.initial, EditingTarget.Cover(album.id))
+            .flatMap(result => refs.authorsCalls.get.flatMap(calls => acquired.complete((result, calls)).void))).start
+          _             <- attempted.get
+          _             <- IO.sleep(1.second)
+          maybeCanceled <- canceled.tryGet
+          maybeAcquired <- acquired.tryGet
+          _             <- IO(assertEquals(maybeCanceled, None))
+          _             <- IO(assertEquals(maybeAcquired, None))
+          _             <- finish.complete(())
+          _             <- cancellation.joinWithNever
+          saved         <- writing.joinWithNever
+          _             <- acquiring.joinWithNever
+          observed      <- acquired.get
+        yield
+          assertEquals(saved, SaveAuthorsResult.Saved(album))
+          observed match
+            case (SelectResult.Owned(lock, revision), calls) =>
+              assertEquals(lock, EditingLock(EditingTarget.Cover(album.id), next.session, lock.grant, 31.seconds))
+              assertEquals(revision, TargetRevision.initial.next)
+              assertEquals(calls, Vector(album.id -> Author.all))
+            case other => fail(s"Expected acquisition after committed authors, obtained $other")
 
   final private case class Refs():
     val synopsisCalls: Ref[IO, Vector[(AlbumId, String)]]      = Ref.unsafe(Vector.empty)
