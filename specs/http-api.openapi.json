@@ -724,14 +724,19 @@
       "put": {
         "operationId": "saveAlbumAuthors",
         "summary": "Replace the album's nonempty author selection",
-        "description": "Requires unique supported authors; accepts any nonempty combination and publishes Cosmin, Mara, Iacob display order. Changes only authors and returns complete saved album metadata without rereading or retrying. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "description": "Requires a live bound connection, not a target grant; author selection remains independently writable despite any target lock. Canonical private connection headers are validated before the body. Requires unique supported authors; accepts any nonempty combination and publishes Cosmin, Mara, Iacob display order. Changes only authors and returns complete saved album metadata without rereading or retrying. Admission and persistence share backend mutation coordination; a live-admitted write may finish across expiry before waiting acquisitions proceed. Waiting remains cancellable. Every matched response is no-store. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read. Uncertain writes require reconciliation, never automatic replay.",
         "requestBody": { "required": true, "content": { "application/json": { "schema": {
           "type": "object", "required": ["authors"], "properties": { "authors": { "$ref": "#/components/schemas/AlbumAuthors" } }
         } } } },
         "responses": {
           "200": { "description": "Saved album metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlbumMetadata" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/AlbumNotFound" },
+          "409": { "description": "Session or tab authority is stale; reconcile without replaying", "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["stale_session", "obsolete_connection"] } } } } } },
           "500": { "$ref": "#/components/responses/ContentMutationFailure" }
         }
       }
