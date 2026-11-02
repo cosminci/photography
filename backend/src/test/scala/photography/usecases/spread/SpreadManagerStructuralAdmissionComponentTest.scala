@@ -1,7 +1,7 @@
 package photography.usecases.spread
 
 import cats.data.NonEmptyList
-import cats.effect.{Deferred, IO, Ref}
+import cats.effect.{Clock, Deferred, IO, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
@@ -85,22 +85,24 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
           lock = selected match
             case SelectResult.Owned(value, _) => value
             case _                            => fail("Expected ownership")
+          _         <- IO.sleep(20.seconds)
+          next      <- bind(sessions, owner = 2L)
           state     <- Ref.of[IO, Option[Spread]](Some(spread))
           entered   <- Deferred[IO, Unit]
           finish    <- Deferred[IO, Unit]
           attempted <- Deferred[IO, Unit]
-          completed <- Deferred[IO, Unit]
+          completed <- Deferred[IO, SelectResult]
           manager = buildManager(state, sessions, entered.complete(()).void >> finish.get)
           write     <- manager.changeTemplate(album, spread.id, layout.id, confirmPlacements = true, owner, lock.grant).start
           _         <- entered.get
-          _         <- IO.sleep(31.seconds)
+          _         <- IO.sleep(11.seconds)
           contender <- (for
-            _        <- attempted.complete(())
-            next     <- bind(sessions, owner = 2L)
-            acquired <- sessions.select(next, TargetRevision.initial, EditingTarget.Spread(spread.id))
-            read     <- manager.readPlacements(album, spread.id)
-            _        <- completed.complete(())
-          yield (next, acquired, read)).start
+            _          <- attempted.complete(())
+            acquired   <- sessions.select(next, TargetRevision.initial, EditingTarget.Spread(spread.id))
+            acquiredAt <- Clock[IO].monotonic
+            _          <- completed.complete(acquired)
+            read       <- manager.readPlacements(album, spread.id)
+          yield (acquiredAt, acquired, read)).start
           _        <- attempted.get
           _        <- IO.sleep(1.second)
           waiting  <- completed.tryGet
@@ -108,8 +110,8 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
           changed  <- write.joinWithNever
           observed <- contender.joinWithNever
           current  <- state.get
-          (next, acquired, read) = observed
-          nextLock               = acquired match
+          (acquiredAt, acquired, read) = observed
+          nextLock                     = acquired match
             case SelectResult.Owned(value, revision) =>
               assertEquals(revision, TargetRevision.initial.next)
               value
@@ -137,8 +139,7 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
           assertEquals(read, PlacementReadResult.Found(expected))
           assertEquals(changed, ChangeTemplateResult.Changed(spread.id, layout.id))
           assertEquals(waiting, None)
-          assertEquals(nextLock.target, EditingTarget.Spread(spread.id))
-          assertEquals(nextLock.session, next.session)
+          assertEquals(nextLock, EditingLock(EditingTarget.Spread(spread.id), next.session, nextLock.grant, acquiredAt + 30.seconds))
           assert(nextLock.grant.value =!= lock.grant.value)
           assertEquals(stale, ChangeTemplateResult.OwnershipRejected(SessionFailure.StaleSession))
           assertEquals(staleTemplate, ChangeTemplateResult.OwnershipRejected(SessionFailure.StaleGrant))
