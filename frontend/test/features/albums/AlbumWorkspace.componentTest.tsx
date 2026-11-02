@@ -111,6 +111,24 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each(["Reader", "view-only"] as const)(
+    "should refresh saved content after session reconnect in $0 without relying on inventory reconnect",
+    async (view) => {
+      const [available, setAvailable] = createSignal(true);
+      const session = { ...editingSession, available, targetReason: () => "View only. Mara is editing this spread." };
+      const client = buildClient();
+      render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+      await screen.findByRole("group", { name: "Synopsis composition" });
+      if (view === "Reader") fireEvent.click(screen.getByRole("button", { name: "Reader mode" }));
+      setAvailable(false);
+      vi.mocked(client.open).mockResolvedValue({ ...album, synopsis: "Fresh after session reconnect" });
+      setAvailable(true);
+      await waitFor(() => {
+        expect(screen.getAllByText("Fresh after session reconnect").length).toBeGreaterThan(0);
+      });
+    },
+  );
+
   it.each([false, true])("should release ownership through the application brand and fence departure after release=%s", async (released) => {
     window.history.replaceState(null, "", "/albums/album");
     let finish!: (value: boolean) => void;
@@ -304,7 +322,12 @@ describe("album workspace browser boundary", () => {
   it("should retain a synopsis draft through ownership loss and require explicit saved-state review before resubmission", async () => {
     const [available, setAvailable] = createSignal(true);
     const [authority, setAuthority] = createSignal(1);
-    const session = { ...editingSession, available, authority };
+    const reconnect = vi.fn().mockImplementation(() => {
+      setAvailable(true);
+      return Promise.resolve();
+    });
+    const select = vi.fn(editingSession.select);
+    const session = { ...editingSession, available, authority, reconnect, select };
     const text = "Retained offline text";
     const client = buildClient({ saveSynopsis: vi.fn().mockResolvedValue({ ...album, synopsis: text }) });
     render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
@@ -317,7 +340,8 @@ describe("album workspace browser boundary", () => {
     expect(editor).toBeDisabled();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-    setAvailable(true);
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
+    expect(reconnect).toHaveBeenCalledOnce();
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     });
@@ -326,6 +350,7 @@ describe("album workspace browser boundary", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Review");
     });
     expect(client.saveSynopsis).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(2);
     expect(editor).toHaveValue(text);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => {

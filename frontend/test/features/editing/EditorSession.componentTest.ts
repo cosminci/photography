@@ -80,6 +80,23 @@ async function connect() {
 }
 
 describe("browser editing session", () => {
+  it("should cancel request lifetimes on target-only expiry and session loss without confusing the two leases", async () => {
+    vi.useFakeTimers();
+    const { session, transport } = await connect();
+    vi.mocked(transport.select).mockResolvedValue({ revision: "1", grant: { ...grant, remainingMillis: 1000 } });
+    await session.select(target);
+    const granted = session.requestSignal();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(granted.aborted).toBe(true);
+    expect(session.available()).toBe(true);
+    const live = session.requestSignal();
+    expect(live.aborted).toBe(false);
+    session.interrupt("offline");
+    expect(live.aborted).toBe(true);
+    expect(session.requestSignal().aborted).toBe(false);
+    expect(session.available()).toBe(false);
+  });
+
   it("should reuse identification already remembered by another first-run tab", async () => {
     const { session, transport } = buildSession();
     localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
@@ -163,6 +180,8 @@ describe("browser editing session", () => {
       return { revision: "0", grant: null };
     });
     const oldSelection = session.select(target);
+    const obsoleteDestination = session.select({ kind: "cover", id: identity });
+    const obsoleteRelease = session.select(null);
     await vi.waitFor(() => {
       expect(session.targetPending()).toBe(true);
     });
@@ -175,6 +194,10 @@ describe("browser editing session", () => {
     expect(await session.select(target, true)).toBe(true);
     finish();
     expect(await oldSelection).toBe(false);
+    expect(await obsoleteDestination).toBe(false);
+    expect(await obsoleteRelease).toBe(false);
+    expect(transport.select).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ generation: identity }), "0", target);
+    expect(transport.release).not.toHaveBeenCalled();
     expect(session.targetReason(target)).toBeUndefined();
   });
 
@@ -338,6 +361,7 @@ describe("browser editing session", () => {
     expect(session.headers()["X-Editor-Grant"]).toBeUndefined();
     await session.select(target);
     expect(transport.select).toHaveBeenCalledOnce();
+    expect(session.targetReason(target)).toMatch(/Mara/);
     vi.mocked(transport.select).mockRejectedValueOnce(new Error("lost acknowledgement"));
     expect(await session.select(target, true)).toBe(false);
     expect(session.available()).toBe(false);
@@ -352,6 +376,15 @@ describe("browser editing session", () => {
     expect(session.targetReason(target)).toBeUndefined();
     expect(transport.select).toHaveBeenCalledTimes(2);
     expect(session.targetReason({ kind: "cover", id: identity })).toMatch(/view only/i);
+  });
+
+  it("should block an unconfirmed former grant without automatically reacquiring the same target", async () => {
+    const { session } = await connect();
+    await session.select(target);
+
+    expect(await session.select(target)).toBe(false);
+    expect(session.headers()["X-Editor-Grant"]).toBeUndefined();
+    expect(session.targetReason(target)).toMatch(/Choose Edit spread/);
   });
 
   it("should reconcile lost release acknowledgements using current ownership rather than repeat an obsolete release", async () => {

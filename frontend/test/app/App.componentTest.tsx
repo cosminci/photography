@@ -47,6 +47,43 @@ const dialogAnimationFinished = vi.fn<() => Promise<void>>().mockResolvedValue(u
 const browserYear = vi.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
 
 describe("album dashboard and open", () => {
+  it("should preserve the loaded document across catalog navigation and keep draft resolution ahead of history departure", async () => {
+    const select = vi.fn().mockResolvedValue(true);
+    const documentBefore = document;
+    const client = buildClient({
+      spread: vi.fn().mockResolvedValue({
+        id: "opening",
+        templateId: "layout",
+        chapter: null,
+        kind: "album_start",
+        placements: [],
+        slots: [{ id: "text-slot", kind: "text", x: 50, y: 4, width: 48, height: 92 }],
+      }),
+    });
+    render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
+    await screen.findByRole("heading", { level: 1, name: firstAlbum.title });
+    expect(document).toBe(documentBefore);
+    fireEvent.click(screen.getByRole("button", { name: "Edit synopsis" }));
+    const editor = screen.getByRole("textbox", { name: "Synopsis" });
+    fireEvent.input(editor, { target: { value: "Retained text" } });
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(`/albums/${firstAlbum.id}`);
+    });
+    expect(editor).toHaveValue("Retained text");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("link", { name: "Album Layout Studio" }));
+    await screen.findByRole("heading", { name: "Album dashboard" });
+    expect(select).toHaveBeenLastCalledWith(null);
+    expect(window.location.pathname).toBe("/");
+    expect(document).toBe(documentBefore);
+  });
+
   beforeAll(() => {
     vi.stubGlobal(
       "ResizeObserver",

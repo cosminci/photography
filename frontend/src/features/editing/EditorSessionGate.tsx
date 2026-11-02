@@ -52,7 +52,7 @@ export function EditorSessionGate(props: {
         )}
       </Show>
       <Show when={props.session.opened()}>
-        <div hidden={props.session.blocked()} inert={props.session.blocked()}>
+        <div class="session-application" hidden={props.session.blocked()} inert={props.session.blocked()}>
           {props.children}
         </div>
       </Show>

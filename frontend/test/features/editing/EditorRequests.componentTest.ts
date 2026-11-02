@@ -2,15 +2,91 @@ import { describe, expect, it, vi } from "vitest";
 import { makeEditorRequests } from "../../../src/features/editing/EditorRequests";
 import type { EditorSession } from "../../../src/features/editing/EditorSession";
 
-function buildSession(available = true): Pick<EditorSession, "available" | "headers" | "interrupt"> {
+function buildSession(available = true): Pick<EditorSession, "available" | "headers" | "interrupt" | "requestSignal"> {
+  const lifetime = new AbortController();
   return {
     available: () => available,
     headers: () => ({ "X-Editor-Session": "private", "X-Editor-Grant": "exact-grant" }),
     interrupt: vi.fn(),
+    requestSignal: () => lifetime.signal,
   };
 }
 
 describe("browser mutation credentials", () => {
+  it.each(["network rejection", "ownership rejection", "success"] as const)(
+    "should isolate a late old request's %s from replacement authority",
+    async (outcome) => {
+      let lifetime = new AbortController();
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const session = { ...buildSession(), requestSignal: () => lifetime.signal };
+      const failure = new Error("old network failed");
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+        await pending;
+        if (outcome === "network rejection") throw failure;
+        return new Response(JSON.stringify({ code: "obsolete_connection" }), { status: outcome === "success" ? 200 : 409 });
+      });
+      const requesting = makeEditorRequests(fetcher, session)("/api/albums", { method: "PUT" });
+      lifetime.abort();
+      lifetime = new AbortController();
+      finish();
+      await expect(requesting).rejects.toMatchObject(outcome === "network rejection" ? failure : { name: "AbortError" });
+      expect(session.interrupt).not.toHaveBeenCalled();
+    },
+  );
+
+  it("should reject an old conflict body completed after replacement authority", async () => {
+    let lifetime = new AbortController();
+    let body!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          body = controller;
+        },
+      }),
+      { status: 409 },
+    );
+    const cloning = vi.spyOn(response, "clone");
+    const session = { ...buildSession(), requestSignal: () => lifetime.signal };
+    const request = makeEditorRequests(vi.fn<typeof fetch>().mockResolvedValue(response), session);
+
+    const requesting = request("/api/albums", { method: "PUT" });
+    await vi.waitFor(() => {
+      expect(cloning).toHaveBeenCalledOnce();
+    });
+    lifetime.abort();
+    lifetime = new AbortController();
+    body.enqueue(new TextEncoder().encode(JSON.stringify({ code: "obsolete_connection" })));
+    body.close();
+
+    await expect(requesting).rejects.toMatchObject({ name: "AbortError" });
+    expect(session.interrupt).not.toHaveBeenCalled();
+  });
+
+  it("should cancel a hung request at the session lifetime boundary without claiming server rollback", async () => {
+    const lifetime = new AbortController();
+    const session = { ...buildSession(), requestSignal: () => lifetime.signal };
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(new DOMException("Aborted pending request", "AbortError"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const requesting = makeEditorRequests(fetcher, session)("/api/albums", { method: "PUT" });
+    lifetime.abort();
+    await expect(requesting).rejects.toThrow("Aborted pending request");
+    expect(session.interrupt).not.toHaveBeenCalled();
+    expect(fetcher.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
+  });
+
   it.each(["POST", "PUT", "PATCH", "DELETE"])(
     "should attach current private ownership headers to %s without changing request content",
     async (method) => {
@@ -35,7 +111,7 @@ describe("browser mutation credentials", () => {
 
   it.each([undefined, "GET", "HEAD"])("should keep %s viewing requests public", async (method) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}"));
-    const init = method === undefined ? undefined : { method };
+    const init = method === undefined ? undefined : { method, signal: null };
 
     await makeEditorRequests(fetcher, buildSession(false))("/api/albums", init);
 

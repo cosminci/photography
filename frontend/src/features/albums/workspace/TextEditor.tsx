@@ -10,11 +10,12 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
-  authority?: () => number | undefined;
+  maybeAuthority?: () => number | undefined;
+  maybeOnReconnect?: () => Promise<void>;
 }) {
   const feedback = createUniqueId();
   const save = createContentSave({
-    authority: untrack(() => props.authority),
+    maybeAuthority: untrack(() => props.maybeAuthority),
     save: (text: string) => props.save(text),
     read: () => props.read(),
     equal: (left, right) => left === right,
@@ -22,11 +23,8 @@ export function TextEditor(props: {
       props.onClose();
     },
   });
-  const unavailable = createMemo(() =>
-    props.authority !== undefined && props.authority() === undefined
-      ? "Editing ownership is unavailable. Your draft is retained."
-      : save.unavailable(),
-  );
+  const needsReconnect = createMemo(() => props.maybeAuthority !== undefined && props.maybeAuthority() === undefined);
+  const unavailable = createMemo(() => (needsReconnect() ? "Editing ownership is unavailable. Your draft is retained." : save.unavailable()));
   let dialog!: HTMLDialogElement;
   let input!: HTMLTextAreaElement;
   let status!: HTMLDivElement;
@@ -86,6 +84,18 @@ export function TextEditor(props: {
           void save.commit(true);
         }}
       >
+        <Show when={needsReconnect() ? props.maybeOnReconnect : undefined}>
+          {(reconnect) => (
+            <button
+              type="button"
+              onClick={() => {
+                void reconnect()();
+              }}
+            >
+              Reconnect browser
+            </button>
+          )}
+        </Show>
         <textarea
           ref={(element) => {
             input = element;

@@ -10,11 +10,16 @@ import {
 } from "./EditorSession";
 
 export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTransport {
-  async function request(method: string, path: string, headers: Readonly<Record<string, string>>, body?: unknown): Promise<Record<string, unknown>> {
+  async function request(
+    method: string,
+    path: string,
+    headers: Readonly<Record<string, string>>,
+    maybeBody?: unknown,
+  ): Promise<Record<string, unknown>> {
     const response = await fetcher(`/api/editor-session${path}`, {
       method,
-      headers: { Accept: "application/json", ...headers, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      headers: { Accept: "application/json", ...headers, ...(maybeBody === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(maybeBody === undefined ? {} : { body: JSON.stringify(maybeBody) }),
       cache: "no-store",
     });
     const value = readObject(await response.json());
@@ -75,8 +80,8 @@ export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTrans
   }
 
   return {
-    register: async (editorId, alias, sessionId) =>
-      readSession(await request("POST", "", sessionId === undefined ? {} : { "X-Editor-Session": sessionId }, { editorId, alias })),
+    register: async (editorId, alias, maybeSessionId) =>
+      readSession(await request("POST", "", maybeSessionId === undefined ? {} : { "X-Editor-Session": maybeSessionId }, { editorId, alias })),
     subscribe,
     heartbeat: async (connection) => readSession(await request("POST", "/heartbeat", connectionHeaders(connection))),
     readTarget: async (connection) => readTargetState(await request("GET", "/target", connectionHeaders(connection))),

@@ -7,7 +7,7 @@ describe("content save lifecycle", () => {
   it.each(["Draft", "Another editor's saved text"])(
     "should not treat readback of %s from obsolete ownership as review of a new grant",
     async (saved) => {
-      let authority = 1;
+      let maybeAuthority = 1;
       let finish!: (value: string) => void;
       const pending = new Promise<string>((resolve) => {
         finish = resolve;
@@ -21,14 +21,14 @@ describe("content save lifecycle", () => {
           read,
           onSaved,
           equal: (left, right) => left === right,
-          authority: () => authority,
+          maybeAuthority: () => maybeAuthority,
         }),
       );
       session.begin("Original");
       session.change("Draft");
-      authority = 2;
+      maybeAuthority = 2;
       const reviewing = session.commit(true);
-      authority = 3;
+      maybeAuthority = 3;
       finish(saved);
       await reviewing;
       expect(session.draft()?.value).toBe("Draft");
@@ -44,20 +44,20 @@ describe("content save lifecycle", () => {
   );
 
   it("should require authoritative readback and explicit review rather than replay a draft under new ownership", async () => {
-    let authority: number | undefined = 1;
+    let maybeAuthority: number | undefined = 1;
     const save = vi.fn().mockResolvedValue("Draft");
     const read = vi.fn().mockResolvedValue("Another editor's saved text");
     const onSaved = vi.fn();
     const session = createRoot(() =>
-      createContentSave<string>({ save, read, onSaved, equal: (left, right) => left === right, authority: () => authority }),
+      createContentSave<string>({ save, read, onSaved, equal: (left, right) => left === right, maybeAuthority: () => maybeAuthority }),
     );
     session.begin("Original");
     session.change("Draft");
-    authority = undefined;
+    maybeAuthority = undefined;
 
     await session.commit();
     expect(session.error()).toMatch(/unavailable/i);
-    authority = 2;
+    maybeAuthority = 2;
     await session.commit();
     expect(save).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();

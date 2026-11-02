@@ -6,4 +6,5 @@ export const editingSession: WorkspaceEditingSession = {
   targetReason: () => undefined,
   targetPending: () => false,
   select: () => Promise.resolve(true),
+  reconnect: () => Promise.resolve(),
 };

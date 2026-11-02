@@ -88,6 +88,7 @@ export function AlbumWorkspace(props: {
   const [reader, setReader] = createSignal(false);
   const [ownershipLoading, setOwnershipLoading] = createSignal(false);
   let ownershipGeneration = 0;
+  let sessionWasAvailable = untrack(() => props.session.available());
   const [contentBlocks, setContentBlocks] = createSignal<Readonly<Record<string, string>>>({});
   const [textEdit, setTextEdit] = createSignal<{ chapter: Chapter | undefined; opener: HTMLButtonElement }>();
   const contentReason = createMemo(() => Object.values(contentBlocks())[0]);
@@ -133,7 +134,7 @@ export function AlbumWorkspace(props: {
     return metadata.description;
   }
   const captions = createCaptionEditing({
-    authority: () => (props.session.available() && ownershipReason() === undefined ? props.session.authority() : undefined),
+    maybeAuthority: () => (props.session.available() && ownershipReason() === undefined ? props.session.authority() : undefined),
     save: async (photoId, text) => {
       const owner = props.workspace.chapters.find(
         (candidate) => props.workspace.photoInventories[candidate.id]?.photos.some((photo) => photo.id === photoId) === true,
@@ -169,10 +170,14 @@ export function AlbumWorkspace(props: {
     const selected = selection();
     return selected.kind === "spread" ? selected.spread : undefined;
   });
-  const editingTarget = createMemo<EditingTarget | undefined>(() => {
-    const spread = selectedSpread();
-    return part() === "cover" ? { kind: "cover", id: props.album.id } : spread === undefined ? undefined : { kind: "spread", id: spread.id };
-  });
+  const editingTarget = createMemo<EditingTarget | undefined>(
+    () => {
+      const spread = selectedSpread();
+      return part() === "cover" ? { kind: "cover", id: props.album.id } : spread === undefined ? undefined : { kind: "spread", id: spread.id };
+    },
+    undefined,
+    { equals: (maybePrevious, maybeNext) => maybePrevious?.kind === maybeNext?.kind && maybePrevious?.id === maybeNext?.id },
+  );
   const ownershipReason = createMemo(() => {
     const target = editingTarget();
     return ownershipLoading()
@@ -185,24 +190,27 @@ export function AlbumWorkspace(props: {
     placement.saving() ? "Saving photos. Please wait." : placement.loading() ? "Reading saved photos. Please wait." : undefined,
   );
   const photoApplyReason = createMemo(() => ownershipReason() ?? photoRecoveryReason());
-  async function confirmOwnership(target: EditingTarget | null, explicit: boolean) {
+  async function confirmOwnership(target: EditingTarget | null, explicit: boolean, reconnect = false) {
     const generation = ++ownershipGeneration;
     const before = props.session.authority();
     setOwnershipLoading(true);
     await props.session.select(target, explicit);
     if (!active || generation !== ownershipGeneration) return;
-    if (explicit || before !== props.session.authority()) await refresh();
+    if (explicit || reconnect || before !== props.session.authority()) await refresh();
     if (generation === ownershipGeneration) setOwnershipLoading(false);
   }
   createEffect(
-    on([() => editingTarget()?.kind, () => editingTarget()?.id, reader, () => props.session.available()], () => {
+    on([editingTarget, reader, () => props.session.available()], () => {
       const target = editingTarget();
       if (!props.session.available()) {
+        sessionWasAvailable = false;
         ownershipGeneration++;
         setOwnershipLoading(false);
         return;
       }
-      void confirmOwnership(reader() ? null : (target ?? null), false);
+      const reconnect = !sessionWasAvailable;
+      sessionWasAvailable = true;
+      void confirmOwnership(reader() ? null : (target ?? null), false, reconnect);
     }),
   );
   const displayedSpread = createMemo(() => {
@@ -360,6 +368,7 @@ export function AlbumWorkspace(props: {
       window.history.replaceState(null, "", url);
       return;
     }
+    if (window.location.pathname !== workspacePath) return;
     const next = readPart();
     void refresh();
     setPart(next);
@@ -391,7 +400,10 @@ export function AlbumWorkspace(props: {
     event.preventDefault();
     if (navigationReason() !== undefined) return;
     void props.session.select(null).then((released) => {
-      if (released && active) window.location.assign(destination.href);
+      if (released && active) {
+        window.history.pushState(null, "", destination);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }
     });
   }
 
@@ -579,7 +591,7 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={!reader() && ownershipReason()}>
         {(reason) => (
-          <div class="control-help">
+          <div class="editing-ownership">
             <p id="editing-ownership-reason" role="status">
               {reason()}
             </p>
@@ -947,7 +959,8 @@ export function AlbumWorkspace(props: {
       <Show when={textEdit()} keyed>
         {(action) => (
           <TextEditor
-            authority={() =>
+            maybeOnReconnect={() => props.session.reconnect()}
+            maybeAuthority={() =>
               props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined) ? props.session.authority() : undefined
             }
             heading={action.chapter === undefined ? "Album synopsis" : `Chapter description for ${action.chapter.name}`}

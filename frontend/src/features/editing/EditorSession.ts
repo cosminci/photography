@@ -36,7 +36,7 @@ export type SessionEvent =
 export type TargetSelection = TargetState | { readonly revision: string; readonly alias: string; readonly remainingMillis: number };
 
 export interface EditorSessionTransport {
-  readonly register: (editorId: string, alias: string, sessionId: string | undefined) => Promise<RegisteredSession>;
+  readonly register: (editorId: string, alias: string, maybeSessionId: string | undefined) => Promise<RegisteredSession>;
   readonly subscribe: (sessionId: string, tabId: string, receive: (event: SessionEvent) => void, signal: AbortSignal) => Promise<void>;
   readonly heartbeat: (connection: EditorConnection) => Promise<RegisteredSession>;
   readonly readTarget: (connection: EditorConnection) => Promise<TargetState>;
@@ -79,20 +79,23 @@ export function createEditorSession(
   const [grant, setGrant] = createSignal<TargetGrant>();
   const [targetMessage, setTargetMessage] = createSignal<string | undefined>("Choose a spread to edit.");
   const [authority, setAuthority] = createSignal(0);
-  let remembered: RememberedEditor | undefined;
+  let maybeRemembered: RememberedEditor | undefined;
   let tabId: string;
   let revision = "0";
   let sessionDeadline = 0;
   let targetDeadline = 0;
   const [active, setActive] = createSignal(true);
   let attempt = 0;
-  let stream: AbortController | undefined;
-  let heartbeatConnection: EditorConnection | undefined;
+  let maybeStream: AbortController | undefined;
+  let maybeHeartbeatConnection: EditorConnection | undefined;
   let transition = Promise.resolve(true);
   let lastTarget: EditingTarget | null | undefined;
-  let expiry: ReturnType<typeof setTimeout> | undefined;
+  let maybeExpiry: ReturnType<typeof setTimeout> | undefined;
+  let requests = new AbortController();
 
   function forgetAuthority(reason: string) {
+    requests.abort();
+    requests = new AbortController();
     transition = Promise.resolve(true);
     setTargetPending(false);
     setConnection(undefined);
@@ -104,6 +107,8 @@ export function createEditorSession(
   }
 
   function loseGrant(reason: string) {
+    requests.abort();
+    requests = new AbortController();
     setGrant(undefined);
     setTargetMessage(reason);
     setAuthority((current) => current + 1);
@@ -112,7 +117,7 @@ export function createEditorSession(
 
   function remember(editor: RememberedEditor) {
     storage.setItem(storageKey, JSON.stringify(editor));
-    remembered = editor;
+    maybeRemembered = editor;
     setAlias(editor.alias);
   }
 
@@ -131,12 +136,12 @@ export function createEditorSession(
       ("sessionId" in value && typeof value.sessionId !== "string")
     )
       throw new Error("Stored browser identification is invalid.");
-    remembered = {
+    maybeRemembered = {
       editorId: value.editorId,
       alias: value.alias,
       ...("sessionId" in value && typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
     };
-    setAlias(remembered.alias);
+    setAlias(maybeRemembered.alias);
   }
 
   async function bind(event: SessionEvent, current: number, registered: RegisteredSession) {
@@ -176,22 +181,22 @@ export function createEditorSession(
   async function reconnect() {
     if (!active() || connecting()) return;
     const current = ++attempt;
-    stream?.abort();
-    stream = undefined;
+    maybeStream?.abort();
+    maybeStream = undefined;
     forgetAuthority("Connecting to the backend. Editing is unavailable.");
     setConnecting(true);
     try {
       restore();
-      if (remembered === undefined) {
+      if (maybeRemembered === undefined) {
         setIdentifying(true);
         setMessage("Identify this browser before opening the application.");
         return;
       }
-      const registered = await transport.register(remembered.editorId, remembered.alias, remembered.sessionId);
+      const registered = await transport.register(maybeRemembered.editorId, maybeRemembered.alias, maybeRemembered.sessionId);
       if (!active() || current !== attempt) return;
-      remember({ editorId: remembered.editorId, alias: registered.alias, sessionId: registered.sessionId });
-      stream = new AbortController();
-      const signal = stream.signal;
+      remember({ editorId: maybeRemembered.editorId, alias: registered.alias, sessionId: registered.sessionId });
+      maybeStream = new AbortController();
+      const signal = maybeStream.signal;
       void transport
         .subscribe(
           registered.sessionId,
@@ -221,7 +226,7 @@ export function createEditorSession(
         setConnecting(false);
       }
     } finally {
-      if (current === attempt && stream === undefined) setConnecting(false);
+      if (current === attempt && maybeStream === undefined) setConnecting(false);
     }
   }
 
@@ -232,7 +237,7 @@ export function createEditorSession(
     }
     try {
       restore();
-      if (remembered === undefined) remember({ editorId, alias: label.trim() });
+      if (maybeRemembered === undefined) remember({ editorId, alias: label.trim() });
       setIdentifying(false);
       await reconnect();
     } catch (failure) {
@@ -290,6 +295,7 @@ export function createEditorSession(
       const state = await transport.readTarget(current);
       if (!active() || current !== connection()) return false;
       revision = state.revision;
+      const maybePreviousMessage = targetMessage();
       publishGrant(state.grant, observedAt);
       if (target === null) {
         if (state.grant !== null) {
@@ -299,7 +305,10 @@ export function createEditorSession(
         }
         publishGrant(null, observedAt);
       } else if (state.grant === null || !sameTarget(state.grant.target, target)) {
-        if (!explicit && previousTarget !== undefined && previousTarget !== null && sameTarget(previousTarget, target)) return false;
+        if (!explicit && previousTarget !== undefined && previousTarget !== null && sameTarget(previousTarget, target)) {
+          setTargetMessage(maybePreviousMessage ?? "View only. Choose Edit spread to acquire ownership.");
+          return false;
+        }
         const selectedAt = Date.now();
         const selected = await transport.select(current, revision, target);
         if (!active() || current !== connection()) return false;
@@ -322,14 +331,15 @@ export function createEditorSession(
   }
 
   function select(target: EditingTarget | null, explicit = false) {
-    transition = transition.then(() => changeTarget(target, explicit));
+    const observedConnection = connection();
+    transition = transition.then(() => (observedConnection === connection() ? changeTarget(target, explicit) : false));
     return transition;
   }
 
   async function heartbeat() {
     const current = connection();
-    if (current === undefined || current === heartbeatConnection || targetPending()) return;
-    heartbeatConnection = current;
+    if (current === undefined || current === maybeHeartbeatConnection || targetPending()) return;
+    maybeHeartbeatConnection = current;
     const saved = grant();
     let renewingTarget = false;
     try {
@@ -351,14 +361,14 @@ export function createEditorSession(
       if (active() && current === connection() && (!renewingTarget || saved?.grantId === grant()?.grantId))
         interrupt(describeSessionFailure(failure));
     } finally {
-      if (heartbeatConnection === current) heartbeatConnection = undefined;
+      if (maybeHeartbeatConnection === current) maybeHeartbeatConnection = undefined;
     }
   }
 
   function interrupt(reason: string) {
     attempt++;
     forgetAuthority(reason);
-    stream?.abort();
+    maybeStream?.abort();
     setConnecting(false);
   }
 
@@ -372,10 +382,10 @@ export function createEditorSession(
     void heartbeat();
   }, 10_000);
   function scheduleExpiry() {
-    clearTimeout(expiry);
+    clearTimeout(maybeExpiry);
     if (connection() === undefined) return;
     const deadline = grant() === undefined ? sessionDeadline : Math.min(sessionDeadline, targetDeadline);
-    expiry = setTimeout(
+    maybeExpiry = setTimeout(
       () => {
         if (Date.now() >= sessionDeadline) interrupt("The session expired without an accepted heartbeat. Reconnect before editing.");
         else loseGrant("Editing ownership expired. Review drafts and choose Edit spread.");
@@ -386,18 +396,19 @@ export function createEditorSession(
   window.addEventListener("offline", offline);
   window.addEventListener("pagehide", pagehide);
   onCleanup(() => {
+    requests.abort();
     setActive(false);
     attempt++;
-    stream?.abort();
+    maybeStream?.abort();
     window.clearInterval(timer);
-    clearTimeout(expiry);
+    clearTimeout(maybeExpiry);
     window.removeEventListener("offline", offline);
     window.removeEventListener("pagehide", pagehide);
   });
   try {
     tabId = identity();
     restore();
-    if (remembered === undefined) {
+    if (maybeRemembered === undefined) {
       setIdentifying(true);
       setMessage("Identify this browser before opening the application.");
     } else
@@ -424,11 +435,12 @@ export function createEditorSession(
     reconnect,
     select,
     interrupt,
+    requestSignal: () => requests.signal,
   };
 }
 
 export type EditorSession = ReturnType<typeof createEditorSession>;
-export type WorkspaceEditingSession = Pick<EditorSession, "available" | "authority" | "targetReason" | "targetPending" | "select">;
+export type WorkspaceEditingSession = Pick<EditorSession, "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect">;
 
 export function sameTarget(left: EditingTarget, right: EditingTarget): boolean {
   return left.kind === right.kind && left.id === right.id;

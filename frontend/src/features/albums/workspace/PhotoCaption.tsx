@@ -12,7 +12,7 @@ export function createCaptionEditing(operations: {
   save: (photoId: string, text: string) => Promise<void>;
   read: (photoId: string) => Promise<string>;
   onBlock: (photoId: string, reason: string | undefined) => void;
-  authority?: () => number | undefined;
+  maybeAuthority?: () => number | undefined;
 }) {
   const [sessions, setSessions] = createSignal<readonly CaptionState[]>([]);
   const [requestedFocus, setRequestedFocus] = createSignal<string>();
@@ -34,7 +34,7 @@ export function createCaptionEditing(operations: {
     if (existing !== undefined) return existing.save;
     const state = createRoot((dispose) => {
       const save = createContentSave<string>({
-        authority: operations.authority,
+        maybeAuthority: operations.maybeAuthority,
         save: async (text) => {
           await operations.save(photoId, text);
           return undefined;
