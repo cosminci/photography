@@ -1,15 +1,40 @@
 package photography.adapters.sqlite.photo
 
-import org.typelevel.doobie.{ConnectionIO, Fragment}
+import cats.effect.Async
+import cats.syntax.all.*
+import org.typelevel.doobie.{ConnectionIO, Fragment, Transactor}
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
+import photography.domain.editing.EditingTarget
+import photography.domain.layout.SpreadId
+import org.typelevel.log4cats.Logger
 import photography.ports.photo.PhotoPlacementRepository
-import photography.ports.photo.PhotoPlacementRepository.{FindResult, InspectResult}
+import photography.ports.photo.PhotoPlacementRepository.{FindResult, InspectResult, TargetRead, TargetResult}
 import java.util.UUID
 
 object SqlitePhotoPlacementRepository:
   def make: PhotoPlacementRepository[ConnectionIO] = new LiveSqlitePhotoPlacementRepository
+
+  def makeTargetRead[F[_]: Async: Logger](transactor: Transactor[F]): TargetRead[F] = new LiveTargetRead(transactor)
+
+  final private class LiveTargetRead[F[_]: Async: Logger](transactor: Transactor[F]) extends TargetRead[F]:
+    override def findTarget(chapter: ChapterId, photo: PhotoId): F[TargetResult] =
+      val select = sql"""SELECT placed.kind, spread.spread_id, cover.album_id
+        FROM photo p LEFT JOIN placement placed ON placed.photo_id = p.id
+        LEFT JOIN spread_photo_slot spread ON spread.id = placed.spread_photo_slot_id
+        LEFT JOIN cover_slot cover ON cover.id = placed.cover_slot_id
+        WHERE p.id = ${photo.value} AND p.chapter_id = ${chapter.value}"""
+      val read = select.query[(Option[String], Option[UUID], Option[UUID])].option.flatMap:
+        case None                                       => (TargetResult.PhotoNotFound: TargetResult).pure[ConnectionIO]
+        case Some((None, None, None))                   => (TargetResult.Found(maybeTarget = None): TargetResult).pure[ConnectionIO]
+        case Some((Some("spread"), Some(spread), None)) =>
+          (TargetResult.Found(EditingTarget.Spread(SpreadId(spread)).some): TargetResult).pure[ConnectionIO]
+        case Some((Some("cover"), None, Some(album))) =>
+          (TargetResult.Found(EditingTarget.Cover(AlbumId(album)).some): TargetResult).pure[ConnectionIO]
+        case _ => new IllegalArgumentException("Invalid photo placement target").raiseError[ConnectionIO, TargetResult]
+      read.transact(transactor).handleErrorWith: error =>
+        Logger[F].error(error)("SQLite photo target read failed").as(TargetResult.Failed)
 
   final private class LiveSqlitePhotoPlacementRepository extends PhotoPlacementRepository[ConnectionIO]:
     override def findPlacedPhotos(chapter: ChapterId): ConnectionIO[FindResult] =
