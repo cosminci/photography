@@ -292,7 +292,7 @@ class SpreadManagerStructuralAdmissionComponentTest extends CatsEffectSuite:
       override def hasAlbum(id: AlbumId): IO[Boolean]                                                    = (id.value === album.value).pure[IO]
       override def countInteriorSpreads(id: AlbumId): IO[Int]                                            = 2.pure[IO]
       override def findChapterOrder(id: AlbumId, chapter: ChapterId): IO[Option[NonEmptyList[SpreadId]]] =
-        inserted.get.map(value => Some(NonEmptyList(opening, spread.id :: value.toList.map(_.id))))
+        inserted.get.map(maybeInserted => Some(NonEmptyList(opening, spread.id :: maybeInserted.toList.map(_.id))))
       override def findSpread(id: AlbumId, target: SpreadId): IO[Option[AlbumCompositionRepository.Located]] =
         state.get.map(_.map {
           case value: Spread.PhotosOnly => AlbumCompositionRepository.Located.Photo(chapter, value)
