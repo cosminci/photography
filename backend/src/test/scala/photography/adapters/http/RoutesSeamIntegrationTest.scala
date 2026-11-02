@@ -54,20 +54,21 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.OwnAlbumOpening(album))
         ).orNotFound
         call = request.withHeaders(Headers(credentials(owner))).putHeaders("X-Editor-Grant" -> lock.grant.value.toString)
-        saved       <- server.run(call)
-        _           <- current.set(CompositionResult.Found(NonEmptyList.one(Member(replacement, maybeChapter = None))))
-        stale       <- server.run(call)
-        staleBody   <- stale.as[Json]
-        _           <- current.set(CompositionResult.AlbumNotFound)
-        missing     <- server.run(call)
-        missingBody <- missing.as[Json]
-        _           <- current.set(CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
-        failed      <- server.run(call)
-        failedBody  <- failed.as[Json]
-        _           <- sessions.bind(owner.session, owner.tab)
-        obsolete    <- server.run(call)
-        count       <- written.get
-        acquired    <- reads.get
+        saved        <- server.run(call)
+        _            <- current.set(CompositionResult.Found(NonEmptyList.one(Member(replacement, maybeChapter = None))))
+        stale        <- server.run(call)
+        staleBody    <- stale.as[Json]
+        _            <- current.set(CompositionResult.AlbumNotFound)
+        missing      <- server.run(call)
+        missingBody  <- missing.as[Json]
+        _            <- current.set(CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
+        failed       <- server.run(call)
+        failedBody   <- failed.as[Json]
+        _            <- sessions.bind(owner.session, owner.tab)
+        obsolete     <- server.run(call)
+        obsoleteBody <- obsolete.as[Json]
+        count        <- written.get
+        acquired     <- reads.get
       yield
         assertEquals(saved.status, Status.Ok)
         assertEquals(stale.status, Status.Conflict)
@@ -77,8 +78,67 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(failed.status, Status.InternalServerError)
         assertEquals(failedBody, Json.obj("code" -> Json.fromString("service_failure")))
         assertEquals(obsolete.status, Status.Conflict)
+        assertEquals(obsoleteBody, Json.obj("code" -> Json.fromString("obsolete_connection")))
+        Vector(saved, stale, missing, failed, obsolete).foreach: response =>
+          assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
         assertEquals(count, 1)
         assertEquals(acquired, Vector.fill(4)(album))
+
+  Vector(
+    (failure = EditorSessionManager.Failure.StaleSession, code = "stale_session"),
+    (failure = EditorSessionManager.Failure.StaleGrant, code = "stale_grant")
+  ).foreach { case (failure, code) =>
+    test(s"should reject $failure expiring during current opening resolution and release coordination without writing"):
+      TestControl.executeEmbed:
+        Mutex[IO].flatMap: mutex =>
+          given Mutex[IO] = mutex
+          val album       = AlbumId(new UUID(0L, 1L))
+          val opening     = SpreadId(new UUID(0L, 3L))
+          for
+            sessions <- EditorSessionManager.make[IO](lease = 30L)
+            owner    <- bind(sessions, owner = 1L)
+            selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Spread(opening))
+            lock = selected match
+              case SelectResult.Owned(value, _) => value
+              case other                        => fail(s"Expected owned opening, obtained $other")
+            _ <- IO.sleep(20.seconds)
+            _ <- failure match
+              case EditorSessionManager.Failure.StaleGrant => sessions.heartbeat(owner).void
+              case _                                       => IO.unit
+            entered <- Deferred[IO, Unit]
+            finish  <- Deferred[IO, Unit]
+            written <- Ref.of[IO, Int](0)
+            membership = new AlbumCompositionRepository.MembershipRead[IO]:
+              override def composition(id: AlbumId): IO[CompositionResult] =
+                IO(assertEquals(id, album)) >> entered.complete(()).void >>
+                  finish.get
+                    .as(CompositionResult.Found(NonEmptyList.one(Member(opening, maybeChapter = None))))
+            server = Routes.make(EditingAccess.make(sessions, membership))(
+              buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.OwnAlbumOpening(album))
+            ).orNotFound
+            call = request.withHeaders(Headers(credentials(owner))).putHeaders("X-Editor-Grant" -> lock.grant.value.toString)
+            writing  <- server.run(call).start
+            _        <- entered.get
+            _        <- IO.sleep(10.seconds)
+            _        <- finish.complete(())
+            rejected <- writing.joinWithNever
+            body     <- rejected.as[Json]
+            before   <- written.get
+            fresh    <- bind(sessions, owner = 2L)
+            selected <- sessions.select(fresh, TargetRevision.initial, EditingTarget.Spread(opening))
+            grant = selected match
+              case SelectResult.Owned(value, _) => value.grant
+              case other                        => fail(s"Expected fresh ownership, obtained $other")
+            saved <- server.run(request.withHeaders(Headers(credentials(fresh))).putHeaders("X-Editor-Grant" -> grant.value.toString))
+            after <- written.get
+          yield
+            assertEquals(rejected.status, Status.Conflict)
+            assertEquals(body, Json.obj("code" -> Json.fromString(code)))
+            assertEquals(rejected.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+            assertEquals(before, 0)
+            assertEquals(saved.status, Status.Ok)
+            assertEquals(after, 1)
+  }
 
   test("should require canonical credentials before decoding and leave explicitly public routes accessible"):
     Mutex[IO].flatMap: mutex =>
