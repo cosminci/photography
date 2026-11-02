@@ -15,6 +15,145 @@ const initial: SpreadSnapshot = {
 const context: SpreadContext = { kind: "spread", id: "spread" };
 
 describe("placement save lifecycle", () => {
+  it.each(["retry", "apply"] as const)("should retain drafts when ownership changes during %s reconciliation", async (action) => {
+    let authority = 1;
+    const transform = { x: 2, y: 3, zoom: 2, mirrored: false };
+    const saved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform })) };
+    const edit = vi.fn().mockRejectedValueOnce(new Error("lost acknowledgement")).mockResolvedValue(saved);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: edit }, refresh, {
+        available: () => true,
+        authority: () => authority,
+      }),
+    );
+    session.selectSpread("album", initial);
+    session.complete("p", transform);
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+    if (action === "apply") {
+      authority++;
+      await session.retry();
+    }
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    refresh.mockReturnValueOnce(pending);
+    const reconciling = action === "retry" ? session.retry() : session.applyRetained();
+    await vi.waitFor(() => {
+      expect(refresh).toHaveBeenCalledTimes(action === "retry" ? 1 : 2);
+    });
+    authority++;
+    finish();
+    await reconciling;
+    expect(edit).toHaveBeenCalledOnce();
+    expect(session.retained()).toBe(true);
+    expect(session.placements()[0]?.transform).toEqual(transform);
+    await session.applyRetained();
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(session.retained()).toBe(false);
+  });
+
+  it("should stop queued writes after ownership loss and retain drafts when authoritative recovery fails", async () => {
+    let authority = 1;
+    let available = true;
+    let finish!: (value: PlacementSnapshot) => void;
+    const pending = new Promise<PlacementSnapshot>((resolve) => {
+      finish = resolve;
+    });
+    const first = { x: 1, y: 2, zoom: 2, mirrored: false };
+    const latest = { ...first, x: 3 };
+    const saved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform: latest })) };
+    const edit = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(saved);
+    const read = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(initial);
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: read, editPlacements: edit }, vi.fn().mockResolvedValue(undefined), {
+        available: () => available,
+        authority: () => authority,
+      }),
+    );
+    session.selectSpread("album", initial);
+    session.complete("p", first);
+    session.complete("p", latest);
+    available = false;
+    authority++;
+    finish({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: first })) });
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+    expect(edit).toHaveBeenCalledOnce();
+    expect(session.retained()).toBe(true);
+    expect(session.placements()[0]?.transform).toEqual(latest);
+    await session.applyRetained();
+    expect(read).not.toHaveBeenCalled();
+    available = true;
+    authority++;
+    await session.applyRetained();
+    expect(edit).toHaveBeenCalledOnce();
+    expect(session.retained()).toBe(true);
+    expect(session.error()).toMatch(/recovery failed/);
+    await session.applyRetained();
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(session.retained()).toBe(false);
+    expect(session.placements()[0]?.transform).toEqual(latest);
+  });
+
+  it.each(["loading", "saving"] as const)("should not apply or discard retained adjustments while %s is pending", async (phase) => {
+    let finish!: (value: PlacementSnapshot) => void;
+    const pending = new Promise<PlacementSnapshot>((resolve) => {
+      finish = resolve;
+    });
+    const read = vi.fn().mockReturnValue(pending);
+    const edit = vi.fn().mockReturnValue(pending);
+    const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: edit }, vi.fn().mockResolvedValue(undefined)));
+    session.selectSpread("album", initial);
+    const operation = phase === "loading" ? session.load("album", context) : session.edit({ operation: "remove", placementId: "p" });
+    await session.applyRetained();
+    await session.discardRetained();
+    expect(edit).toHaveBeenCalledTimes(phase === "saving" ? 1 : 0);
+    finish(initial);
+    await operation;
+    await session.applyRetained();
+    expect(session.retained()).toBe(false);
+    expect(session.error()).toBeUndefined();
+  });
+
+  it("should retain adjustments without replay after ownership loss, read recovery or reacquisition", async () => {
+    let authority = 1;
+    let available = true;
+    const transformed = { x: 2, y: 3, zoom: 2, mirrored: false };
+    const edit = vi.fn().mockRejectedValue(new Error("lost acknowledgement"));
+    const read = vi.fn().mockResolvedValue(initial);
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: read, editPlacements: edit }, vi.fn().mockResolvedValue(undefined), {
+        available: () => available,
+        authority: () => authority,
+      }),
+    );
+    session.selectSpread("album", initial);
+    session.complete("p", transformed);
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+    available = false;
+    authority++;
+
+    await session.retry();
+    available = true;
+    authority++;
+    await session.retry();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(session.placements()[0]?.transform).toEqual(transformed);
+    expect(session.error()).toMatch(/review|ownership/i);
+    edit.mockResolvedValue({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: transformed })) });
+    await session.applyRetained();
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(session.error()).toBeUndefined();
+  });
+
   it.each(["preview", "pending", "uncertain", "acknowledged"] as const)(
     "should retain %s photo state when a workspace read tries to reconcile older content",
     async (state) => {

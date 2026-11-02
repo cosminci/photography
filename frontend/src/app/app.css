@@ -87,6 +87,23 @@ p {
   margin: auto;
   padding: 34px 0 40px;
 }
+.session-feedback {
+  width: min(640px, calc(100% - 40px));
+  margin: 20px auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fcfefe;
+}
+.session-feedback form {
+  display: grid;
+  gap: 12px;
+}
+.session-feedback input {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+}
 .topbar {
   display: flex;
   align-items: center;

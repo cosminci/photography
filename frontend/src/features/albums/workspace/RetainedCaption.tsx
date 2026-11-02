@@ -37,7 +37,7 @@ export function RetainedCaption(props: { caption: CaptionState; focus: CaptionEd
         disabled={caption.save.pending()}
         aria-describedby={caption.save.pending() ? feedback : undefined}
         onClick={() => {
-          void caption.save.commit();
+          void caption.save.commit(true);
         }}
       >
         {caption.save.recovery() === undefined ? "Save retained caption" : "Read retained caption"}

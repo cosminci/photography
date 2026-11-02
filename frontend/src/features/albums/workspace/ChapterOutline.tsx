@@ -10,6 +10,7 @@ export function ChapterOutline(props: {
   part: string | null;
   creationReason: string | undefined;
   unavailable: string | undefined;
+  destructiveUnavailable?: string | undefined;
   onAdd: (chapterId: string, spreadId: string, opener: HTMLButtonElement) => void;
   onMove: (spreadId: string, direction: "earlier" | "later", opener: HTMLButtonElement) => void;
   onDelete: (spreadId: string, opener: HTMLButtonElement) => void;
@@ -162,7 +163,7 @@ export function ChapterOutline(props: {
             <SpreadAction
               name="Delete spread"
               icon="M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7"
-              reason={reasons().remove}
+              reason={props.destructiveUnavailable ?? reasons().remove}
               onClick={(opener) => {
                 const spread = selectedSpread();
                 /* v8 ignore next -- Disabled without a selected photo spread. */

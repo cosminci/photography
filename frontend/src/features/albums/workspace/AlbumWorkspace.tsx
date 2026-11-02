@@ -28,6 +28,7 @@ import { AlbumAuthors } from "./AlbumAuthors";
 import { TextEditor } from "./TextEditor";
 import { createCaptionEditing } from "./PhotoCaption";
 import { RetainedCaption } from "./RetainedCaption";
+import type { EditingTarget, WorkspaceEditingSession } from "../../editing/EditorSession";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -39,6 +40,7 @@ type SpreadDestination = { kind: "part"; part: string | null } | { kind: "index"
 
 export function AlbumWorkspace(props: {
   album: Album;
+  session: WorkspaceEditingSession;
   workspace: Workspace;
   client: Pick<
     AlbumClient,
@@ -84,6 +86,8 @@ export function AlbumWorkspace(props: {
   const [reloadTarget, setReloadTarget] = createSignal<{ destination: SpreadDestination; opener: HTMLButtonElement }>();
   const [choice, setChoice] = createSignal<PhotoChoice>();
   const [reader, setReader] = createSignal(false);
+  const [ownershipLoading, setOwnershipLoading] = createSignal(false);
+  let ownershipGeneration = 0;
   const [contentBlocks, setContentBlocks] = createSignal<Readonly<Record<string, string>>>({});
   const [textEdit, setTextEdit] = createSignal<{ chapter: Chapter | undefined; opener: HTMLButtonElement }>();
   const contentReason = createMemo(() => Object.values(contentBlocks())[0]);
@@ -129,6 +133,7 @@ export function AlbumWorkspace(props: {
     return metadata.description;
   }
   const captions = createCaptionEditing({
+    authority: () => (props.session.available() && ownershipReason() === undefined ? props.session.authority() : undefined),
     save: async (photoId, text) => {
       const owner = props.workspace.chapters.find(
         (candidate) => props.workspace.photoInventories[candidate.id]?.photos.some((photo) => photo.id === photoId) === true,
@@ -154,12 +159,52 @@ export function AlbumWorkspace(props: {
       await props.onRefresh();
       if (props.workspaceError !== undefined) throw new Error("Workspace refresh failed");
     },
+    {
+      available: () => ownershipReason() === undefined,
+      authority: () => props.session.authority(),
+    },
   );
   const selection = createMemo(() => findSelection(props.workspace.spreads, part()));
   const selectedSpread = createMemo(() => {
     const selected = selection();
     return selected.kind === "spread" ? selected.spread : undefined;
   });
+  const editingTarget = createMemo<EditingTarget | undefined>(() => {
+    const spread = selectedSpread();
+    return part() === "cover" ? { kind: "cover", id: props.album.id } : spread === undefined ? undefined : { kind: "spread", id: spread.id };
+  });
+  const ownershipReason = createMemo(() => {
+    const target = editingTarget();
+    return ownershipLoading()
+      ? "Reading saved content and confirming editing ownership."
+      : target === undefined
+        ? "Choose an available spread."
+        : props.session.targetReason(target);
+  });
+  const photoRecoveryReason = createMemo(() =>
+    placement.saving() ? "Saving photos. Please wait." : placement.loading() ? "Reading saved photos. Please wait." : undefined,
+  );
+  const photoApplyReason = createMemo(() => ownershipReason() ?? photoRecoveryReason());
+  async function confirmOwnership(target: EditingTarget | null, explicit: boolean) {
+    const generation = ++ownershipGeneration;
+    const before = props.session.authority();
+    setOwnershipLoading(true);
+    await props.session.select(target, explicit);
+    if (!active || generation !== ownershipGeneration) return;
+    if (explicit || before !== props.session.authority()) await refresh();
+    if (generation === ownershipGeneration) setOwnershipLoading(false);
+  }
+  createEffect(
+    on([() => editingTarget()?.kind, () => editingTarget()?.id, reader, () => props.session.available()], () => {
+      const target = editingTarget();
+      if (!props.session.available()) {
+        ownershipGeneration++;
+        setOwnershipLoading(false);
+        return;
+      }
+      void confirmOwnership(reader() ? null : (target ?? null), false);
+    }),
+  );
   const displayedSpread = createMemo(() => {
     const spread = selectedSpread();
     const confirmed = placement.snapshot();
@@ -263,6 +308,7 @@ export function AlbumWorkspace(props: {
     choice: choice(),
     onChoose: setChoice,
     unavailable:
+      ownershipReason() ??
       contentReason() ??
       (spreadPending()
         ? "Saving spread. Please wait."
@@ -270,6 +316,7 @@ export function AlbumWorkspace(props: {
           ? "Refreshing saved workspace. Please wait."
           : undefined),
     reader: reader(),
+    ownershipUnavailable: ownershipReason(),
     captions,
     onEditText: (opener) => setTextEdit({ chapter: chapter(), opener }),
     get textUnavailable() {
@@ -286,16 +333,18 @@ export function AlbumWorkspace(props: {
           : placement.navigationReason()),
   );
   const refreshReason = createMemo(() =>
-    spreadPending()
-      ? "Saving spread. Please wait."
-      : refreshing() || props.workspaceLoading
-        ? "Refreshing saved workspace. Please wait."
-        : props.workspaceError !== undefined
-          ? "Reload the saved workspace before editing chapters."
-          : undefined,
+    !props.session.available()
+      ? "The browser session is unconfirmed. Reconnect before editing."
+      : spreadPending()
+        ? "Saving spread. Please wait."
+        : refreshing() || props.workspaceLoading
+          ? "Refreshing saved workspace. Please wait."
+          : props.workspaceError !== undefined
+            ? "Reload the saved workspace before editing chapters."
+            : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
-  const contentEditReason = createMemo(() => refreshReason() ?? navigationReason());
+  const contentEditReason = createMemo(() => (chapter() === undefined ? ownershipReason() : undefined) ?? refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
   let active = true;
@@ -322,13 +371,29 @@ export function AlbumWorkspace(props: {
   };
   window.addEventListener("beforeunload", preventDiscard);
   document.addEventListener("keydown", navigateSpread);
+  document.addEventListener("click", leaveAlbum);
   onCleanup(() => {
     active = false;
+    ownershipGeneration++;
     refreshGeneration++;
     window.removeEventListener("popstate", syncHistory);
     window.removeEventListener("beforeunload", preventDiscard);
     document.removeEventListener("keydown", navigateSpread);
+    document.removeEventListener("click", leaveAlbum);
   });
+
+  function leaveAlbum(event: MouseEvent) {
+    if (event.defaultPrevented || event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (link?.target !== "" || link.hasAttribute("download")) return;
+    const destination = new URL(link.href);
+    if (destination.origin !== window.location.origin || destination.pathname !== "/") return;
+    event.preventDefault();
+    if (navigationReason() !== undefined) return;
+    void props.session.select(null).then((released) => {
+      if (released && active) window.location.assign(destination.href);
+    });
+  }
 
   function navigateSpread(event: KeyboardEvent) {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || document.fullscreenElement) return;
@@ -475,13 +540,7 @@ export function AlbumWorkspace(props: {
             }}
           />
           <span aria-hidden="true">|</span>
-          <a
-            class="back-link"
-            href="/"
-            onClick={(event) => {
-              if (navigationReason() !== undefined) event.preventDefault();
-            }}
-          >
+          <a class="back-link" href="/">
             Back to album catalog
           </a>
         </div>
@@ -518,18 +577,80 @@ export function AlbumWorkspace(props: {
           Refreshing saved workspace…
         </p>
       </Show>
+      <Show when={!reader() && ownershipReason()}>
+        {(reason) => (
+          <div class="control-help">
+            <p id="editing-ownership-reason" role="status">
+              {reason()}
+            </p>
+            <Show when={editingTarget()}>
+              {(target) => (
+                <button
+                  type="button"
+                  disabled={!props.session.available() || props.session.targetPending() || ownershipLoading()}
+                  aria-describedby="editing-ownership-reason"
+                  onClick={() => {
+                    void confirmOwnership(target(), true);
+                  }}
+                >
+                  Edit spread
+                </button>
+              )}
+            </Show>
+          </div>
+        )}
+      </Show>
       <Show when={placement.error()}>
         {(message) => (
           <p role="alert">
             {message()}{" "}
+            <Show when={photoRecoveryReason()}>
+              {(reason) => (
+                <span class="visually-hidden" id="photo-recovery-reason">
+                  {reason()}
+                </span>
+              )}
+            </Show>
             <button
               type="button"
+              disabled={photoRecoveryReason() !== undefined}
+              aria-describedby={photoRecoveryReason() === undefined ? undefined : "photo-recovery-reason"}
               onClick={() => {
                 void placement.retry();
               }}
             >
               Retry photos
             </button>
+            <Show when={placement.retained()}>
+              <button
+                type="button"
+                disabled={photoApplyReason() !== undefined}
+                aria-label="Apply retained photo adjustments"
+                aria-describedby={photoApplyReason() === undefined ? undefined : "photo-apply-reason"}
+                onClick={() => {
+                  void placement.applyRetained();
+                }}
+              >
+                Apply retained photo adjustments
+                <Show when={photoApplyReason()}>
+                  {(reason) => (
+                    <span class="visually-hidden" id="photo-apply-reason">
+                      {reason()}
+                    </span>
+                  )}
+                </Show>
+              </button>
+              <button
+                type="button"
+                disabled={photoRecoveryReason() !== undefined}
+                aria-describedby={photoRecoveryReason() === undefined ? undefined : "photo-recovery-reason"}
+                onClick={() => {
+                  void placement.discardRetained();
+                }}
+              >
+                Discard retained photo adjustments
+              </button>
+            </Show>
           </p>
         )}
       </Show>
@@ -623,7 +744,7 @@ export function AlbumWorkspace(props: {
         }}
         onRetryInventory={props.onInventoryRetry}
         onChoosePhoto={(photoId) => setChoice({ kind: "photo", photoId })}
-        unavailable={refreshReason() ?? placement.unavailable() ?? navigationReason()}
+        unavailable={ownershipReason() ?? refreshReason() ?? placement.unavailable() ?? navigationReason()}
         onRetryRefresh={(id) => {
           void props.onPhotoRefresh([id]);
         }}
@@ -635,7 +756,7 @@ export function AlbumWorkspace(props: {
                 context={spread().kind}
                 appliedTemplateId={spread().templateId}
                 load={props.client.templates}
-                unavailable={refreshReason() ?? navigationReason()}
+                unavailable={ownershipReason() ?? refreshReason() ?? navigationReason()}
                 onChange={(templateId, opener) => {
                   if (templateId !== spread().templateId) void mutateSpread({ kind: "template", spreadId: spread().id, templateId, opener });
                 }}
@@ -746,6 +867,7 @@ export function AlbumWorkspace(props: {
               part={part()}
               creationReason={creationReason()}
               unavailable={refreshReason() ?? navigationReason()}
+              destructiveUnavailable={ownershipReason()}
               onSelect={select}
               onCreate={(opener) => setDialog({ chapter: undefined, opener })}
               onAdd={(chapterId, spreadId, opener) => {
@@ -825,6 +947,9 @@ export function AlbumWorkspace(props: {
       <Show when={textEdit()} keyed>
         {(action) => (
           <TextEditor
+            authority={() =>
+              props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined) ? props.session.authority() : undefined
+            }
             heading={action.chapter === undefined ? "Album synopsis" : `Chapter description for ${action.chapter.name}`}
             label={action.chapter === undefined ? "Synopsis" : "Chapter description"}
             text={action.chapter?.description ?? props.album.synopsis}

@@ -34,7 +34,7 @@ Locking is access coordination, not a saved-book snapshot or an undo implementat
 
 Album title editing and album deletion retain their existing behavior outside this feature's scope.
 
-Source-folder changes and background photo import/refresh retain their existing behavior without target-lock protection. Already-open views and Reader need not immediately display another browser's ordinary saved edits.
+Chapter metadata, description and gear selection, shared gear catalogs, source-folder changes and background photo import/refresh retain their existing behavior without target-lock protection. Already-open views and Reader need not immediately display another browser's ordinary saved edits.
 
 ## Model evolution
 

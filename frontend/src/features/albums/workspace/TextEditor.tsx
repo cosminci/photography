@@ -1,4 +1,4 @@
-import { Show, createEffect, createUniqueId, on, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createUniqueId, on, onCleanup, onMount, untrack } from "solid-js";
 import { createContentSave } from "./ContentSave";
 
 export function TextEditor(props: {
@@ -10,9 +10,11 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
+  authority?: () => number | undefined;
 }) {
   const feedback = createUniqueId();
   const save = createContentSave({
+    authority: untrack(() => props.authority),
     save: (text: string) => props.save(text),
     read: () => props.read(),
     equal: (left, right) => left === right,
@@ -20,6 +22,11 @@ export function TextEditor(props: {
       props.onClose();
     },
   });
+  const unavailable = createMemo(() =>
+    props.authority !== undefined && props.authority() === undefined
+      ? "Editing ownership is unavailable. Your draft is retained."
+      : save.unavailable(),
+  );
   let dialog!: HTMLDialogElement;
   let input!: HTMLTextAreaElement;
   let status!: HTMLDivElement;
@@ -76,7 +83,7 @@ export function TextEditor(props: {
         aria-label={props.heading}
         onSubmit={(event) => {
           event.preventDefault();
-          void save.commit();
+          void save.commit(true);
         }}
       >
         <textarea
@@ -86,7 +93,7 @@ export function TextEditor(props: {
           aria-label={props.label}
           rows={14}
           value={save.draft()?.value ?? props.text}
-          disabled={save.unavailable() !== undefined}
+          disabled={unavailable() !== undefined}
           aria-describedby={feedback}
           onInput={(event) => {
             save.change(event.currentTarget.value);
@@ -99,7 +106,7 @@ export function TextEditor(props: {
           id={feedback}
           tabindex="-1"
         >
-          <Show when={save.unavailable()}>
+          <Show when={unavailable()}>
             {(reason) => (
               <p role="status" class="control-help">
                 {reason()}
@@ -139,8 +146,8 @@ export function TextEditor(props: {
             class="editor-icon-action"
             aria-label="Save"
             title="Save"
-            disabled={save.unavailable() !== undefined}
-            aria-describedby={save.unavailable() === undefined ? undefined : feedback}
+            disabled={unavailable() !== undefined}
+            aria-describedby={unavailable() === undefined ? undefined : feedback}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 3h12l4 4v14H3V3ZM7 3v6h10V3M7 21v-8h10v8M14 4v3" />

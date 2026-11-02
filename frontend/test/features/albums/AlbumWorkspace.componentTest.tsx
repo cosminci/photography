@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import { createSignal } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
+import { editingSession } from "../editing/EditingSessionStub";
 import {
   AcknowledgedWriteError,
   AlbumRequestError,
@@ -110,6 +111,268 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each([false, true])("should release ownership through the application brand and fence departure after release=%s", async (released) => {
+    window.history.replaceState(null, "", "/albums/album");
+    let finish!: (value: boolean) => void;
+    const pending = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const select = vi.fn().mockResolvedValueOnce(true).mockReturnValueOnce(pending);
+    const view = render(() => (
+      <>
+        <a href="/">Application brand</a>
+        <a href="https://example.test/">External catalog</a>
+        <AlbumOpen session={{ ...editingSession, select }} id={album.id} client={buildClient()} events={events} />
+      </>
+    ));
+    await screen.findByRole("heading", { name: album.title });
+    fireEvent.click(document);
+    fireEvent.click(screen.getByRole("link", { name: "Application brand" }), { ctrlKey: true });
+    fireEvent.click(screen.getByRole("link", { name: "External catalog" }));
+    expect(select).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("link", { name: "Application brand" }));
+    expect(select).toHaveBeenLastCalledWith(null);
+    if (released) view.unmount();
+    finish(released);
+    await pending;
+    expect(window.location.pathname).not.toBe("/");
+  });
+
+  it("should fence acquisition completion while its saved-content refresh is superseded", async () => {
+    const [authority, setAuthority] = createSignal(1);
+    let finish!: (value: Album) => void;
+    const pending = new Promise<Album>((resolve) => {
+      finish = resolve;
+    });
+    const client = buildClient({ open: vi.fn().mockResolvedValueOnce(album).mockReturnValueOnce(pending).mockResolvedValue(album) });
+    const select = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        setAuthority(2);
+        return Promise.resolve(true);
+      })
+      .mockResolvedValue(true);
+    render(() => <AlbumOpen session={{ ...editingSession, authority, select }} id={album.id} client={client} events={events} />);
+    await waitFor(() => {
+      expect(client.open).toHaveBeenCalledTimes(2);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledTimes(2);
+    });
+    finish(album);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Cover" })).toHaveAttribute("aria-pressed", "true");
+    });
+  });
+
+  it.each(["apply", "discard"] as const)(
+    "should retain a photo draft on ownership loss and require explicit %s after saved-state recovery",
+    async (action) => {
+      const [available, setAvailable] = createSignal(true);
+      const [authority, setAuthority] = createSignal(1);
+      const photo = {
+        id: "photo",
+        filename: "Mountain.jpg",
+        width: 1000,
+        height: 800,
+        capturedLocal: null,
+        caption: null,
+        thumbnail: { url: "/thumbnails/mountain.jpg", width: 1000, height: 800 },
+      };
+      const placed = {
+        id: "placement",
+        slotId: photoSlot.id,
+        photoId: photo.id,
+        captionCorner: "bottom_left" as const,
+        kind: "spread" as const,
+        transform: { x: 0, y: 0, zoom: 2, mirrored: false },
+      };
+      const interior = { ...opening, placements: [placed] };
+      const saved = {
+        ...workspace,
+        spreads: [interior, ...workspace.spreads.slice(1)],
+        photoInventories: { ...workspace.photoInventories, vacation: { ...inventory, photos: [photo] } },
+      };
+      const snapshot = {
+        kind: "spread" as const,
+        id: interior.id,
+        placements: [placed],
+        layout: { kind: interior.kind, templateId: interior.templateId, slots: interior.slots },
+      };
+      const client = buildClient(
+        {
+          readPlacements: vi.fn().mockResolvedValue(snapshot),
+          editPlacements: vi.fn().mockResolvedValue(snapshot),
+        },
+        saved,
+      );
+      const session = {
+        ...editingSession,
+        available,
+        authority,
+        targetReason: () => (available() ? undefined : "Editing ownership is unavailable."),
+      };
+      render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+      const surface = await screen.findByRole("button", { name: /: Mountain.jpg$/ });
+      await waitFor(() => {
+        expect(surface).toBeEnabled();
+      });
+      fireEvent.keyDown(surface, { key: "ArrowRight" });
+      setAvailable(false);
+      setAuthority(2);
+      await screen.findByRole("button", { name: "Apply retained photo adjustments" });
+      expect(surface).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Apply retained photo adjustments" })).toBeDisabled();
+      await new Promise((resolve) => setTimeout(resolve, 270));
+      setAuthority(3);
+      setAvailable(true);
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Apply retained photo adjustments" })).toBeEnabled();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Retry photos" }));
+      await waitFor(() => {
+        expect(client.readPlacements).toHaveBeenCalledOnce();
+        expect(screen.getByRole("button", { name: "Apply retained photo adjustments" })).toBeEnabled();
+      });
+      expect(client.editPlacements).not.toHaveBeenCalled();
+      fireEvent.click(
+        screen.getByRole("button", { name: action === "apply" ? "Apply retained photo adjustments" : "Discard retained photo adjustments" }),
+      );
+      await waitFor(() => {
+        expect(screen.queryByRole("button", { name: "Apply retained photo adjustments" })).not.toBeInTheDocument();
+        expect(client.editPlacements).toHaveBeenCalledTimes(action === "apply" ? 1 : 0);
+      });
+    },
+  );
+
+  it("should reconcile saved content after acquisition and reconnect, while keeping target and session availability distinct", async () => {
+    const [available, setAvailable] = createSignal(true);
+    const [authority, setAuthority] = createSignal(1);
+    const [owned, setOwned] = createSignal(false);
+    let acquire!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      acquire = resolve;
+    });
+    const select = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await pending;
+        setAuthority(2);
+        setOwned(true);
+        return true;
+      })
+      .mockResolvedValue(true);
+    const client = buildClient();
+    const session = {
+      ...editingSession,
+      available,
+      authority,
+      select,
+      targetReason: () => (!available() ? "Session lost." : owned() ? undefined : "View only. Mara is editing this spread."),
+    };
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+    expect(await screen.findByRole("button", { name: "Edit spread" })).toBeDisabled();
+    vi.mocked(client.open).mockResolvedValue({ ...album, synopsis: "Saved before acquisition" });
+    acquire();
+    await waitFor(() => {
+      expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent("Saved before acquisition");
+      expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    });
+    setAvailable(false);
+    expect(screen.getByRole("button", { name: "Mara" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit spread" })).toBeDisabled();
+    setOwned(false);
+    setAvailable(true);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Edit spread" })).toBeEnabled();
+    });
+    select.mockImplementationOnce(() => {
+      setAuthority(3);
+      setOwned(true);
+      return Promise.resolve(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Edit spread" }));
+    await waitFor(() => {
+      expect(select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, true);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("should retain a synopsis draft through ownership loss and require explicit saved-state review before resubmission", async () => {
+    const [available, setAvailable] = createSignal(true);
+    const [authority, setAuthority] = createSignal(1);
+    const session = { ...editingSession, available, authority };
+    const text = "Retained offline text";
+    const client = buildClient({ saveSynopsis: vi.fn().mockResolvedValue({ ...album, synopsis: text }) });
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
+    const editor = screen.getByRole("textbox", { name: "Synopsis" });
+    fireEvent.input(editor, { target: { value: text } });
+    setAvailable(false);
+    setAuthority(2);
+    expect(editor).toHaveValue(text);
+    expect(editor).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    setAvailable(true);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Review");
+    });
+    expect(client.saveSynopsis).not.toHaveBeenCalled();
+    expect(editor).toHaveValue(text);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(client.saveSynopsis).toHaveBeenCalledExactlyOnceWith(album.id, text);
+    });
+  });
+
+  it.each(["navigate", "dispose"] as const)("should fence pending ownership publication after %s", async (destination) => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const select = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await pending;
+        return true;
+      })
+      .mockResolvedValue(true);
+    const view = render(() => <AlbumOpen session={{ ...editingSession, select }} id={album.id} client={buildClient()} events={events} />);
+    await screen.findByRole("heading", { name: album.title });
+    if (destination === "navigate") fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    else view.unmount();
+    finish();
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledTimes(destination === "navigate" ? 2 : 1);
+    });
+  });
+
+  it("should show a locked owner's alias while keeping Reader and independent edits available", async () => {
+    const select = vi.fn().mockResolvedValue(undefined);
+    const session = {
+      ...editingSession,
+      targetReason: () => "View only. Mara is editing this spread.",
+      select,
+    };
+    const client = buildClient();
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+
+    expect(await screen.findByRole("button", { name: "Edit spread" })).toHaveAccessibleDescription("View only. Mara is editing this spread.");
+    expect(await screen.findByRole("button", { name: "Applied layout" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
+    expect(select).toHaveBeenCalledWith({ kind: "spread", id: opening.id }, false);
+    expect(screen.getByRole("button", { name: "Mara" })).toBeEnabled();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
   it.each(["spread", "cover"] as const)("should publish deferred %s reconnect content after cancelling a photo preview", async (kind) => {
     const photo = {
       id: "photo",
@@ -145,7 +408,7 @@ describe("album workspace browser boundary", () => {
       },
     };
     if (kind === "cover") window.history.replaceState(null, "", "?part=cover");
-    render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={liveEvents} />);
     const surface = await screen.findByRole("button", { name: /: Mountain.jpg$/ });
     await waitFor(() => expect(surface).toBeEnabled());
     Object.defineProperty(surface, "setPointerCapture", { value: vi.fn() });
@@ -223,7 +486,7 @@ describe("album workspace browser boundary", () => {
       saved,
     );
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
     const editorial = screen.getByRole("group", { name: "Chapter text" });
     const template = screen.getByRole("button", { name: "Applied layout" });
@@ -270,7 +533,7 @@ describe("album workspace browser boundary", () => {
         .mockResolvedValueOnce(album)
         .mockResolvedValue({ ...album, synopsis: text }),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
     fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: text } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -288,7 +551,7 @@ describe("album workspace browser boundary", () => {
         .mockRejectedValueOnce(new Error("Read offline"))
         .mockResolvedValue({ ...album, authors: ["Iacob"] }),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const author = await screen.findByRole("button", { name: "Iacob" });
     author.focus();
     fireEvent.click(author);
@@ -302,7 +565,7 @@ describe("album workspace browser boundary", () => {
   });
   it("should deliver ordered country artwork, report a missing image explicitly and restore artwork after navigation", async () => {
     const client = buildClient();
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const japan = await screen.findByRole("img", { name: "Japan flag" });
     expect(screen.getAllByRole("img", { name: / flag$/ }).map((image) => image.getAttribute("aria-label"))).toEqual(["Japan flag", "Romania flag"]);
     expect(japan).toHaveAttribute("href", "/flags/jp.png");
@@ -324,7 +587,7 @@ describe("album workspace browser boundary", () => {
       });
       const client = buildClient({ gearCatalog: vi.fn().mockReturnValueOnce(delayed).mockResolvedValue({ cameras: [], lenses: [] }) });
       window.history.replaceState(null, "", "?part=vacation");
-      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      const view = render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       await screen.findByRole("button", { name: "Edit chapter details" });
       if (phase === "stale") fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
       if (phase === "disposed") view.unmount();
@@ -349,7 +612,7 @@ describe("album workspace browser boundary", () => {
     });
     const client = buildClient({ gearCatalog: vi.fn().mockResolvedValueOnce({ cameras: [], lenses: [] }).mockReturnValue(pending) });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     await waitFor(() => {
       expect(client.gearCatalog).toHaveBeenCalledTimes(2);
@@ -382,7 +645,7 @@ describe("album workspace browser boundary", () => {
           .mockResolvedValue(membership(workspace.spreads)),
         createChapter: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ id: home.id, scheduling: "queued" }),
       });
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
       await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
       fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -419,7 +682,7 @@ describe("album workspace browser boundary", () => {
       saveChapterGear: vi.fn().mockRejectedValue(new AlbumRequestError(400, "Gear rejected")),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
     fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
@@ -448,7 +711,7 @@ describe("album workspace browser boundary", () => {
         chapterGear: vi.fn().mockResolvedValue(phase === "invalid" ? [{ cameraId: "missing", lensIds: [] }] : []),
       });
       window.history.replaceState(null, "", "?part=vacation");
-      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      const view = render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       await screen.findByRole("button", { name: "Edit chapter details" });
       if (phase === "invalid") {
         expect(await screen.findByRole("alert")).toHaveTextContent("A selected camera is no longer available.");
@@ -484,7 +747,7 @@ describe("album workspace browser boundary", () => {
       saveChapterGear: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
     fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
@@ -525,7 +788,7 @@ describe("album workspace browser boundary", () => {
         .mockResolvedValue([renamed, home]),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
     fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: renamed.name } });
@@ -558,7 +821,7 @@ describe("album workspace browser boundary", () => {
         .mockResolvedValue({ cameras: [], lenses: [] }),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await waitFor(() => expect(screen.queryByText("Loading saved chapter gear.")).not.toBeInTheDocument());
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     await screen.findByRole("alert");
@@ -587,7 +850,7 @@ describe("album workspace browser boundary", () => {
       saveChapterGear: vi.fn().mockResolvedValue(undefined),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter details" }));
     fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: camera.id } });
     expect(screen.getByRole("region", { name: "Chapter metadata" })).toBeInTheDocument();
@@ -620,7 +883,7 @@ describe("album workspace browser boundary", () => {
           : vi.fn().mockResolvedValue(workspace.chapters),
     });
     window.history.replaceState(null, "", "?part=vacation");
-    const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    const view = render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await screen.findByRole("button", { name: "Edit chapter description" });
     if (phase === "refresh") {
       fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
@@ -646,7 +909,7 @@ describe("album workspace browser boundary", () => {
       chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue([home]),
       composition: vi.fn().mockResolvedValueOnce(membership(workspace.spreads)).mockResolvedValue(membership(remaining)),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter description" }));
     const dialog = screen.getByRole("dialog", { name: "Chapter description for Kyoto" });
     fireEvent.input(within(dialog).getByRole("textbox", { name: "Chapter description" }), { target: { value: "Retained draft" } });
@@ -659,6 +922,7 @@ describe("album workspace browser boundary", () => {
   });
 
   it.each([false, true])("should retain an unplaced caption draft and report missing inventory with uncertain=%s", async (uncertain) => {
+    const [available, setAvailable] = createSignal(true);
     const photo = {
       id: "photo",
       filename: "Mountain.jpg",
@@ -691,7 +955,7 @@ describe("album workspace browser boundary", () => {
       },
     };
     const client = buildClient({ saveCaption: vi.fn().mockRejectedValue(new Error("lost")) }, placed);
-    render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
+    render(() => <AlbumOpen session={{ ...editingSession, available }} id={album.id} client={client} events={liveEvents} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add caption for Mountain.jpg" }));
     const editor = screen.getByRole("textbox", { name: "Caption for Mountain.jpg" });
     editor.textContent = "Draft";
@@ -709,6 +973,13 @@ describe("album workspace browser boundary", () => {
     receive({ kind: "subscribed" });
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveFocus();
+    });
+    setAvailable(false);
+    fireEvent.click(screen.getByRole("button", { name: uncertain ? "Read retained caption" : "Save retained caption" }));
+    await screen.findByText("Editing ownership is unavailable. The draft is retained.");
+    setAvailable(true);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
     });
     fireEvent.click(await screen.findByRole("button", { name: uncertain ? "Read retained caption" : "Save retained caption" }));
     if (uncertain) {
@@ -739,7 +1010,7 @@ describe("album workspace browser boundary", () => {
       saveAuthors: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(metadata),
       open: vi.fn().mockResolvedValueOnce(album).mockRejectedValueOnce(new Error("read offline")).mockResolvedValue(metadata),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Iacob" }));
     await screen.findByRole("alert");
     if (uncertain) {
@@ -796,7 +1067,7 @@ describe("album workspace browser boundary", () => {
         },
         displayed,
       );
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       fireEvent.click(await screen.findByRole("button", { name: "Edit caption for Mountain.jpg" }));
       const editor = screen.getByRole("textbox", { name: "Caption for Mountain.jpg" });
       editor.textContent = text;
@@ -821,7 +1092,7 @@ describe("album workspace browser boundary", () => {
     const text = "  山\n\n the end  ";
     const metadata = { ...album, title: "Authoritative saved title", synopsis: text, authors: ["Mara"] as const };
     const client = buildClient({ saveSynopsis: vi.fn().mockResolvedValue(metadata) });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const opener = await screen.findByRole("button", { name: "Edit synopsis" });
     const acquired = vi.mocked(client.open).mock.calls.length;
 
@@ -848,7 +1119,7 @@ describe("album workspace browser boundary", () => {
         .mockRejectedValueOnce(new Error("offline"))
         .mockResolvedValue([{ ...vacation, description: "" }, home]),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit chapter description" }));
     const dialog = screen.getByRole("dialog", { name: "Chapter description for Kyoto" });
     const editor = within(dialog).getByRole("textbox", { name: "Chapter description" });
@@ -876,7 +1147,7 @@ describe("album workspace browser boundary", () => {
   it("should retain uncertain synopsis drafts and reconcile before enabling another write", async () => {
     const text = "Uncertain draft";
     const client = buildClient({ saveSynopsis: vi.fn().mockRejectedValueOnce(new Error("Connection lost")) });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
     const dialog = screen.getByRole("dialog", { name: "Album synopsis" });
     const editor = within(dialog).getByRole("textbox", { name: "Synopsis" });
@@ -896,7 +1167,7 @@ describe("album workspace browser boundary", () => {
   });
   it("should edit synopsis without typing writes and cancel back to its persistent opener", async () => {
     const client = buildClient();
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const opener = await screen.findByRole("button", { name: "Edit synopsis" });
 
     fireEvent.click(opener);
@@ -921,7 +1192,7 @@ describe("album workspace browser boundary", () => {
         .mockReturnValueOnce(pending)
         .mockImplementation((_id: string, authors: readonly Author[]) => Promise.resolve({ ...album, authors })),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const group = await screen.findByRole("group", { name: "Album authors" });
     const opener = within(group).getByRole("button", { name: "Iacob" });
     const other = screen.getByRole("link", { name: "Back to album catalog" });
@@ -1024,7 +1295,7 @@ describe("album workspace browser boundary", () => {
       ]),
       changeSpreadTemplate: vi.fn().mockResolvedValue(undefined),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Choose Mountain.jpg" }));
     fireEvent.click(screen.getByRole("button", { name: "Photo slot 1: empty" }));
     await screen.findByRole("button", { name: "Photo slot 1: Mountain.jpg" });
@@ -1057,7 +1328,7 @@ describe("album workspace browser boundary", () => {
         .mockRejectedValueOnce(new Error("offline"))
         .mockResolvedValue({ kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
     fireEvent.click(await screen.findByRole("button", { name: "Retry photos" }));
     await waitFor(() => {
@@ -1071,7 +1342,7 @@ describe("album workspace browser boundary", () => {
   it("should preserve unresolved Cover state against navigation and page departure", async () => {
     window.history.replaceState(null, "", "/albums/album?part=cover");
     const client = buildClient({ readPlacements: vi.fn().mockRejectedValue(new Error("offline")) });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await screen.findByRole("button", { name: "Retry photos" });
     const before = window.location.search;
 
@@ -1116,7 +1387,7 @@ describe("album workspace browser boundary", () => {
       },
     };
     const client = buildClient({ editPlacements: vi.fn().mockRejectedValue(new Error("Acknowledgement lost")) }, saved);
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove photo from Photo slot 1" }));
     await screen.findByRole("button", { name: "Retry photos" });
 
@@ -1147,7 +1418,7 @@ describe("album workspace browser boundary", () => {
         .mockResolvedValue({ ...album, authors: ["Mara"] }),
       readPlacements: vi.fn().mockRejectedValue(new Error("A second spread GET is unnecessary")),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
 
     await screen.findByRole("button", { name: "Photo slot 1: empty" });
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
@@ -1167,7 +1438,7 @@ describe("album workspace browser boundary", () => {
     const client = buildClient({
       chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace.chapters),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const chapter = await screen.findByRole("link", { name: "Kyoto" });
     chapter.focus();
     fireEvent.click(chapter);
@@ -1190,7 +1461,7 @@ describe("album workspace browser boundary", () => {
     const client = buildClient({
       open: vi.fn().mockResolvedValueOnce(album).mockResolvedValue(savedAlbum),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
 
     if (entry === "history") {
@@ -1210,7 +1481,7 @@ describe("album workspace browser boundary", () => {
     const client = buildClient({
       open: vi.fn().mockResolvedValueOnce(album).mockResolvedValue(savedAlbum),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
 
@@ -1238,7 +1509,7 @@ describe("album workspace browser boundary", () => {
         .fn()
         .mockImplementation((id: string) => Promise.resolve(id === vacation.id ? available.photoInventories.vacation : inventory)),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const choose = await screen.findByRole("button", { name: "Choose Mountain.jpg" });
     const departure = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(departure);
@@ -1268,7 +1539,7 @@ describe("album workspace browser boundary", () => {
           .mockRejectedValueOnce(new Error("offline"))
           .mockResolvedValue(workspace.chapters),
       });
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
       await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
@@ -1304,7 +1575,7 @@ describe("album workspace browser boundary", () => {
       },
       added,
     );
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
@@ -1349,7 +1620,7 @@ describe("album workspace browser boundary", () => {
     );
     const expectedPart = position === "next-photo" ? "next" : position === "last" ? "home-first" : "home";
     window.history.replaceState(null, "", "?part=selected");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Delete spread" }));
 
@@ -1384,7 +1655,7 @@ describe("album workspace browser boundary", () => {
         ]),
       });
       window.history.replaceState(null, "", "?part=vacation-photo");
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       const opener = await screen.findByRole("button", { name: kind === "template" ? "Other" : "Delete spread" });
       fireEvent.click(opener);
       const warning = await screen.findByRole("alertdialog");
@@ -1426,7 +1697,7 @@ describe("album workspace browser boundary", () => {
         ]),
       });
       window.history.replaceState(null, "", part === null ? "/albums/album" : `?part=${part}`);
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       await screen.findByRole("heading", { name: heading });
       const applied = await screen.findByRole("button", { name: "Applied two photos" });
       const categories = within(screen.getByRole("group", { name: "Photo slot count" }));
@@ -1462,7 +1733,7 @@ describe("album workspace browser boundary", () => {
     );
 
     window.history.replaceState(null, "", "?part=vacation-photo");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Retry templates" }));
     await waitFor(() => {
       expect(client.templates).toHaveBeenCalledTimes(2);
@@ -1494,7 +1765,7 @@ describe("album workspace browser boundary", () => {
       reads.mockResolvedValue(membership(remaining.spreads));
       const client = buildClient({ composition: reads, deleteSpread: vi.fn().mockResolvedValue(undefined) });
       window.history.replaceState(null, "", "?part=vacation-photo");
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
 
       fireEvent.click(await screen.findByRole("button", { name: "Delete spread" }));
       await screen.findByRole("alert");
@@ -1521,7 +1792,7 @@ describe("album workspace browser boundary", () => {
       withSecond,
     );
     window.history.replaceState(null, "", "?part=vacation-photo");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const earlier = await screen.findByRole("button", { name: "Shift spread left" });
     const later = screen.getByRole("button", { name: "Shift spread right" });
 
@@ -1565,7 +1836,7 @@ describe("album workspace browser boundary", () => {
       displayed,
     );
     window.history.replaceState(null, "", "?part=vacation-photo");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Shift spread right" }));
     const reload = await screen.findByRole("button", { name: "Reload saved workspace" });
     expect(screen.getByRole("alert")).toHaveTextContent("This chapter's composition changed.");
@@ -1601,7 +1872,7 @@ describe("album workspace browser boundary", () => {
           : vi.fn().mockResolvedValue(workspace.chapters),
     });
     window.history.replaceState(null, "", "?part=vacation-photo");
-    const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    const view = render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add spread" }));
     if (outcome === "reload")
       await waitFor(() => {
@@ -1630,7 +1901,7 @@ describe("album workspace browser boundary", () => {
         .mockReturnValue(pending),
     });
     window.history.replaceState(null, "", "?part=vacation-photo");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Delete spread" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
@@ -1660,7 +1931,7 @@ describe("album workspace browser boundary", () => {
         .mockReturnValueOnce(pending)
         .mockResolvedValue([{ id: "layout", name: "Chapter layout", slots: [photoSlot] }]),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
     await screen.findByRole("button", { name: "Chapter layout" });
 
@@ -1674,7 +1945,7 @@ describe("album workspace browser boundary", () => {
   it("should select chapter-grouped spreads below the canvas, remember interiors, restore Back and recover invalid selections", async () => {
     const client = buildClient();
 
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await screen.findByRole("heading", { level: 1, name: album.title });
     const controls = within(screen.getByRole("group", { name: "Workspace controls" }));
     const organization = screen.getByRole("navigation", { name: "Album organization" });
@@ -1741,7 +2012,7 @@ describe("album workspace browser boundary", () => {
     "should restore a direct %s selection and collapse only photo controls, retaining right-column navigation",
     async (part) => {
       window.history.replaceState(null, "", `?part=${part}`);
-      render(() => <AlbumOpen id={album.id} client={buildClient()} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={buildClient()} events={events} />);
       await screen.findByRole("heading", { level: 1, name: album.title });
 
       if (part === "cover") {
@@ -1790,12 +2061,16 @@ describe("album workspace browser boundary", () => {
       });
       window.history.replaceState(null, "", `?part=${part}`);
       const client = buildClient();
-      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      const select = vi.fn().mockResolvedValue(undefined);
+      const view = render(() => <AlbumOpen session={{ ...editingSession, select }} id={album.id} client={client} events={events} />);
 
       try {
         await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
         fireEvent.click(await screen.findByRole("button", { name: "Reader mode" }));
         const exit = await screen.findByRole("button", { name: "Exit reader" });
+        await waitFor(() => {
+          expect(select).toHaveBeenLastCalledWith(null, false);
+        });
         const readerControls = within(screen.getByRole("group", { name: "Reader controls" }));
         const description = "Saved chapter text read during Reader navigation";
         vi.mocked(client.chapters).mockResolvedValue(workspace.chapters.map((owner) => (owner.id === home.id ? { ...owner, description } : owner)));
@@ -1829,6 +2104,9 @@ describe("album workspace browser boundary", () => {
         fireEvent.click(exit);
 
         await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toHaveFocus());
+        await waitFor(() => {
+          expect(select).toHaveBeenLastCalledWith({ kind: "spread", id: vacationPhoto.id }, false);
+        });
         expect(screen.getByRole("heading", { name: "Kyoto · Photo spread" })).toBeInTheDocument();
         expect(screen.queryByText(vacation.sourceFolder, { exact: true })).not.toBeInTheDocument();
 
@@ -1879,7 +2157,7 @@ describe("album workspace browser boundary", () => {
       },
       { ...saved, photoInventories: { [missed.id]: inventory } },
     );
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const add = await screen.findByRole("button", { name: "Add chapter" });
 
     fireEvent.click(add);
@@ -1952,7 +2230,7 @@ describe("album workspace browser boundary", () => {
       updateChapter: vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce({ id: vacation.id }),
     });
     window.history.replaceState(null, "", "?part=vacation-photo");
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     const edit = await screen.findByRole("button", { name: "Edit chapter details" });
 
     fireEvent.click(edit);
@@ -1997,7 +2275,7 @@ describe("album workspace browser boundary", () => {
       chapters: vi.fn().mockResolvedValueOnce(empty.chapters).mockResolvedValue(workspace.chapters),
       composition: vi.fn().mockResolvedValueOnce(membership(empty.spreads)).mockResolvedValue(membership(workspace.spreads)),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
     await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -2091,7 +2369,7 @@ describe("album workspace browser boundary", () => {
         },
         { ...savedWorkspace, photoInventories: { ...workspace.photoInventories, [finalChapter.id]: inventory } },
       );
-      render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
       const add = await screen.findByRole("button", { name: "Add chapter" });
 
       if (count === 65) {
@@ -2154,7 +2432,7 @@ describe("album workspace browser boundary", () => {
       },
       savedWorkspace,
     );
-    const view = render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
+    const view = render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={liveEvents} />);
 
     expect(client.chapters).not.toHaveBeenCalled();
     receive({ kind: "subscribed" });
@@ -2222,7 +2500,7 @@ describe("album workspace browser boundary", () => {
       },
       savedWorkspace,
     );
-    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
     await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -2255,7 +2533,7 @@ describe("album workspace browser boundary", () => {
       createChapter: vi.fn().mockReturnValue(pending),
     });
     const [id, changeAlbum] = createSignal(album.id);
-    render(() => <AlbumOpen id={id()} client={client} events={events} />);
+    render(() => <AlbumOpen session={editingSession} id={id()} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Add chapter" }));
     await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" })).toBeEnabled());
     fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
@@ -2292,7 +2570,7 @@ describe("album workspace browser boundary", () => {
     const client = buildClient({
       chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockResolvedValue(freshWorkspace.chapters),
     });
-    render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={liveEvents} />);
     const first = await screen.findByRole("button", { name: "First spread" });
     const previous = screen.getByRole("button", { name: "Previous spread" });
     const next = screen.getByRole("button", { name: "Next spread" });

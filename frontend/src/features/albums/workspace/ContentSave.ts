@@ -7,12 +7,16 @@ export function createContentSave<T, Saved = T>(operations: {
   read: (draft: T) => Promise<Saved>;
   equal: (left: Saved, right: T) => boolean;
   onSaved: (saved: Saved, draft: T) => void;
+  authority?: (() => number | undefined) | undefined;
 }) {
   const [draft, setDraft] = createSignal<{ original: T; value: T }>();
   const [pending, setPending] = createSignal(false);
   const [recovery, setRecovery] = createSignal<"acknowledged" | "uncertain">();
   const [error, setError] = createSignal<string>();
   const [active, setActive] = createSignal(true);
+  let authority: number | undefined;
+  let reviewedAuthority: number | undefined;
+  let ownershipChanged = false;
   onCleanup(() => {
     setActive(false);
   });
@@ -21,6 +25,9 @@ export function createContentSave<T, Saved = T>(operations: {
   );
 
   function begin(value: T) {
+    authority = operations.authority?.();
+    reviewedAuthority = authority;
+    ownershipChanged = false;
     setDraft({ original: value, value });
     setError(undefined);
   }
@@ -52,11 +59,17 @@ export function createContentSave<T, Saved = T>(operations: {
     const retained = draft();
     if (!active() || retained === undefined || pending()) return;
     setPending(true);
+    const observedAuthority = operations.authority?.();
     try {
       const saved = await operations.read(retained.value);
       if (!active()) return;
+      if (operations.authority !== undefined && observedAuthority !== operations.authority()) {
+        setError("Editing ownership changed while reading saved content. The draft is retained. Read saved content again.");
+        return;
+      }
       if (recovery() === "acknowledged" || operations.equal(saved, retained.value)) finish(saved, retained.value);
       else {
+        reviewedAuthority = observedAuthority;
         setRecovery(undefined);
         setError("The draft is not saved. Review it before saving again.");
       }
@@ -68,9 +81,31 @@ export function createContentSave<T, Saved = T>(operations: {
     }
   }
 
-  async function commit() {
+  async function commit(reviewed = false) {
     const retained = draft();
     if (!active() || retained === undefined || pending()) return;
+    if (operations.authority !== undefined) {
+      const current = operations.authority();
+      if (current === undefined) {
+        ownershipChanged = true;
+        setError("Editing ownership is unavailable. The draft is retained.");
+        return;
+      }
+      if (current !== authority) ownershipChanged = true;
+      if (ownershipChanged) {
+        if (!reviewed) {
+          setError("Editing ownership changed. Read saved content and explicitly review the draft before saving.");
+          return;
+        }
+        if (reviewedAuthority !== current) {
+          setRecovery("uncertain");
+          await reconcile();
+          return;
+        }
+        authority = current;
+        ownershipChanged = false;
+      }
+    }
     if (recovery() !== undefined) {
       await reconcile();
       return;
