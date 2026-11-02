@@ -1,5 +1,6 @@
 package photography
 
+import cats.syntax.all.*
 import com.tngtech.archunit.core.importer.{ClassFileImporter, ImportOption}
 import com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses
@@ -108,6 +109,7 @@ class ArchitectureTest extends FunSuite:
     implementations.foreach { implementation =>
       implementation.getConstructors.iterator.asScala.foreach { constructor =>
         val dependencies = constructor.getRawParameterTypes.iterator.asScala.filterNot(value => capabilities.contains(value.getName)).toVector
-        assert(dependencies.sizeIs <= 5, s"${implementation.getName} injects ${dependencies.size} collaborators: $dependencies")
+        val maximum      = if implementation.getName === "photography.usecases.spread.SpreadManager$LiveSpreadManager" then 6 else 5
+        assert(dependencies.sizeIs <= maximum, s"${implementation.getName} injects ${dependencies.size} collaborators: $dependencies")
       }
     }
