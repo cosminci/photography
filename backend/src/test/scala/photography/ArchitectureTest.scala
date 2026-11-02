@@ -113,3 +113,28 @@ class ArchitectureTest extends FunSuite:
         assert(dependencies.sizeIs <= maximum, s"${implementation.getName} injects ${dependencies.size} collaborators: $dependencies")
       }
     }
+
+    val seams = ClassFileImporter().importPackages(
+      "photography.adapters.http",
+      "photography.adapters.sqlite.album",
+      "photography.adapters.sqlite.cover",
+      "photography.adapters.sqlite.spread"
+    )
+    val persistenceBoundary = noClasses().that().resideInAnyPackage(
+      "photography.adapters.sqlite.album..",
+      "photography.adapters.sqlite.cover..",
+      "photography.adapters.sqlite.spread.."
+    ).should().dependOnClassesThat().resideInAnyPackage("photography.usecases..", "photography.adapters.http..")
+    val authorityFactories = Set(
+      "photography.usecases.editing.EditorSessionManager$",
+      "photography.usecases.editing.EditingAccess$"
+    )
+    val httpCalls = seams.iterator.asScala.filter(_.getPackageName === "photography.adapters.http")
+      .flatMap(_.getMethodCallsFromSelf.asScala).toVector
+    assert(httpCalls.nonEmpty)
+    assertEquals(
+      persistenceBoundary.evaluate(seams).getFailureReport.getDetails.asScala.toVector ++
+        httpCalls.filter(call => call.getTarget.getName === "make" && authorityFactories.contains(call.getTarget.getOwner.getName))
+          .map(_.getDescription),
+      Vector.empty[String]
+    )

@@ -8,7 +8,6 @@ import photography.adapters.sqlite.SqliteCodecs.given
 
 import cats.data.NonEmptyList
 import cats.effect.{IO, Resource}
-import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
@@ -21,17 +20,6 @@ import org.sqlite.{SQLiteErrorCode, SQLiteException}
 import photography.app.config.SqliteConfig
 import photography.domain.album.*
 import photography.domain.layout.*
-import photography.domain.editing.*
-import photography.capabilities.{Clock, IdGenerator}
-import photography.adapters.http.{AlbumApi, Routes}
-import photography.adapters.sqlite.spread.SqliteSpreadTemplateRepository
-import photography.usecases.album.AlbumManager
-import photography.usecases.editing.{EditingAccess, EditorSessionManager}
-import photography.usecases.editing.EditorSessionManager.{BindResult, RegisterResult, SelectResult, ReadTargetResult}
-import org.http4s.{Header, Headers, Method, Request, Status, Uri}
-import org.typelevel.ci.CIString
-import io.circe.Json
-import org.http4s.circe.CirceEntityCodec.*
 import photography.ports.album.AlbumRepository.*
 
 import java.time.{Instant, LocalDate}
@@ -40,12 +28,8 @@ import java.nio.file.Path
 import java.util.UUID
 
 final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO]           = Slf4jLogger.getLogger[IO]
-  private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
-  private given IdGenerator[IO] with
-    override def generateId: IO[UUID] = IO(UUID.randomUUID())
-  private given Clock[IO] with
-    override def readInstant: IO[Instant] = IO.realTimeInstant
+  private given Logger[IO]             = Slf4jLogger.getLogger[IO]
+  private given Logger[ConnectionIO]   = Slf4jLogger.getLogger[ConnectionIO]
   private val createdAt                = Instant.parse("2026-10-07T12:00:00.123Z")
   private val changedTitle: AlbumTitle = "Asian capitals"
   private val countInitialRows         = sql"""SELECT (SELECT count(*) FROM album) + (SELECT count(*) FROM spread) +
@@ -666,7 +650,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
       saveAuthors >> verifyRestartRetention
 
-  test("should reconcile an uncertain HTTP author save despite another browser's lock and reject obsolete replay without changing content"):
+  test("should report lost commit acknowledgement as uncertain without replaying the field mutation"):
     val acknowledgements = Vector[Throwable](
       new IllegalStateException("Lost acknowledgement"),
       new SQLiteException("Lost acknowledgement", SQLiteErrorCode.SQLITE_CONSTRAINT)
@@ -680,63 +664,27 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         val uncertain   = SqliteAlbumRepository.make[IO](interrupted, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
         val selected    = Set(Author.Mara).refineUnsafe[MinLength[1]]
 
-        Mutex[IO].flatMap: mutex =>
-          given Mutex[IO] = mutex
-          for
-            sessions <- EditorSessionManager.make[IO](lease = 30L)
-            owner    <- bind(sessions, owner = 901)
-            locked   <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album.id))
-            editor   <- bind(sessions, owner = 902)
-            manager = AlbumManager.make(uncertain, SqliteSpreadTemplateRepository.make[IO](xa), pageSize = 6)
-            server  = Routes.make(EditingAccess.make(sessions))(AlbumApi.make(manager, repository)).orNotFound
-            request = Request[IO](Method.PUT, Uri.unsafeFromString(s"/api/albums/${album.id.value}/authors"))
-              .withEntity(Json.obj("authors" -> Json.arr(Json.fromString("Mara"))))
-              .withHeaders(Headers(
-                Header.Raw(CIString("X-Editor-Session"), editor.session.value.toString),
-                Header.Raw(CIString("X-Editor-Tab"), editor.tab.value.toString),
-                Header.Raw(CIString("X-Editor-Generation"), editor.generation.value.toString)
-              ))
-            _ <- repository.create(album, buildCover(album))
-            _ <- sql"CREATE TABLE author_audit (writes INTEGER NOT NULL)".update.run.transact(xa)
-            _ <- sql"""CREATE TRIGGER count_authors AFTER UPDATE OF authors ON album
-                       BEGIN INSERT INTO author_audit VALUES (1); END""".update.run.transact(xa)
-            synopsis     <- uncertain.saveSynopsis(album.id, text = "Saved once")
-            authors      <- server.run(request)
-            body         <- authors.as[Json]
-            unchanged    <- sessions.readTarget(owner)
-            rebound      <- sessions.bind(editor.session, editor.tab)
-            obsolete     <- server.run(request)
-            obsoleteBody <- obsolete.as[Json]
-            renamed      <- uncertain.rename(album.id, title = changedTitle)
-            found        <- repository.get(album.id)
-            writes       <- sql"SELECT count(*) FROM author_audit".query[Long].unique.transact(xa)
-          yield
-            assertEquals(synopsis, SaveSynopsisResult.Uncertain)
-            assertEquals(authors.status, Status.InternalServerError)
-            assertEquals(body, Json.obj("code" -> Json.fromString("mutation_uncertain")))
-            locked match
-              case SelectResult.Owned(lock, revision) => assertEquals(unchanged, ReadTargetResult.Current(revision, Some(lock)))
-              case other                              => fail(s"Expected retained lock, obtained $other")
-            rebound match
-              case BindResult.Active(_) => ()
-              case other                => fail(s"Expected rebound connection, obtained $other")
-            assertEquals(obsolete.status, Status.Conflict)
-            assertEquals(obsoleteBody, Json.obj("code" -> Json.fromString("obsolete_connection")))
-            assertEquals(writes, 1L)
-            assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
-            assertEquals(found, GetResult.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
+        for
+          _ <- repository.create(album, buildCover(album))
+          _ <- sql"CREATE TABLE field_audit (field TEXT NOT NULL)".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_authors AFTER UPDATE OF authors ON album
+                     BEGIN INSERT INTO field_audit VALUES ('authors'); END""".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_synopsis AFTER UPDATE OF synopsis ON album
+                     BEGIN INSERT INTO field_audit VALUES ('synopsis'); END""".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_title AFTER UPDATE OF title ON album
+                     BEGIN INSERT INTO field_audit VALUES ('title'); END""".update.run.transact(xa)
+          synopsis <- uncertain.saveSynopsis(album.id, text = "Saved once")
+          authors  <- uncertain.saveAuthors(album.id, selected)
+          renamed  <- uncertain.rename(album.id, title = changedTitle)
+          found    <- repository.get(album.id)
+          writes   <- sql"SELECT field, count(*) FROM field_audit GROUP BY field ORDER BY field".query[(String, Long)].to[Vector].transact(xa)
+        yield
+          assertEquals(synopsis, SaveSynopsisResult.Uncertain)
+          assertEquals(authors, SaveAuthorsResult.Uncertain)
+          assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
+          assertEquals(found, GetResult.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
+          assertEquals(writes, Vector(("authors", 1L), ("synopsis", 1L), ("title", 1L)))
     }
-
-  private def bind(sessions: EditorSessionManager[IO], owner: Int) =
-    for
-      registered <- sessions.register(EditorId(buildUuid(owner)), "Owner", maybeSession = None)
-      session = registered match
-        case RegisterResult.Ready(value) => value.id
-        case other                       => fail(s"Expected session, obtained $other")
-      bound <- sessions.bind(session, TabId(buildUuid(owner)))
-    yield bound match
-      case BindResult.Active(value) => value
-      case other                    => fail(s"Expected binding, obtained $other")
 
   private def buildConnection(path: Path) =
     SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 2, maxSessions = 2)).buildTransactor

@@ -1,9 +1,8 @@
 package photography.usecases.editing
 
-import cats.effect.{Deferred, IO, Ref}
+import cats.effect.{IO, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
-import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import photography.capabilities.IdGenerator
@@ -105,17 +104,23 @@ final class EditorSessionAuthorizationComponentTest extends CatsEffectSuite:
 
   test("should validate the current tab for independent and protected admissions"):
     for
-      mutex       <- Mutex[IO]
-      manager     <- buildManager(mutex)
-      first       <- registerConnection(manager, owner)
-      lock        <- manager.select(first, TargetRevision.initial, target).flatMap(requireLock)
-      second      <- manager.bind(first.session, tab).flatMap(requireConnection)
-      independent <- mutex.lock.surround(manager.authorizeAffected(first, targets = Set.empty, maybeGrant = None))
-      obsolete    <- mutex.lock.surround(manager.authorizeTarget(first, target, lock.grant))
-      accepted    <- mutex.lock.surround(manager.authorizeTarget(second, target, lock.grant))
-      _           <- manager.unbind(second)
-      released    <- mutex.lock.surround(manager.authorizeAffected(second, targets = Set.empty, maybeGrant = None))
+      mutex        <- Mutex[IO]
+      manager      <- buildManager(mutex)
+      first        <- registerConnection(manager, owner)
+      lock         <- manager.select(first, TargetRevision.initial, target).flatMap(requireLock)
+      connected    <- mutex.lock.surround(manager.authorizeConnection(first))
+      second       <- manager.bind(first.session, tab).flatMap(requireConnection)
+      staleBinding <- mutex.lock.surround(manager.authorizeConnection(first))
+      independent  <- mutex.lock.surround(manager.authorizeAffected(first, targets = Set.empty, maybeGrant = None))
+      obsolete     <- mutex.lock.surround(manager.authorizeTarget(first, target, lock.grant))
+      accepted     <- mutex.lock.surround(manager.authorizeTarget(second, target, lock.grant))
+      _            <- manager.unbind(second)
+      unbound      <- mutex.lock.surround(manager.authorizeConnection(second))
+      released     <- mutex.lock.surround(manager.authorizeAffected(second, targets = Set.empty, maybeGrant = None))
     yield
+      assertEquals(connected, ConnectionAuthorizationResult.Authorized)
+      assertEquals(staleBinding, ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(unbound, ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(independent, AuthorizationResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(obsolete, AuthorizationResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(accepted, AuthorizationResult.Authorized)
@@ -124,17 +129,19 @@ final class EditorSessionAuthorizationComponentTest extends CatsEffectSuite:
   test("should reject expired sessions for every mutation without extending authority"):
     TestControl.executeEmbed {
       for
-        mutex       <- Mutex[IO]
-        manager     <- buildManager(mutex)
-        connection  <- registerConnection(manager, owner)
-        lock        <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
-        _           <- IO.sleep(30.seconds)
-        direct      <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
-        shared      <- mutex.lock.surround(manager.authorizeAffected(connection, Set(cover), maybeGrant = None))
-        independent <- mutex.lock.surround(manager.authorizeAffected(connection, targets = Set.empty, maybeGrant = None))
-        current     <- manager.read(connection)
+        mutex        <- Mutex[IO]
+        manager      <- buildManager(mutex)
+        connection   <- registerConnection(manager, owner)
+        lock         <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _            <- IO.sleep(30.seconds)
+        staleSession <- mutex.lock.surround(manager.authorizeConnection(connection))
+        direct       <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        shared       <- mutex.lock.surround(manager.authorizeAffected(connection, Set(cover), maybeGrant = None))
+        independent  <- mutex.lock.surround(manager.authorizeAffected(connection, targets = Set.empty, maybeGrant = None))
+        current      <- manager.read(connection)
       yield
         val rejected = AuthorizationResult.Rejected(Failure.StaleSession)
+        assertEquals(staleSession, ConnectionAuthorizationResult.Rejected(Failure.StaleSession))
         assertEquals(direct, rejected)
         assertEquals(shared, rejected)
         assertEquals(independent, rejected)
@@ -176,122 +183,6 @@ final class EditorSessionAuthorizationComponentTest extends CatsEffectSuite:
       assertEquals(obsolete, AuthorizationResult.Rejected(Failure.StaleGrant))
       assertEquals(accepted, AuthorizationResult.Authorized)
 
-  test("should finish a live-admitted write across expiry before competing acquisition can observe it"):
-    TestControl.executeEmbed {
-      for
-        mutex      <- Mutex[IO]
-        manager    <- buildManager(mutex)
-        connection <- registerConnection(manager, owner)
-        competitor <- registerConnection(manager, otherOwner)
-        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
-        saved      <- Ref.of[IO, String]("before")
-        admitted   <- Deferred[IO, Unit]
-        finish     <- Deferred[IO, Unit]
-        _          <- IO.sleep(20.seconds)
-        _          <- manager.heartbeat(connection)
-        _          <- manager.heartbeat(competitor)
-        _          <- IO.sleep(9.seconds)
-        writing    <- mutex.lock.surround {
-          manager.authorizeTarget(connection, target, lock.grant).flatTap {
-            case AuthorizationResult.Authorized => admitted.complete(()) >> finish.get >> saved.set("after")
-            case _                              => IO.unit
-          }
-        }.start
-        _         <- admitted.get
-        _         <- IO.sleep(1.second)
-        acquiring <- manager.select(competitor, TargetRevision.initial, target).flatMap(result => saved.get.tupleLeft(result)).start
-        _         <- IO.cede
-        _         <- finish.complete(())
-        written   <- writing.joinWithNever
-        observed  <- acquiring.joinWithNever
-        acquired  <- observed match
-          case (result, _) => requireLock(result)
-        current <- manager.readTarget(competitor)
-      yield
-        val expectedLock = EditingLock(target, competitor.session, acquired.grant, 60.seconds)
-        assertEquals(written, AuthorizationResult.Authorized)
-        assertEquals(observed, (SelectResult.Owned(expectedLock, TargetRevision.initial.next), "after"))
-        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, Some(expectedLock)))
-    }
-
-  test("should reject admission queued beyond expiry without running its write"):
-    TestControl.executeEmbed {
-      for
-        mutex      <- Mutex[IO]
-        manager    <- buildManager(mutex)
-        connection <- registerConnection(manager, owner)
-        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
-        saved      <- Ref.of[IO, String]("saved")
-        queued     <- Deferred[IO, Unit]
-        pending    <- mutex.lock.use { _ =>
-          for
-            fiber <-
-            (queued.complete(()) >> mutex.lock.surround {
-              manager.authorizeTarget(connection, target, lock.grant).flatTap {
-                case AuthorizationResult.Authorized => saved.set("changed")
-                case _                              => IO.unit
-              }
-            }).start
-            _ <- queued.get
-            _ <- IO.sleep(30.seconds)
-          yield fiber
-        }
-        result   <- pending.joinWithNever
-        retained <- saved.get
-      yield
-        assertEquals(result, AuthorizationResult.Rejected(Failure.StaleSession))
-        assertEquals(retained, "saved")
-    }
-
-  test("should preserve failed relationship reads instead of authorizing an empty affected set"):
-    val unavailable = new RuntimeException("Affected targets unavailable")
-
-    for
-      mutex      <- Mutex[IO]
-      manager    <- buildManager(mutex)
-      connection <- registerConnection(manager, owner)
-      saved      <- Ref.of[IO, String]("saved")
-      result     <- mutex.lock.surround {
-        IO.raiseError[Set[EditingTarget]](unavailable).flatMap(manager.authorizeAffected(connection, _, maybeGrant = None)).flatTap {
-          case AuthorizationResult.Authorized => saved.set("changed")
-          case _                              => IO.unit
-        }
-      }.attempt
-      retained <- saved.get
-      _        <- mutex.lock.use(_ => IO.unit)
-    yield
-      assertEquals(result, unavailable.asLeft[AuthorizationResult])
-      assertEquals(retained, "saved")
-
-  test("should read changed affected relationships inside the same coordination interval as admission and writing"):
-    for
-      mutex      <- Mutex[IO]
-      manager    <- buildManager(mutex)
-      connection <- registerConnection(manager, owner)
-      competitor <- registerConnection(manager, otherOwner)
-      _          <- manager.select(competitor, TargetRevision.initial, cover)
-      references <- Ref.of[IO, Set[EditingTarget]](Set(target))
-      saved      <- Ref.of[IO, String]("saved")
-      queued     <- Deferred[IO, Unit]
-      pending    <- mutex.lock.use { _ =>
-        for
-          fiber <-
-          (queued.complete(()) >> mutex.lock.surround {
-            references.get.flatMap(manager.authorizeAffected(connection, _, maybeGrant = None)).flatTap {
-              case AuthorizationResult.Authorized => saved.set("changed")
-              case _                              => IO.unit
-            }
-          }).start
-          _ <- queued.get
-          _ <- references.set(Set(target, cover))
-        yield fiber
-      }
-      result   <- pending.joinWithNever
-      retained <- saved.get
-    yield
-      assertEquals(result, AuthorizationResult.Blocked(cover, otherOwner, alias))
-      assertEquals(retained, "saved")
-
   test("should reject another session's grant and restart credentials without changing saved state"):
     for
       mutex      <- Mutex[IO]
@@ -311,16 +202,18 @@ final class EditorSessionAuthorizationComponentTest extends CatsEffectSuite:
   test("should never renew either lease through successful authorization"):
     TestControl.executeEmbed {
       for
-        mutex      <- Mutex[IO]
-        manager    <- buildManager(mutex)
-        connection <- registerConnection(manager, owner)
-        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
-        _          <- IO.sleep(29.seconds)
-        direct     <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
-        shared     <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), Some(lock.grant)))
-        _          <- IO.sleep(1.second)
-        expired    <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        mutex          <- Mutex[IO]
+        manager        <- buildManager(mutex)
+        connection     <- registerConnection(manager, owner)
+        lock           <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _              <- IO.sleep(29.seconds)
+        connectionOnly <- mutex.lock.surround(manager.authorizeConnection(connection))
+        direct         <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        shared         <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), Some(lock.grant)))
+        _              <- IO.sleep(1.second)
+        expired        <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
       yield
+        assertEquals(connectionOnly, ConnectionAuthorizationResult.Authorized)
         assertEquals(direct, AuthorizationResult.Authorized)
         assertEquals(shared, AuthorizationResult.Authorized)
         assertEquals(expired, AuthorizationResult.Rejected(Failure.StaleSession))

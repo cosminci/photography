@@ -91,6 +91,7 @@ object ProgramsBuilder:
     private val gearRepository    = SqliteGearRepository.make[F](sqlite)
     private val storage           = FilePhotoStorage.make(thumbnails)
     private val generator         = ImageIoPhotoThumbnailGenerator.make[F](quality)
+    private val membership        = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite)
 
     override def build: Resource[F, Programs[F]] =
       for
@@ -111,13 +112,13 @@ object ProgramsBuilder:
           inventories = ChapterPhotoInventory.make(inventory, imports),
           metadata = albumRepository,
           chapterMetadata = albumRepository,
-          membership = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite),
+          membership = membership,
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
           coverPlacements = CoverManager.make(coverRepository, placements),
           editorSessions = sessions,
-          editingAccess = EditingAccess.make(sessions)
+          editingAccess = EditingAccess.make(sessions, membership)
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =

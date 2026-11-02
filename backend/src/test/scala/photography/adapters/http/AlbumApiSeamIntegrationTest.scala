@@ -44,6 +44,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     Header.Raw(CIString("X-Editor-Tab"), connection.tab.value.toString),
     Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString)
   )
+  private val grant = GrantId(new UUID(0L, 13L))
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
     val savedAlbum = album.copy(synopsis = text)
@@ -412,25 +413,35 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
           maybeGrant: Option[GrantId]
       )(write: IO[A]): IO[EditingAccess.Result[A]] =
         assertEquals(editor, connection)
-        assertEquals(protection, EditingAccess.Protection.ActiveTab)
-        assertEquals(maybeGrant, None)
+        protection match
+          case EditingAccess.Protection.ActiveTab =>
+            assertEquals(maybeGrant, None)
+          case EditingAccess.Protection.OwnAlbumOpening(album) =>
+            assertEquals(album, id)
+            assertEquals(maybeGrant, Some(grant))
+          case other => fail(s"Unexpected protection: $other")
         write.map(EditingAccess.Result.Completed(_))
     val definitions = AlbumApi.make(albums, metadata)
     val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/authors"))).map(_.access)
     assertEquals(declaration, Some(Routes.Access.Editor(EditingAccess.Protection.ActiveTab)))
+    val synopsis = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/synopsis"))).map(_.access)
+    assertEquals(synopsis, Some(Routes.Access.Editor(EditingAccess.Protection.OwnAlbumOpening(id))))
     Routes.make(access)(definitions).orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   private def send(server: HttpApp[IO], method: Method, path: String, body: String) =
     val original = Request[IO](method, Uri.unsafeFromString(path)).withEntity(body).putHeaders(`Content-Type`(MediaType.application.json))
     val request  =
-      if method === Method.PUT && path.endsWith("/authors") then original.withHeaders(original.headers ++ Headers(credentials)) else original
+      if method === Method.PUT && path.endsWith("/authors") then original.withHeaders(original.headers ++ Headers(credentials))
+      else if method === Method.PUT && path.endsWith("/synopsis") then
+        original.withHeaders(original.headers ++ Headers(credentials)).putHeaders("X-Editor-Grant" -> grant.value.toString)
+      else original
 
     for
       response <- server.run(request)
       body     <- response.as[String]
     yield
-      if method === Method.PUT && path.endsWith("/authors") then
+      if method === Method.PUT && (path.endsWith("/authors") || path.endsWith("/synopsis")) then
         assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
       val maybeBody = Option.when(body.nonEmpty)(parse(body).fold(error => fail(error.message), identity))
       ApiResponse(response.status, response.contentType.map(_.mediaType), maybeBody)

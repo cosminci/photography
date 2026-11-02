@@ -99,7 +99,7 @@ Ordinary business managers retain their content decisions and persistence outcom
 
 Background photo publication/removal uses the same protection per photo transaction, retaining initiating ownership evidence; source discovery, decoding and entire import lifetimes remain outside coordination.
 
-The shared enforcement suite owns generic credentials, fencing, expiry and cancellation scenarios; route declarations, resource relationships and real HTTP/SQLite races retain focused proofs instead of repeating that matrix through business suites.
+Application component tests own admission, current relationship resolution, fencing, expiry, cancellation and serialization with competing acquisition, using substituted repository ports. HTTP seams prove credential decoding, declared-policy forwarding, response encoding and stream acquisition/finalization through substituted application services. Database seams prove persisted representation, transaction atomicity, rollback and acknowledgement uncertainty through real storage, without recreating application locking scenarios.
 
 The refactoring delivery migrates all previously protected operations together and requires explicit declarations for every API route; public declarations preserve the behavior of routes whose protection has not yet been implemented. Remaining caption, owner-text, gear, source/background and live-update work stays with the approved feature rather than being represented as delivered protection.
 

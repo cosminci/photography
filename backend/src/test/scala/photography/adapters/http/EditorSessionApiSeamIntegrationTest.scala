@@ -1,18 +1,16 @@
 package photography.adapters.http
 
-import cats.effect.{Deferred, IO, Ref}
-import cats.effect.std.Mutex
+import cats.effect.{IO, Ref}
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
 import fs2.{Stream, text}
-import io.circe.{DecodingFailure, Json}
+import io.circe.Json
 import io.circe.jawn.parse
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import org.http4s.{Header, Headers, MediaType, Method, Request, ServerSentEvent, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import org.typelevel.ci.CIString
-import photography.capabilities.IdGenerator
 import photography.domain.editing.*
 import photography.usecases.editing.EditorSessionManager
 import photography.usecases.editing.EditorSessionManager.*
@@ -21,33 +19,55 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
-  private val owner    = new UUID(0L, 1L).toString
-  private val tab      = new UUID(0L, 2L).toString
-  private val otherTab = new UUID(0L, 3L).toString
-  private val base     = "/api/editor-session"
+  private val owner             = new UUID(0L, 1L).toString
+  private val tab               = new UUID(0L, 2L).toString
+  private val base              = "/api/editor-session"
+  private val activeConnection  = EditorConnection(SessionId(new UUID(0L, 10L)), TabId(UUID.fromString(tab)), ConnectionGeneration(new UUID(0L, 11L)))
+  private val registeredSession = EditorSession(
+    activeConnection.session,
+    EditorId(UUID.fromString(owner)),
+    "Cosmin",
+    0.seconds,
+    30.seconds,
+    Some(activeConnection),
+    TargetRevision.initial
+  )
 
-  test("should register and privately resume a remembered browser without returning a tab credential"):
+  test("should encode registration contention and binding rejection from the session port"):
     for
-      manager <- buildManager
-      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-      first       <- app.run(register("Cosmin"))
-      session     <- first.as[Json]
-      credential  <- IO.fromEither(session.hcursor.get[String]("sessionId"))
-      resumed     <- app.run(register("Changed").putHeaders("X-Editor-Session" -> credential))
-      resumedBody <- resumed.as[Json]
-      blocked     <- app.run(register("Cosmin"))
-      blockedBody <- blocked.as[Json]
+      refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
+      service = buildService(refs, registeredSession, RegisterResult.CredentialRequired, BindResult.StaleSession)
+      app     = PublicRoutes(EditorSessionApi.make(service)).orNotFound
+      registration <- app.run(register("Cosmin"))
+      body         <- registration.as[Json]
+      stream       <- app.run(bind(activeConnection.session, tab))
+      events       <- stream.body.through(ServerSentEvent.decoder[IO]).compile.toVector
     yield
-      assertEquals(first.status, Status.Ok)
-      assertEquals(session.hcursor.get[String]("alias"), "Cosmin".asRight[DecodingFailure])
-      assertEquals(session.hcursor.get[Long]("leaseSeconds"), 30L.asRight[DecodingFailure])
-      assertEquals(session.hcursor.get[Long]("heartbeatSeconds"), 10L.asRight[DecodingFailure])
-      assertEquals(session.hcursor.downField("generation").focus, None)
-      assertEquals(resumed.status, Status.Ok)
-      assertEquals(resumedBody.hcursor.get[String]("sessionId"), credential.asRight[DecodingFailure])
-      assertEquals(resumedBody.hcursor.get[String]("alias"), "Cosmin".asRight[DecodingFailure])
-      assertEquals(blocked.status, Status.Conflict)
-      assertEquals(blockedBody, Json.obj("code" -> Json.fromString("credential_required")))
+      assertEquals(registration.status, Status.Conflict)
+      assertEquals(body, Json.obj("code" -> Json.fromString("credential_required")))
+      assertEquals(
+        events.filter(_.eventType.nonEmpty),
+        Vector(ServerSentEvent(data = Some("""{"code":"stale_session"}"""), eventType = Some("session_lost")))
+      )
+
+  test("should encode a blocked binding without exposing credentials or acquiring a stream"):
+    for
+      refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
+      service = buildService(
+        refs,
+        registeredSession,
+        RegisterResult.Ready(registeredSession),
+        BindResult.Blocked(registeredSession.owner, registeredSession.alias)
+      )
+      stream <- PublicRoutes(EditorSessionApi.make(service)).orNotFound.run(bind(activeConnection.session, tab))
+      events <- stream.body.through(ServerSentEvent.decoder[IO]).compile.toVector
+      calls  <- refs.get
+    yield
+      assertEquals(events.flatMap(_.eventType), Vector("tab_blocked"))
+      assertEquals(events.flatMap(_.data), Vector(s"""{"ownerId":"$owner","alias":"Cosmin"}"""))
+      assertEquals(calls.bindings, Vector((activeConnection.session, activeConnection.tab)))
+      assertEquals(calls.reads, Vector.empty)
+      assertEquals(calls.releases, Vector.empty)
 
   test("should reject malformed identity, blank alias and malformed or duplicate private headers"):
     val invalidBodies = Vector(
@@ -92,109 +112,6 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(missingStream.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
       assertEquals(duplicate.status, Status.BadRequest)
       assertEquals(duplicateJson, invalidCredentials)
-
-  test("should bind only while consuming SSE, block a different document and release on cancellation"):
-    for
-      manager <- buildManager
-      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-      session <- registerSession(manager)
-      ready   <- Deferred[IO, Json]
-      stream  <- app.run(bind(session.id, tab))
-      before  <- manager.bind(session.id, TabId(UUID.fromString(otherTab)))
-      _       <- before match
-        case BindResult.Active(connection) => manager.unbind(connection).void
-        case _                             => IO.raiseError[Unit](new AssertionError("Response construction bound a tab"))
-      consuming <- stream.body.through(ServerSentEvent.decoder[IO]).evalMap(event =>
-        event.data.traverse_(data => IO.fromEither(parse(data)).flatMap(ready.complete).void)
-      ).compile.drain.start
-      bound           <- ready.get
-      duplicate       <- app.run(bind(session.id, otherTab))
-      duplicateEvents <- duplicate.body.through(ServerSentEvent.decoder[IO]).compile.toVector
-      _               <- consuming.cancel
-      replacement     <- manager.bind(session.id, TabId(UUID.fromString(otherTab)))
-    yield
-      assertEquals(stream.status, Status.Ok)
-      assertEquals(bound.hcursor.get[String]("sessionId"), session.id.value.toString.asRight[DecodingFailure])
-      assertEquals(bound.hcursor.get[String]("tabId"), tab.asRight[DecodingFailure])
-      assertEquals(duplicateEvents.flatMap(_.eventType), Vector("tab_blocked"))
-      assertEquals(duplicateEvents.flatMap(_.data), Vector(s"""{"ownerId":"$owner","alias":"Cosmin"}"""))
-      replacement match
-        case BindResult.Active(_) => ()
-        case result               => fail(s"Expected released binding, received $result")
-
-  test("should fence obsolete stream cleanup and requests after same-document reconnect"):
-    for
-      manager <- buildManager
-      app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-      session    <- registerSession(manager)
-      firstReady <- Deferred[IO, Json]
-      first      <- app.run(bind(session.id, tab))
-      firstFiber <- first.body.through(ServerSentEvent.decoder[IO]).evalMap(event =>
-        event.data.traverse_(data => IO.fromEither(parse(data)).flatMap(firstReady.complete).void)
-      ).compile.drain.start
-      firstBinding <- firstReady.get
-      secondReady  <- Deferred[IO, Json]
-      second       <- app.run(bind(session.id, tab))
-      secondFiber  <- second.body.through(ServerSentEvent.decoder[IO]).evalMap(event =>
-        event.data.traverse_(data => IO.fromEither(parse(data)).flatMap(secondReady.complete).void)
-      ).compile.drain.start
-      secondBinding <- secondReady.get
-      _             <- firstFiber.cancel
-      stale         <- app.run(connected(Method.POST, "/heartbeat", firstBinding))
-      current       <- app.run(connected(Method.GET, "", secondBinding))
-      currentBody   <- current.as[Json]
-      _             <- secondFiber.cancel
-    yield
-      assertEquals(stale.status, Status.Conflict)
-      assertEquals(current.status, Status.Ok)
-      assertEquals(currentBody.hcursor.get[String]("ownerId"), owner.asRight[DecodingFailure])
-
-  test("should accept header-only heartbeats, expire idle streams and reject restart credentials"):
-    TestControl.executeEmbed {
-      for
-        manager <- buildManager
-        app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-        session  <- registerSession(manager)
-        ready    <- Deferred[IO, Json]
-        events   <- Ref.of[IO, Vector[String]](Vector.empty)
-        response <- app.run(bind(session.id, tab))
-        fiber    <- response.body.through(ServerSentEvent.decoder[IO]).evalMap(event =>
-          events.update(_ ++ event.eventType) >> event.data.traverse_(data =>
-            IO.fromEither(parse(data)).flatMap(value =>
-              if event.eventType.contains("bound") then ready.complete(value).void else IO.unit
-            )
-          )
-        ).compile.drain.start
-        binding   <- ready.get
-        _         <- IO.sleep(20.seconds)
-        alive     <- app.run(connected(Method.POST, "/heartbeat", binding))
-        _         <- IO.sleep(10.seconds)
-        current   <- app.run(connected(Method.GET, "", binding))
-        queryOnly <- app.run(Request[IO](uri = Uri.unsafeFromString(s"$base?sessionId=${session.id.value}")))
-        restarted <- buildManager
-        old       <- PublicRoutes(EditorSessionApi.make(restarted)).orNotFound.run(connected(Method.GET, "", binding))
-        _         <- IO.sleep(20.seconds)
-        _         <- fiber.joinWithNever
-        seen      <- events.get
-        expired   <- app.run(connected(Method.POST, "/heartbeat", binding))
-      yield
-        assertEquals(alive.status, Status.Ok)
-        assertEquals(current.status, Status.Ok)
-        assertEquals(queryOnly.status, Status.BadRequest)
-        assertEquals(old.status, Status.Conflict)
-        assertEquals(seen, Vector("bound", "session_lost"))
-        assertEquals(expired.status, Status.Conflict)
-    }
-
-  test("should report a stale session on stream acquisition without opening application access"):
-    for
-      manager  <- buildManager
-      response <- PublicRoutes(EditorSessionApi.make(manager)).orNotFound.run(bind(SessionId(UUID.fromString(owner)), tab))
-      events   <- response.body.through(ServerSentEvent.decoder[IO]).compile.toVector
-    yield assertEquals(
-      events.filter(_.eventType.nonEmpty),
-      Vector(ServerSentEvent(data = Some("""{"code":"stale_session"}"""), eventType = Some("session_lost")))
-    )
 
   Vector(
     Failure.StaleSession       -> "stale_session",
@@ -241,7 +158,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
 
       for
         refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
-        app = PublicRoutes(EditorSessionApi.make(buildService(refs, session, connection))).orNotFound
+        app =
+          PublicRoutes(EditorSessionApi.make(buildService(refs, session, RegisterResult.Ready(session), BindResult.Active(connection)))).orNotFound
         registered <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
         response   <- app.run(bind(sessionId, tab))
         before     <- refs.get
@@ -313,11 +231,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
   private def buildManager =
-    given IdGenerator[IO] = IdGenerator.make[IO]
-    Mutex[IO].flatMap { mutex =>
-      given Mutex[IO] = mutex
-      EditorSessionManager.make[IO](lease = 30L)
-    }
+    Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
+      .map(refs => buildService(refs, registeredSession, RegisterResult.Ready(registeredSession), BindResult.Active(activeConnection)))
 
   private def rejectRequests(manager: EditorSessionManager[IO], failure: Failure) = new EditorSessionManager[IO]:
     override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] = manager.authorizeConnection(connection)
@@ -341,31 +256,32 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         maybeGrant: Option[GrantId]
     ): IO[AuthorizationResult] = manager.authorizeAffected(connection, targets, maybeGrant)
 
-  private def buildService(refs: Ref[IO, Calls], session: EditorSession, connection: EditorConnection) = new EditorSessionManager[IO]:
-    override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
-      IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
-    override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
-      refs.update(calls => calls.copy(registrations = calls.registrations :+ (owner, alias, maybeSession))).as(RegisterResult.Ready(session))
-    override def bind(session: SessionId, tab: TabId): IO[BindResult] =
-      refs.update(calls => calls.copy(bindings = calls.bindings :+ (session, tab))).as(BindResult.Active(connection))
-    override def unbind(connection: EditorConnection): IO[UnbindResult] =
-      refs.update(calls => calls.copy(releases = calls.releases :+ connection)).as(UnbindResult.Released)
-    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] =
-      refs.update(calls => calls.copy(heartbeats = calls.heartbeats :+ connection)).as(HeartbeatResult.Alive(session))
-    override def read(connection: EditorConnection): IO[ReadResult] =
-      refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(ReadResult.Current(session))
-    override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
-      IO.raiseError[SelectResult](new AssertionError("Unexpected target selection"))
-    override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
-      IO.raiseError[ReleaseResult](new AssertionError("Unexpected target release"))
-    override def renewTarget(connection: EditorConnection, grant: GrantId): IO[RenewTargetResult] =
-      IO.raiseError[RenewTargetResult](new AssertionError("Unexpected target renewal"))
-    override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
-      IO.raiseError[ReadTargetResult](new AssertionError("Unexpected target read"))
-    override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): IO[AuthorizationResult] =
-      IO.raiseError[AuthorizationResult](new AssertionError("Unexpected target admission"))
-    override def authorizeAffected(
-        connection: EditorConnection,
-        targets: Set[EditingTarget],
-        maybeGrant: Option[GrantId]
-    ): IO[AuthorizationResult] = IO.raiseError[AuthorizationResult](new AssertionError("Unexpected shared admission"))
+  private def buildService(refs: Ref[IO, Calls], session: EditorSession, registration: RegisterResult, binding: BindResult) =
+    new EditorSessionManager[IO]:
+      override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
+        IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
+      override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
+        refs.update(calls => calls.copy(registrations = calls.registrations :+ (owner, alias, maybeSession))).as(registration)
+      override def bind(session: SessionId, tab: TabId): IO[BindResult] =
+        refs.update(calls => calls.copy(bindings = calls.bindings :+ (session, tab))).as(binding)
+      override def unbind(connection: EditorConnection): IO[UnbindResult] =
+        refs.update(calls => calls.copy(releases = calls.releases :+ connection)).as(UnbindResult.Released)
+      override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] =
+        refs.update(calls => calls.copy(heartbeats = calls.heartbeats :+ connection)).as(HeartbeatResult.Alive(session))
+      override def read(connection: EditorConnection): IO[ReadResult] =
+        refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(ReadResult.Current(session))
+      override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
+        IO.raiseError[SelectResult](new AssertionError("Unexpected target selection"))
+      override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
+        IO.raiseError[ReleaseResult](new AssertionError("Unexpected target release"))
+      override def renewTarget(connection: EditorConnection, grant: GrantId): IO[RenewTargetResult] =
+        IO.raiseError[RenewTargetResult](new AssertionError("Unexpected target renewal"))
+      override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
+        IO.raiseError[ReadTargetResult](new AssertionError("Unexpected target read"))
+      override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): IO[AuthorizationResult] =
+        IO.raiseError[AuthorizationResult](new AssertionError("Unexpected target admission"))
+      override def authorizeAffected(
+          connection: EditorConnection,
+          targets: Set[EditingTarget],
+          maybeGrant: Option[GrantId]
+      ): IO[AuthorizationResult] = IO.raiseError[AuthorizationResult](new AssertionError("Unexpected shared admission"))
