@@ -204,7 +204,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager      <- buildManager(refs)
-      result       <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false)
+      result       <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
       replacements <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Changed(first.id, singleLayout))
@@ -222,7 +222,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeAlbum = occupied.some)
-      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = false)
+      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Occupied(2))
@@ -234,7 +234,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeAlbum = occupied.some)
-      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = true)
+      result   <- manager.changeTemplate(occupied.id, first.id, singleLayout, confirmPlacements = true, connection, grant)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Changed(first.id, singleLayout))
@@ -257,8 +257,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       val refs = Refs()
 
       for
-        manager  <- buildManager(refs)
-        result   <- manager.changeTemplate(album.id, spread, template, confirmPlacements = false)
+        manager  <- buildManager(refs, target = spread)
+        result   <- manager.changeTemplate(album.id, spread, template, confirmPlacements = false, connection, grant)
         replaced <- refs.replacements.get
       yield
         assertEquals(result, ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
@@ -272,9 +272,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val missingAlbum    = buildManager(refs, maybeAlbum = none[Album])
 
     for
-      unknownTemplate <- missingTemplate.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false))
-      unknownSpread   <- buildManager(refs).flatMap(_.changeTemplate(album.id, unknown, singleLayout, confirmPlacements = false))
-      absentAlbum     <- missingAlbum.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false))
+      unknownTemplate <- missingTemplate.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant))
+      unknownSpread   <-
+        buildManager(refs, target = unknown).flatMap(_.changeTemplate(album.id, unknown, singleLayout, confirmPlacements = false, connection, grant))
+      absentAlbum <- missingAlbum.flatMap(_.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant))
     yield
       assertEquals(unknownTemplate, ChangeTemplateResult.Rejected(Conflict.UnknownTemplate))
       assertEquals(unknownSpread, ChangeTemplateResult.SpreadNotFound)
@@ -288,8 +289,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       val refs = Refs()
 
       for
-        manager  <- buildManager(refs)
-        result   <- manager.changeTemplate(album.id, openingId, template, confirmPlacements = false)
+        manager  <- buildManager(refs, target = openingId)
+        result   <- manager.changeTemplate(album.id, openingId, template, confirmPlacements = false, connection, grant)
         replaced <- refs.replacements.get
       yield
         val actual = replaced.map:
@@ -306,7 +307,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, maybeTemplateResult = FindTemplateResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).some)
-      result   <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false)
+      result   <- manager.changeTemplate(album.id, first.id, singleLayout, confirmPlacements = false, connection, grant)
       replaced <- refs.replacements.get
     yield
       assertEquals(result, ChangeTemplateResult.Failed)
@@ -317,7 +318,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs)
-      result  <- manager.delete(album.id, first.id, confirmPlacements = false)
+      result  <- manager.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant))
       removed <- refs.removals.get
       orders  <- refs.orders.get
     yield
@@ -330,10 +331,16 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val occupied = buildAlbumWithSpreads(spreads = Vector(firstOccupied, second))
 
     for
-      unconfirmed   <- buildManager(refs, maybeAlbum = occupied.some).flatMap(_.delete(occupied.id, first.id, confirmPlacements = false))
+      unconfirmed <- buildManager(
+        refs,
+        maybeAlbum = occupied.some
+      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
       removedBefore <- refs.removals.get
-      confirmed     <- buildManager(refs, maybeAlbum = occupied.some).flatMap(_.delete(occupied.id, first.id, confirmPlacements = true))
-      removed       <- refs.removals.get
+      confirmed     <- buildManager(
+        refs,
+        maybeAlbum = occupied.some
+      ).flatMap(_.delete(occupied.id, first.id, confirmPlacements = true, connection, maybeGrant = Some(grant)))
+      removed <- refs.removals.get
     yield
       assertEquals(unconfirmed, DeleteResult.Occupied(2))
       assertEquals(removedBefore, Vector.empty[SpreadId])
@@ -344,9 +351,17 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val refs = Refs()
 
     for
-      chapterOpeningDelete <- buildManager(refs).flatMap(_.delete(album.id, chapterOpening.id, confirmPlacements = false))
-      albumOpeningDelete   <- buildManager(refs).flatMap(_.delete(album.id, albumOpening.id, confirmPlacements = false))
-      unknown              <- buildManager(refs).flatMap(_.delete(album.id, SpreadId(buildUuid(index = 999L)), confirmPlacements = false))
+      chapterOpeningDelete <-
+        buildManager(refs).flatMap(_.delete(album.id, chapterOpening.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      albumOpeningDelete <-
+        buildManager(refs).flatMap(_.delete(album.id, albumOpening.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      unknown <- buildManager(refs).flatMap(_.delete(
+        album.id,
+        SpreadId(buildUuid(index = 999L)),
+        confirmPlacements = false,
+        connection,
+        maybeGrant = Some(grant)
+      ))
     yield
       assertEquals(chapterOpeningDelete, DeleteResult.Rejected(Conflict.OpeningDelete))
       assertEquals(albumOpeningDelete, DeleteResult.Rejected(Conflict.OpeningDelete))
@@ -356,7 +371,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val refs = Refs()
 
     for
-      missing <- buildManager(refs, maybeAlbum = none[Album]).flatMap(_.delete(album.id, first.id, confirmPlacements = false))
+      missing <- buildManager(
+        refs,
+        maybeAlbum = none[Album]
+      ).flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
       removed <- refs.removals.get
     yield
       assertEquals(missing, DeleteResult.AlbumNotFound)
@@ -369,8 +387,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val unwritable = buildManager(refs, maybeWriteError = failure.some)
 
     for
-      readFailed  <- unreadable.flatMap(_.delete(album.id, first.id, confirmPlacements = false))
-      writeFailed <- unwritable.flatMap(_.delete(album.id, first.id, confirmPlacements = false))
+      readFailed  <- unreadable.flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
+      writeFailed <- unwritable.flatMap(_.delete(album.id, first.id, confirmPlacements = false, connection, maybeGrant = Some(grant)))
       removed     <- refs.removals.get
     yield
       assertEquals(readFailed, DeleteResult.Failed)

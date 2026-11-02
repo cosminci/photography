@@ -973,7 +973,11 @@
       "put": {
         "operationId": "changeSpreadTemplate",
         "summary": "Apply a same-context template to an opening or photo spread",
-        "description": "Preserves spread identity, chapter, position and owner text. Unknown templates and context mismatches return 400. Occupied spreads require explicit confirmation; unconfirmed requests return 409 and change nothing. Confirmed changes match placements by photo-slot order, keep photo and caption corner, reset transforms, release unmatched photos to the chapter's unplaced pool and allocate new slot IDs. Confirmation and mutation share the chapter-mutation lock and persistence transaction. Clients reload workspace state after success.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" }
+        ],
+        "description": "Requires a live bound connection and the exact spread grant. Admission, current target reads, confirmation and atomic replacement share backend coordination. Preserves spread identity, chapter, position and owner text. Unknown templates and context mismatches return 400. Occupied spreads require explicit confirmation; confirmation cannot override ownership. Confirmed changes match placements by photo-slot order, keep photo and caption corner, reset transforms, release unmatched photos and allocate new slot IDs. Every response is no-store. Reconcile authoritative composition after success or uncertain acknowledgement; never automatically replay after ownership loss.",
         "requestBody": {
           "required": true,
           "content": {
@@ -995,6 +999,7 @@
         "responses": {
           "200": {
             "description": "Saved spread and applied template identities",
+            "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
             "content": {
               "application/json": {
                 "schema": {
@@ -1009,9 +1014,9 @@
               }
             }
           },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/SpreadTargetNotFound" },
-          "409": { "$ref": "#/components/responses/SpreadOccupied" },
+          "409": { "$ref": "#/components/responses/SpreadMutationRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -1034,12 +1039,17 @@
       "delete": {
         "operationId": "deleteSpread",
         "summary": "Delete a photo spread and its placements",
-        "description": "Openings return 400. Occupied spreads return 409 without mutation until explicitly confirmed. Removes placements, retains photos in their chapter as unplaced and renumbers remaining photo spreads. Confirmation and mutation share the chapter-mutation lock and persistence transaction.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" },
+          { "name": "X-Editor-Grant", "in": "header", "required": false, "description": "Private canonical grant UUID. Required when the caller owns the affected spread; a supplied obsolete grant rejects even if now unlocked.", "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "description": "Requires a live bound connection. Another session's affected lock rejects deletion, including confirmed requests; prove an affected lock the caller owns. An unlocked target needs no grant. Admission, current reads, confirmation and atomic deletion share backend coordination. Openings return 400. Occupied spreads require explicit confirmation. Removes placements, retains photos as unplaced and renumbers remaining spreads. Every response is no-store. Reconcile authoritative composition after uncertain acknowledgement; never automatically replay after ownership loss.",
         "responses": {
-          "204": { "description": "Deleted; no response body" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "204": { "description": "Deleted; no response body", "headers": { "Cache-Control": { "schema": { "const": "no-store" } } } },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/SpreadTargetNotFound" },
-          "409": { "$ref": "#/components/responses/SpreadOccupied" },
+          "409": { "$ref": "#/components/responses/SpreadMutationRejected" },
           "500": { "$ref": "#/components/responses/ServiceFailure" }
         }
       }
@@ -1541,7 +1551,7 @@
         "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "enum": ["album_not_found", "spread_not_found", "cover_not_found", "not_found"] } } } } }
       },
       "TargetEditInvalid": {
-        "description": "Malformed placement JSON returns message. Missing, duplicated, comma-combined or noncanonical private headers return a credential code before body decoding.",
+        "description": "Invalid mutation input returns message. Missing, duplicated, comma-combined or noncanonical private headers return a credential code before body decoding.",
         "content": { "application/json": { "schema": { "oneOf": [
           { "type": "object", "required": ["message"], "additionalProperties": false, "properties": { "message": { "type": "string" } } },
           { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": { "enum": ["missing_credentials", "invalid_credentials"] } } }
@@ -1552,6 +1562,18 @@
         "content": { "application/json": { "schema": { "oneOf": [
           { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": {
             "enum": ["stale_session", "obsolete_connection", "stale_grant", "stale_transition", "photo_not_in_collection", "photo_already_used", "slot_not_found", "placement_not_found", "invalid_transform"]
+          } } },
+          { "type": "object", "required": ["code", "ownerId", "alias"], "additionalProperties": false, "properties": {
+            "code": { "const": "target_locked" }, "ownerId": { "type": "string", "format": "uuid" }, "alias": { "type": "string", "pattern": "\\S" }
+          } }
+        ] } } }
+      },
+      "SpreadMutationRejected": {
+        "description": "No partial writes. Confirmation never overrides ownership. Stale credentials require authoritative reconciliation; contention exposes public owner identity and alias only.",
+        "content": { "application/json": { "schema": { "oneOf": [
+          { "$ref": "#/components/schemas/SpreadOccupied" },
+          { "type": "object", "required": ["code"], "additionalProperties": false, "properties": { "code": {
+            "enum": ["stale_session", "obsolete_connection", "stale_grant", "stale_transition"]
           } } },
           { "type": "object", "required": ["code", "ownerId", "alias"], "additionalProperties": false, "properties": {
             "code": { "const": "target_locked" }, "ownerId": { "type": "string", "format": "uuid" }, "alias": { "type": "string", "pattern": "\\S" }
@@ -1604,14 +1626,6 @@
               },
               "additionalProperties": false
             }
-          }
-        }
-      },
-      "SpreadOccupied": {
-        "description": "No mutation; repeat the action with confirmPlacements=true only after explicit confirmation",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/SpreadOccupied" }
           }
         }
       },

@@ -8,6 +8,7 @@ import photography.adapters.sqlite.album.SqliteAlbumRepository
 import photography.adapters.sqlite.chapter.SqliteChapterRepository
 import photography.adapters.sqlite.photo.SqlitePhotoPlacementRepository
 import photography.adapters.sqlite.photo.SqlitePhotoRepository
+import photography.adapters.http.AlbumSpreadApi
 
 import cats.data.NonEmptyList
 import cats.effect.std.Mutex
@@ -15,6 +16,10 @@ import cats.effect.{Deferred, IO, Outcome, Resource}
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
+import io.circe.Json
+import org.http4s.{Header, Headers, Method, Request, Status, Uri}
+import org.http4s.circe.CirceEntityCodec.*
+import org.typelevel.ci.CIString
 import org.typelevel.doobie.implicits.*
 import org.typelevel.doobie.{ConnectionIO, Transactor}
 import org.typelevel.log4cats.Logger
@@ -24,6 +29,7 @@ import photography.app.config.SqliteConfig
 import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.*
 import photography.domain.layout.*
+import photography.domain.editing.*
 import photography.usecases.editing.EditorSessionManager
 import photography.ports.album.AlbumRepository
 import photography.ports.chapter.ChapterRepository
@@ -56,6 +62,14 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
   private val photoRows     = sql"SELECT count(*) FROM photo".query[Long].unique
   private val placementRows = sql"SELECT count(*) FROM placement".query[Long].unique
   private val chapterOrder  = sql"SELECT position FROM spread WHERE chapter_id = ${chapterId.value} ORDER BY position".query[Int].to[List]
+  private val connection    = EditorConnection(SessionId(new UUID(0L, 900L)), TabId(new UUID(0L, 900L)), ConnectionGeneration(new UUID(0L, 900L)))
+  private val grant         = GrantId(new UUID(0L, 900L))
+  private val credentials   = Headers(
+    Header.Raw(CIString("X-Editor-Session"), connection.session.value.toString),
+    Header.Raw(CIString("X-Editor-Tab"), connection.tab.value.toString),
+    Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString),
+    Header.Raw(CIString("X-Editor-Grant"), grant.value.toString)
+  )
 
   test("should persist insert, reorder, template replacement and removal with placement cascades"):
     buildTransactor.use: xa =>
@@ -106,7 +120,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
         for
-          manager   <- buildManager(xa)
+          manager   <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening   <- seedChapter(xa)
           results   <- (1 to 5).toList.parTraverse(_ => manager.add(albumId, chapterId, after = opening.id))
           positions <- chapterOrder.transact(xa)
@@ -119,7 +133,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -138,7 +152,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -163,7 +177,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -181,24 +195,25 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
-        (buildManager(xa), seedChapter(xa), Deferred[IO, Unit]).tupled.flatMap { case (manager, opening, started) =>
-          val order             = NonEmptyList.one(opening.id)
-          val replacement       = started.complete(()).void >> manager.replaceChapterOrder(albumId, chapterId, order, order)
-          val cancelWhileLocked = mutex.lock.surround:
-            for
-              fiber  <- replacement.start
-              _      <- started.get
-              _      <- IO.cede
-              _      <- fiber.cancel.timeout(5.seconds)
-              result <- fiber.join
-            yield result
+        (buildManager(xa, target = SpreadId(new UUID(15L, 100L))), seedChapter(xa), Deferred[IO, Unit]).tupled.flatMap {
+          case (manager, opening, started) =>
+            val order             = NonEmptyList.one(opening.id)
+            val replacement       = started.complete(()).void >> manager.replaceChapterOrder(albumId, chapterId, order, order)
+            val cancelWhileLocked = mutex.lock.surround:
+              for
+                fiber  <- replacement.start
+                _      <- started.get
+                _      <- IO.cede
+                _      <- fiber.cancel.timeout(5.seconds)
+                result <- fiber.join
+              yield result
 
-          for
-            outcome <- cancelWhileLocked
-            saved   <- composition.findChapterOrder(albumId, chapterId).transact(xa)
-          yield outcome match
-            case Outcome.Canceled() => assertEquals(saved.map(_.toList.map(_.value)), Some(List(opening.id.value)))
-            case other              => fail(s"Expected canceled replacement, obtained $other")
+            for
+              outcome <- cancelWhileLocked
+              saved   <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+            yield outcome match
+              case Outcome.Canceled() => assertEquals(saved.map(_.toList.map(_.value)), Some(List(opening.id.value)))
+              case other              => fail(s"Expected canceled replacement, obtained $other")
         }
 
   test("should coordinate complete order replacement with concurrent deletion without resurrecting a removed spread"):
@@ -206,7 +221,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening <- seedChapter(xa)
           first   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
           second  <- buildPhotoSpread(xa, index = 16L, layout = defaultLayout)
@@ -214,7 +229,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           observed    = NonEmptyList.of(opening.id, first.id, second.id)
           proposed    = NonEmptyList.of(opening.id, second.id, first.id)
           replacement = manager.replaceChapterOrder(albumId, chapterId, observed, proposed)
-          deletion    = manager.delete(albumId, first.id, confirmPlacements = true)
+          deletion    = manager.delete(albumId, first.id, confirmPlacements = true, connection, maybeGrant = Some(grant))
           results   <- (replacement, deletion).parTupled
           saved     <- composition.findChapterOrder(albumId, chapterId).transact(xa)
           positions <- chapterOrder.transact(xa)
@@ -266,24 +281,58 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
         for
-          manager     <- buildManager(xa)
+          manager     <- buildManager(xa, target = SpreadId(new UUID(20L, 100L)))
           _           <- seedChapter(xa)
           photo       <- buildPhotoSpread(xa, index = 20L, layout = defaultLayout)
           _           <- spreads.insert(chapterId, photo).transact(xa)
           _           <- placePhoto(xa, photo.photoSlots.head.id, index = 1L)
           maybeBefore <- composition.findSpread(albumId, photo.id).transact(xa)
-          deleteRequest = manager.delete(albumId, photo.id, confirmPlacements = false)
-          changeRequest = manager.changeTemplate(albumId, photo.id, singleLayout, confirmPlacements = false)
-          warnings       <- (deleteRequest, changeRequest).parTupled
-          maybeUnchanged <- composition.findSpread(albumId, photo.id).transact(xa)
-          confirmed      <- List.fill(2)(()).parTraverse(_ => manager.delete(albumId, photo.id, confirmPlacements = true))
-          remaining      <- placementRows.transact(xa)
+          api           = AlbumSpreadApi.make(manager).routes.orNotFound
+          path          = s"/api/albums/${albumId.value}/spreads/${photo.id.value}"
+          deleteRequest = Request[IO](Method.DELETE, Uri.unsafeFromString(path), headers = credentials)
+          changeRequest = Request[IO](Method.PUT, Uri.unsafeFromString(s"$path/template"), headers = credentials)
+            .withEntity(Json.obj("templateId" -> Json.fromString(singleLayout.value.toString)))
+          (deleteWarning, changeWarning) <- (api.run(deleteRequest), api.run(changeRequest)).parTupled
+          bodies                         <- (deleteWarning.as[Json], changeWarning.as[Json]).tupled
+          maybeUnchanged                 <- composition.findSpread(albumId, photo.id).transact(xa)
+          confirmed                      <-
+            List.fill(2)(()).parTraverse(_ => manager.delete(albumId, photo.id, confirmPlacements = true, connection, maybeGrant = Some(grant)))
+          remaining <- placementRows.transact(xa)
         yield
-          assertEquals(warnings, (DeleteResult.Occupied(1), ChangeTemplateResult.Occupied(1)))
+          val occupied = Json.obj("code" -> Json.fromString("spread_occupied"), "placements" -> Json.fromInt(1))
+          assertEquals((deleteWarning.status, changeWarning.status), (Status.Conflict, Status.Conflict))
+          assertEquals(bodies, (occupied, occupied))
           assertEquals(maybeUnchanged.map(_.spread), maybeBefore.map(_.spread))
           assertEquals(confirmed.collect { case DeleteResult.Deleted => () }.size, 1)
           assertEquals(confirmed.collect { case DeleteResult.SpreadNotFound => () }.size, 1)
           assertEquals(remaining, 0L)
+
+  test("should reconcile a lost HTTP deletion acknowledgement from SQLite without replaying the destructive request"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        for
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
+          opening <- seedChapter(xa)
+          photo   <- buildPhotoSpread(xa, index = 15L, layout = defaultLayout)
+          _       <- spreads.insert(chapterId, photo).transact(xa)
+          _       <- placePhoto(xa, photo.photoSlots.head.id, index = 1L)
+          api     = AlbumSpreadApi.make(manager).routes.orNotFound
+          path    = s"/api/albums/${albumId.value}/spreads/${photo.id.value}"
+          request = Request[IO](Method.DELETE, Uri.unsafeFromString(s"$path?confirmPlacements=true"), headers = credentials)
+          _          <- api.run(request).flatMap(_.body.compile.drain)
+          saved      <- readChapter(xa)
+          positions  <- chapterOrder.transact(xa)
+          photos     <- photoRows.transact(xa)
+          placements <- placementRows.transact(xa)
+          recovered  <- manager.readPlacements(albumId, photo.id)
+        yield
+          assertEquals(saved.opening, opening)
+          assertEquals(saved.spreads, Vector.empty[Spread.PhotosOnly])
+          assertEquals(positions, List(0))
+          assertEquals(photos, 1L)
+          assertEquals(placements, 0L)
+          assertEquals(recovered, PlacementReadResult.SpreadNotFound)
 
   test("should roll back a destructive replacement when its final placement insert fails"):
     buildTransactor.use: xa =>
@@ -322,20 +371,20 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         val insertOther = sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES (${otherAlbum.value}, 2025, 'Other', '', 0)"
 
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(22L, 100L)))
           opening <- seedChapter(xa)
           _       <- insertOther.update.run.transact(xa)
           photo   <- buildPhotoSpread(xa, index = 22L, layout = defaultLayout)
           _       <- spreads.insert(chapterId, photo).transact(xa)
           observed = NonEmptyList.of(opening.id, photo.id)
           foreignMove     <- manager.replaceChapterOrder(otherAlbum, chapterId, expected = observed, order = observed)
-          foreignTemplate <- manager.changeTemplate(otherAlbum, photo.id, singleLayout, confirmPlacements = true)
-          foreignDelete   <- manager.delete(otherAlbum, photo.id, confirmPlacements = true)
+          foreignTemplate <- manager.changeTemplate(otherAlbum, photo.id, singleLayout, confirmPlacements = true, connection, grant)
+          foreignDelete   <- manager.delete(otherAlbum, photo.id, confirmPlacements = true, connection, maybeGrant = Some(grant))
           foreignAdd      <- manager.add(otherAlbum, chapterId, opening.id)
-          removed         <- manager.delete(albumId, photo.id, confirmPlacements = true)
+          removed         <- manager.delete(albumId, photo.id, confirmPlacements = true, connection, maybeGrant = Some(grant))
           staleMove       <- manager.replaceChapterOrder(albumId, chapterId, expected = observed, order = observed)
-          staleTemplate   <- manager.changeTemplate(albumId, photo.id, singleLayout, confirmPlacements = true)
-          staleDelete     <- manager.delete(albumId, photo.id, confirmPlacements = true)
+          staleTemplate   <- manager.changeTemplate(albumId, photo.id, singleLayout, confirmPlacements = true, connection, grant)
+          staleDelete     <- manager.delete(albumId, photo.id, confirmPlacements = true, connection, maybeGrant = Some(grant))
           staleAdd        <- manager.add(albumId, chapterId, photo.id)
           rows            <- spreadRows.transact(xa)
         yield
@@ -357,17 +406,17 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         val inventory                 = buildInventory(xa)
 
         for
-          manager      <- buildManager(xa)
+          manager      <- buildManager(xa, target = SpreadId(new UUID(23L, 100L)))
           _            <- seedChapter(xa)
           photo        <- buildPhotoSpread(xa, index = 23L, layout = defaultLayout)
           _            <- spreads.insert(chapterId, photo).transact(xa)
           _            <- placeGappedPhotos(xa, slots = photo.photoSlots)
           three        <- findPhotoTemplate(xa, count = 3)
           before       <- inventory.listChapter(chapterId)
-          changed      <- manager.changeTemplate(albumId, photo.id, three.id, confirmPlacements = true)
+          changed      <- manager.changeTemplate(albumId, photo.id, three.id, confirmPlacements = true, connection, grant)
           maybeCurrent <- composition.findSpread(albumId, photo.id).transact(xa)
           after        <- inventory.listChapter(chapterId)
-          deleted      <- manager.delete(albumId, photo.id, confirmPlacements = true)
+          deleted      <- manager.delete(albumId, photo.id, confirmPlacements = true, connection, maybeGrant = Some(grant))
           released     <- inventory.listChapter(chapterId)
         yield
           assertEquals(changed, ChangeTemplateResult.Changed(photo.id, three.id))
@@ -392,12 +441,12 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       Mutex[IO].flatMap: mutex =>
         given coordination: Mutex[IO] = mutex
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(2L, 10L)))
           opening <- seedChapter(xa)
           _       <- placePhoto(xa, opening.photoSlots.lift(1).getOrElse(fail("Missing opening slot")).id, index = 1L)
           layout  <- loadChapterTemplate(xa)
-          warning <- manager.changeTemplate(albumId, opening.id, layout.id, confirmPlacements = false)
-          changed <- manager.changeTemplate(albumId, opening.id, layout.id, confirmPlacements = true)
+          warning <- manager.changeTemplate(albumId, opening.id, layout.id, confirmPlacements = false, connection, grant)
+          changed <- manager.changeTemplate(albumId, opening.id, layout.id, confirmPlacements = true, connection, grant)
           current <- readChapter(xa)
         yield
           val retained = current.opening
@@ -420,7 +469,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           chapters.create(albumId, name = "Later trip", countries = NonEmptyList.one(country.id), period, sourceFolder = "/photos/later")
 
         for
-          manager <- buildManager(xa)
+          manager <- buildManager(xa, target = SpreadId(new UUID(15L, 100L)))
           opening <- seedChapter(xa)
           photos  <- (1 to 62).toVector.traverse(index => buildPhotoSpread(xa, index = 100L + index.toLong, layout = defaultLayout))
           _       <- photos.traverse_(spreads.insert(chapterId, _)).transact(xa)
@@ -559,16 +608,21 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
     case PhotoInventory.ListResult.Listed(value) => (value.total, value.countUnplaced)
     case other                                   => fail(s"Expected inventory, obtained $other")
 
-  private def buildManager(xa: Transactor[IO])(using Mutex[IO]) =
+  private def buildManager(xa: Transactor[IO], target: SpreadId)(using Mutex[IO]) =
     given ids: IdGenerator[IO] = IdGenerator.make[IO]
     given transaction: Transaction[ConnectionIO, IO] with
       override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
       override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
-    val templates  = SqliteSpreadTemplateRepository.make[IO](xa)
-    val placements = SqlitePhotoPlacementRepository.make
-    EditorSessionManager.make[IO](lease = 30L).map(sessions =>
-      SpreadManager.make(templates, composition, spreads, placements, defaultLayout, sessions)
-    )
+    val templates                   = SqliteSpreadTemplateRepository.make[IO](xa)
+    val placements                  = SqlitePhotoPlacementRepository.make
+    val sessionIds: IdGenerator[IO] = new IdGenerator[IO]:
+      override def generateId: IO[UUID] = new UUID(0L, 900L).pure[IO]
+    for
+      sessions <- EditorSessionManager.make[IO](lease = 30L)(using summon, sessionIds, summon)
+      _        <- sessions.register(EditorId(new UUID(0L, 900L)), "Owner", maybeSession = None)
+      _        <- sessions.bind(connection.session, connection.tab)
+      _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Spread(target))
+    yield SpreadManager.make(templates, composition, spreads, placements, defaultLayout, sessions)
 
   private def buildInventory(xa: Transactor[IO]) =
     given transaction: Transaction[ConnectionIO, IO] with

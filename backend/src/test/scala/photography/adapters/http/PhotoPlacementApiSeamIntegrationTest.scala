@@ -602,10 +602,18 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
-          confirmPlacements: Boolean
+          confirmPlacements: Boolean,
+          connection: EditorConnection,
+          grant: GrantId
       ): IO[SpreadManager.ChangeTemplateResult] =
         IO.raiseError[SpreadManager.ChangeTemplateResult](new AssertionError("Unexpected structural template change"))
-      override def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): IO[SpreadManager.DeleteResult] =
+      override def delete(
+          album: AlbumId,
+          spread: SpreadId,
+          confirmPlacements: Boolean,
+          connection: EditorConnection,
+          maybeGrant: Option[GrantId]
+      ): IO[SpreadManager.DeleteResult] =
         IO.raiseError[SpreadManager.DeleteResult](new AssertionError("Unexpected structural delete"))
       override def readPlacements(id: AlbumId, spread: SpreadId): IO[SpreadManager.PlacementReadResult] =
         assertEquals(id, album)
