@@ -43,7 +43,7 @@ object Routes:
               route.decode.flatMap:
                 case Left(response) => response.pure[F]
                 case Right(value)   =>
-                  access.run(connection, protection, maybeGrant)(route.handle(value)).map:
+                  access.run(connection, protection, maybeGrant)(value.pure[F].flatMap(route.handle)).map:
                     case EditingAccess.Result.Completed(response) => response
                     case EditingAccess.Result.Rejected(reason)    =>
                       Response[F](Status.Conflict).withEntity(Map("code" -> encodeFailure(reason)))

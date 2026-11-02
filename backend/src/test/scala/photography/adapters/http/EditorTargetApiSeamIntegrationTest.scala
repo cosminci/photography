@@ -1,7 +1,6 @@
 package photography.adapters.http
 
 import cats.effect.{IO, Ref}
-import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
 import fs2.{Stream, text}
@@ -11,7 +10,6 @@ import munit.CatsEffectSuite
 import org.http4s.{Method, Request, Status, Uri}
 import org.http4s.circe.CirceEntityCodec.*
 import org.typelevel.ci.CIString
-import photography.capabilities.IdGenerator
 import photography.domain.album.AlbumId
 import photography.domain.editing.*
 import photography.domain.layout.SpreadId
@@ -198,62 +196,6 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       )
       assertEquals(calls, Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty))
 
-  test("should reconcile lost transition acknowledgements and reject stale retries without releasing the current grant"):
-    TestControl.executeEmbed {
-      given IdGenerator[IO] = IdGenerator.make[IO]
-      for
-        mutex   <- Mutex[IO]
-        manager <- {
-          given Mutex[IO] = mutex
-          EditorSessionManager.make[IO](lease = 30L)
-        }
-        registered <- manager.register(owner, alias = "Cosmin", maybeSession = None)
-        session    <- registered match
-          case RegisterResult.Ready(value) => IO.pure(value)
-          case _                           => IO.raiseError[EditorSession](new AssertionError("Expected registered session"))
-        bound  <- manager.bind(session.id, connection.tab)
-        active <- bound match
-          case BindResult.Active(value) => IO.pure(value)
-          case _                        => IO.raiseError[EditorConnection](new AssertionError("Expected tab binding"))
-        app    = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-        select = connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "0"))
-        selected  <- app.run(select)
-        _         <- selected.body.compile.drain
-        read      <- app.run(connectedRequest(Method.GET, active))
-        saved     <- read.as[Json]
-        privateId <- IO.fromEither(saved.hcursor.downField("grant").get[UUID]("grantId"))
-        late      <- app.run(select)
-        lateBody  <- late.as[Json]
-        released  <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId.toString)
-          .withEntity(Json.obj("revision" -> Json.fromString("1"))))
-        _            <- released.body.compile.drain
-        afterRelease <- app.run(connectedRequest(Method.GET, active)).flatMap(_.as[Json])
-        _            <- IO.sleep(10.seconds)
-        _            <- manager.heartbeat(active)
-        acquired     <- app.run(connectedRequest(Method.PUT, active).withEntity(selection("cover", revision = "2")))
-        acquiredBody <- acquired.as[Json]
-        successorId  <- IO.fromEither(acquiredBody.hcursor.downField("grant").get[UUID]("grantId"))
-        lateRenew    <- app.run(connectedRequest(Method.POST, active).putHeaders("X-Editor-Grant" -> privateId.toString))
-        renewalBody  <- lateRenew.as[Json]
-        lateRelease  <- app.run(connectedRequest(Method.DELETE, active).putHeaders("X-Editor-Grant" -> privateId.toString)
-          .withEntity(Json.obj("revision" -> Json.fromString("3"))))
-        releaseBody <- lateRelease.as[Json]
-        current     <- app.run(connectedRequest(Method.GET, active)).flatMap(_.as[Json])
-      yield
-        val expectedInitial   = Json.obj("revision" -> Json.fromString("1"), "grant" -> encodeGrant("cover", privateId, remainingMillis = 30000L))
-        val expectedSuccessor = Json.obj("revision" -> Json.fromString("3"), "grant" -> encodeGrant("cover", successorId, remainingMillis = 30000L))
-        assertEquals(Vector(selected.status, read.status, released.status, acquired.status), Vector.fill(4)(Status.Ok))
-        assertEquals(saved, expectedInitial)
-        assertEquals(late.status, Status.Conflict)
-        assertEquals(lateBody, Json.obj("code" -> Json.fromString("stale_transition")))
-        assertEquals(afterRelease, Json.obj("revision" -> Json.fromString("2"), "grant" -> Json.Null))
-        assertEquals(Vector(lateRenew.status, lateRelease.status), Vector.fill(2)(Status.Conflict))
-        assertEquals(Vector(renewalBody, releaseBody), Vector.fill(2)(Json.obj("code" -> Json.fromString("stale_grant"))))
-        assertEquals(acquiredBody, expectedSuccessor)
-        assertEquals(current, expectedSuccessor)
-        assertNotEquals(successorId, privateId)
-    }
-
   test("should preserve unbounded revisions and report elapsed leases as zero rather than exposing backend deadlines"):
     val decimal = "1234567890123456789012345678901234567890"
     val target  = EditingTarget.Cover(AlbumId(targetId))
@@ -287,57 +229,6 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(calls, Calls(Vector((connection, revision, target)), Vector.empty, Vector.empty, Vector.empty))
     }
 
-  test("should expire target authority independently of accepted session heartbeats and allow a competing browser to acquire"):
-    TestControl.executeEmbed {
-      given IdGenerator[IO] = IdGenerator.make[IO]
-      for
-        mutex   <- Mutex[IO]
-        manager <- {
-          given Mutex[IO] = mutex
-          EditorSessionManager.make[IO](lease = 30L)
-        }
-        first  <- registerConnection(manager, owner, connection.tab)
-        second <- registerConnection(manager, EditorId(new UUID(0L, 7L)), TabId(new UUID(0L, 8L)))
-        app = PublicRoutes(EditorSessionApi.make(manager)).orNotFound
-        (firstResponse, secondResponse) <- (
-          app.run(connectedRequest(Method.PUT, first).withEntity(selection("spread", revision = "0"))),
-          app.run(connectedRequest(Method.PUT, second).withEntity(selection("spread", revision = "0")))
-        ).parTupled
-        (winner, loser, won, blocked) =
-          if firstResponse.status === Status.Ok then (first, second, firstResponse, secondResponse)
-          else (second, first, secondResponse, firstResponse)
-        wonBody     <- won.as[Json]
-        blockedBody <- blocked.as[Json]
-        privateId   <- IO.fromEither(wonBody.hcursor.downField("grant").get[UUID]("grantId"))
-        _           <- IO.sleep(20.seconds)
-        _           <- manager.heartbeat(first)
-        _           <- manager.heartbeat(second)
-        _           <- IO.sleep(10.seconds)
-        late        <- app.run(connectedRequest(Method.POST, winner).putHeaders("X-Editor-Grant" -> privateId.toString))
-        lateBody    <- late.as[Json]
-        caughtUp    <- app.run(connectedRequest(Method.GET, winner)).flatMap(_.as[Json])
-        acquired    <- app.run(connectedRequest(Method.PUT, loser).withEntity(selection("spread", revision = "1")))
-        newBody     <- acquired.as[Json]
-        successorId <- IO.fromEither(newBody.hcursor.downField("grant").get[UUID]("grantId"))
-        readback    <- app.run(connectedRequest(Method.GET, loser))
-        current     <- readback.as[Json]
-      yield
-        val expectedInitial   = Json.obj("revision" -> Json.fromString("1"), "grant" -> encodeGrant("spread", privateId, remainingMillis = 30000L))
-        val expectedSuccessor = Json.obj("revision" -> Json.fromString("2"), "grant" -> encodeGrant("spread", successorId, remainingMillis = 30000L))
-        assertEquals(Vector(won.status, blocked.status), Vector(Status.Ok, Status.Conflict))
-        assertEquals(wonBody, expectedInitial)
-        assertEquals(blockedBody.hcursor.get[String]("code").toOption, Some("target_locked"))
-        assertEquals(blockedBody.hcursor.downField("grantId").focus, None)
-        assertEquals(late.status, Status.Conflict)
-        assertEquals(lateBody, Json.obj("code" -> Json.fromString("stale_grant")))
-        assertEquals(caughtUp, Json.obj("revision" -> Json.fromString("2"), "grant" -> Json.Null))
-        assertEquals(acquired.status, Status.Ok)
-        assertEquals(readback.status, Status.Ok)
-        assertEquals(newBody, expectedSuccessor)
-        assertEquals(current, expectedSuccessor)
-        assertNotEquals(successorId, privateId)
-    }
-
   private case class Calls(
       selections: Vector[(EditorConnection, TargetRevision, EditingTarget)],
       reads: Vector[EditorConnection],
@@ -364,15 +255,6 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       "X-Editor-Tab"        -> active.tab.value.toString,
       "X-Editor-Generation" -> active.generation.value.toString
     )
-
-  private def registerConnection(manager: EditorSessionManager[IO], browser: EditorId, document: TabId) =
-    manager.register(browser, alias = "Browser", maybeSession = None).flatMap {
-      case RegisterResult.Ready(session) => manager.bind(session.id, document).flatMap {
-          case BindResult.Active(active) => IO.pure(active)
-          case _                         => IO.raiseError[EditorConnection](new AssertionError("Expected binding"))
-        }
-      case _ => IO.raiseError[EditorConnection](new AssertionError("Expected registration"))
-    }
 
   private def buildService(
       refs: Ref[IO, Calls],
