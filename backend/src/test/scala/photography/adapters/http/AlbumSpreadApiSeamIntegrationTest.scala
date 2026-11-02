@@ -231,6 +231,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
           case EditingAccess.Protection.ChangeSpreads(targets) =>
             assertEquals(targets, Set(EditingTarget.Spread(SpreadId(spread))))
             assertEquals(maybeGrant, Some(grant))
+          case other => fail(s"Unexpected protection: $other")
         write.map(EditingAccess.Result.Completed(_))
     val definitions = AlbumSpreadApi.make(spreads)
     val policies    = Vector(

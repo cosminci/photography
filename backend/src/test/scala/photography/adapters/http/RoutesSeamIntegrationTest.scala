@@ -1,6 +1,7 @@
 package photography.adapters.http
 
 import cats.effect.{Deferred, IO, Outcome, Ref}
+import cats.data.NonEmptyList
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
@@ -16,13 +17,68 @@ import photography.domain.editing.*
 import photography.domain.layout.SpreadId
 import photography.usecases.editing.{EditingAccess, EditorSessionManager}
 import photography.usecases.editing.EditorSessionManager.{BindResult, RegisterResult, SelectResult}
+import photography.ports.album.AlbumCompositionRepository
+import photography.ports.album.AlbumCompositionRepository.{CompositionResult, Member}
 import java.util.UUID
 import scala.concurrent.duration.*
 
 final class RoutesSeamIntegrationTest extends CatsEffectSuite:
   private given IdGenerator[IO] with
     override def generateId: IO[UUID] = IO(UUID.randomUUID())
-  private val request = Request[IO](Method.PUT, Uri.unsafeFromString("/write"))
+  private val request    = Request[IO](Method.PUT, Uri.unsafeFromString("/write"))
+  private val membership = new AlbumCompositionRepository.MembershipRead[IO]:
+    override def composition(album: AlbumId): IO[CompositionResult] =
+      IO.raiseError[CompositionResult](new AssertionError("Unexpected composition read"))
+
+  test("should resolve the current album opening under admission and preserve missing or failed relationships without writing"):
+    Mutex[IO].flatMap: mutex =>
+      given Mutex[IO] = mutex
+      val album       = AlbumId(new UUID(0L, 1L))
+      val opening     = SpreadId(new UUID(0L, 3L))
+      val replacement = SpreadId(new UUID(0L, 4L))
+      val found       = CompositionResult.Found(NonEmptyList.one(Member(opening, maybeChapter = None)))
+      for
+        sessions <- EditorSessionManager.make[IO](lease = 30L)
+        owner    <- bind(sessions, owner = 1L)
+        selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Spread(opening))
+        lock = selected match
+          case SelectResult.Owned(value, _) => value
+          case other                        => fail(s"Expected owned opening, obtained $other")
+        current <- Ref.of[IO, CompositionResult](found)
+        written <- Ref.of[IO, Int](0)
+        reads   <- Ref.of[IO, Vector[AlbumId]](Vector.empty)
+        membership = new AlbumCompositionRepository.MembershipRead[IO]:
+          override def composition(id: AlbumId): IO[CompositionResult] =
+            reads.update(_ :+ id) >> current.get
+        server = Routes.make(EditingAccess.make(sessions, membership))(
+          buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.OwnAlbumOpening(album))
+        ).orNotFound
+        call = request.withHeaders(Headers(credentials(owner))).putHeaders("X-Editor-Grant" -> lock.grant.value.toString)
+        saved       <- server.run(call)
+        _           <- current.set(CompositionResult.Found(NonEmptyList.one(Member(replacement, maybeChapter = None))))
+        stale       <- server.run(call)
+        staleBody   <- stale.as[Json]
+        _           <- current.set(CompositionResult.AlbumNotFound)
+        missing     <- server.run(call)
+        missingBody <- missing.as[Json]
+        _           <- current.set(CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
+        failed      <- server.run(call)
+        failedBody  <- failed.as[Json]
+        _           <- sessions.bind(owner.session, owner.tab)
+        obsolete    <- server.run(call)
+        count       <- written.get
+        acquired    <- reads.get
+      yield
+        assertEquals(saved.status, Status.Ok)
+        assertEquals(stale.status, Status.Conflict)
+        assertEquals(staleBody, Json.obj("code" -> Json.fromString("stale_grant")))
+        assertEquals(missing.status, Status.NotFound)
+        assertEquals(missingBody, Json.obj("code" -> Json.fromString("album_not_found")))
+        assertEquals(failed.status, Status.InternalServerError)
+        assertEquals(failedBody, Json.obj("code" -> Json.fromString("service_failure")))
+        assertEquals(obsolete.status, Status.Conflict)
+        assertEquals(count, 1)
+        assertEquals(acquired, Vector.fill(4)(album))
 
   test("should require canonical credentials before decoding and leave explicitly public routes accessible"):
     Mutex[IO].flatMap: mutex =>
@@ -32,7 +88,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         editor   <- bind(sessions, owner = 1L)
         decoded  <- Ref.of[IO, Int](0)
         written  <- Ref.of[IO, Int](0)
-        server  = Routes.make(EditingAccess.make(sessions))(buildRoutes(decoded.update(_ + 1), written.update(_ + 1))).orNotFound
+        server  = Routes.make(EditingAccess.make(sessions, membership))(buildRoutes(decoded.update(_ + 1), written.update(_ + 1))).orNotFound
         headers = credentials(editor)
         invalid = headers.flatMap { header =>
           val remaining = headers.filterNot(_.name === header.name)
@@ -62,7 +118,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
                 Response[IO](Status.UnprocessableContent).asLeft[Unit].pure[IO],
                 (_: Unit) => written.update(_ + 1).as(Response[IO](Status.Ok))
               )
-        failedPublic <- Routes.make(EditingAccess.make(sessions))(invalidPublic).orNotFound
+        failedPublic <- Routes.make(EditingAccess.make(sessions, membership))(invalidPublic).orNotFound
           .run(Request[IO](Method.GET, Uri.unsafeFromString("/invalid")))
         absent <- server.run(Request[IO](Method.PUT, Uri.unsafeFromString("/undeclared")))
         reads  <- decoded.get
@@ -82,15 +138,15 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           sessions <- EditorSessionManager.make[IO](lease = 30L)
           editor   <- bind(sessions, owner = 1L)
           written  <- Ref.of[IO, Int](0)
-          server  = Routes.make(EditingAccess.make(sessions))(buildRoutes(IO.unit, written.update(_ + 1))).orNotFound
-          invalid = Routes.make(EditingAccess.make(sessions))(buildRoutes(IO.unit, written.update(_ + 1), valid = false)).orNotFound
+          server  = Routes.make(EditingAccess.make(sessions, membership))(buildRoutes(IO.unit, written.update(_ + 1))).orNotFound
+          invalid = Routes.make(EditingAccess.make(sessions, membership))(buildRoutes(IO.unit, written.update(_ + 1), valid = false)).orNotFound
           decoded   <- mutex.lock.surround(invalid.run(request.withHeaders(Headers(credentials(editor)))))
           _         <- sessions.bind(editor.session, editor.tab)
           obsolete  <- server.run(request.withHeaders(Headers(credentials(editor))))
           body      <- obsolete.as[Json]
           current   <- bind(sessions, owner = 2L)
           restarted <- EditorSessionManager.make[IO](lease = 30L)
-          fresh = Routes.make(EditingAccess.make(restarted))(buildRoutes(IO.unit, written.update(_ + 1))).orNotFound
+          fresh = Routes.make(EditingAccess.make(restarted, membership))(buildRoutes(IO.unit, written.update(_ + 1))).orNotFound
           stale   <- fresh.run(request.withHeaders(Headers(credentials(current))))
           _       <- IO.sleep(30.seconds)
           expired <- server.run(request.withHeaders(Headers(credentials(current))))
@@ -117,7 +173,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           canceled <- Deferred[IO, Unit]
           acquired <- Deferred[IO, (SelectResult, Int)]
           written  <- Ref.of[IO, Int](0)
-          server = Routes.make(EditingAccess.make(sessions))(
+          server = Routes.make(EditingAccess.make(sessions, membership))(
             buildRoutes(IO.unit, entered.complete(()).void >> finish.get >> written.update(_ + 1))
           ).orNotFound
           call = request.withHeaders(Headers(credentials(editor)))
@@ -171,10 +227,10 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
             case SelectResult.Owned(value, current) => (value, current)
             case other                              => fail(s"Expected owned spread, obtained $other")
           written <- Ref.of[IO, Int](0)
-          server = Routes.make(EditingAccess.make(sessions))(
+          server = Routes.make(EditingAccess.make(sessions, membership))(
             buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.OwnSpread(spread))
           ).orNotFound
-          shared = Routes.make(EditingAccess.make(sessions))(
+          shared = Routes.make(EditingAccess.make(sessions, membership))(
             buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.ChangeSpreads(Set(spread)))
           ).orNotFound
           ownedRequest = request.withHeaders(Headers(credentials(owner))).putHeaders("X-Editor-Grant" -> lock.grant.value.toString)
@@ -200,7 +256,8 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           blocked  <- shared.run(otherRequest)
           body     <- blocked.as[Json]
           unproved <- shared.run(request.withHeaders(Headers(credentials(owner))))
-          direct   <- EditingAccess.make(sessions).run(owner, EditingAccess.Protection.OwnSpread(spread), maybeGrant = None)(written.update(_ + 1))
+          direct   <-
+            EditingAccess.make(sessions, membership).run(owner, EditingAccess.Protection.OwnSpread(spread), maybeGrant = None)(written.update(_ + 1))
           borrowed <- server.run(otherRequest.putHeaders("X-Editor-Grant" -> lock.grant.value.toString))
           saved    <- server.run(ownedRequest)
           _        <- sessions.release(owner, revision, lock.grant)
@@ -247,10 +304,10 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         sessions <- EditorSessionManager.make[IO](lease = 30L)
         owner    <- bind(sessions, owner = 1L)
         written  <- Ref.of[IO, Int](0)
-        server = Routes.make(EditingAccess.make(sessions))(
+        server = Routes.make(EditingAccess.make(sessions, membership))(
           buildRoutes(IO.unit, written.update(_ + 1), protection = EditingAccess.Protection.ChangeSpreads(Set(spread)))
         ).orNotFound
-        failing = Routes.make(EditingAccess.make(sessions))(
+        failing = Routes.make(EditingAccess.make(sessions, membership))(
           buildRoutes(IO.unit, IO.raiseError[Unit](new IllegalStateException("Write failed")))
         ).orNotFound
         call = request.withHeaders(Headers(credentials(owner)))

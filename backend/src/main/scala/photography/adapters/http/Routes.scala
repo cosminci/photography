@@ -33,8 +33,9 @@ object Routes:
         case Access.Public             => decoded
         case Access.Editor(protection) =>
           val grant = protection match
-            case Protection.ActiveTab        => none[GrantId].asRight[String]
-            case Protection.OwnSpread(_)     => requiredId(request, "X-Editor-Grant").map(value => GrantId(value).some)
+            case Protection.ActiveTab                                    => none[GrantId].asRight[String]
+            case Protection.OwnSpread(_) | Protection.OwnAlbumOpening(_) =>
+              requiredId(request, "X-Editor-Grant").map(value => GrantId(value).some)
             case Protection.ChangeSpreads(_) => optionalId(request, "X-Editor-Grant").map(_.map(GrantId(_)))
           (readConnection(request), grant).tupled.fold(
             message => Response[F](Status.BadRequest).withEntity(Map("code" -> message)).pure[F],
@@ -46,6 +47,10 @@ object Routes:
                     case EditingAccess.Result.Completed(response) => response
                     case EditingAccess.Result.Rejected(reason)    =>
                       Response[F](Status.Conflict).withEntity(Map("code" -> encodeFailure(reason)))
+                    case EditingAccess.Result.AlbumNotFound() =>
+                      Response[F](Status.NotFound).withEntity(Map("code" -> "album_not_found"))
+                    case EditingAccess.Result.Failed() =>
+                      Response[F](Status.InternalServerError).withEntity(Map("code" -> "service_failure"))
                     case EditingAccess.Result.Blocked(owner, alias) =>
                       Response[F](Status.Conflict).withEntity(Map[String, String](
                         "code"    -> "target_locked",

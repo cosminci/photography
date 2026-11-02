@@ -26,11 +26,12 @@ object AlbumApi:
   final private class LiveAlbumApi[F[_]: Async](albums: AlbumManager[F], metadata: AlbumRepository.MetadataRead[F])
       extends AlbumApi[F] with Http4sDsl[F]:
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
-      case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => Route.public(saveSynopsis(AlbumId(id), request))
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => saveSynopsis(AlbumId(id), request)
       case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
       case PUT -> Root / "api" / "albums" / _ / "authors"                          =>
         Route.public(respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
-      case PUT -> Root / "api" / "albums" / _ / "synopsis"             => Route.public(respondAlbumNotFound)
+      case PUT -> Root / "api" / "albums" / _ / "synopsis" =>
+        Route.public(respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
       case request @ GET -> Root / "api" / "albums"                    => Route.public(list(request.uri.query))
       case request @ POST -> Root / "api" / "albums"                   => Route.public(create(request))
       case GET -> Root / "api" / "albums" / CanonicalId(id)            => Route.public(read(AlbumId(id)))
@@ -47,18 +48,23 @@ object AlbumApi:
         case AlbumRepository.MetadataResult.Failed(_)    => respondServiceFailure
 
     private def saveSynopsis(album: AlbumId, request: Request[F]) =
-      request.as[Json].flatMap { value =>
+      val decode = request.as[Json].flatMap { value =>
         value.hcursor.get[String](k = "text").fold(
-          _ => BadRequest(body = Map("message" -> "Supply a text string")),
-          text =>
-            albums.saveSynopsis(album, text = text).flatMap {
-              case SaveSynopsisResult.Saved(updated) => Ok(buildMetadata(updated))
-              case SaveSynopsisResult.NotFound       => respondAlbumNotFound
-              case SaveSynopsisResult.Failed         => respondServiceFailure
-              case SaveSynopsisResult.Uncertain      => respondUncertain
-            }
+          _ => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]),
+          _.asRight[Response[F]].pure[F]
         )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]) }
+      Route(
+        Routes.Access.Editor(Protection.OwnAlbumOpening(album)),
+        decode,
+        (text: String) =>
+          albums.saveSynopsis(album, text = text).flatMap {
+            case SaveSynopsisResult.Saved(updated) => Ok(buildMetadata(updated))
+            case SaveSynopsisResult.NotFound       => respondAlbumNotFound
+            case SaveSynopsisResult.Failed         => respondServiceFailure
+            case SaveSynopsisResult.Uncertain      => respondUncertain
+          }
+      )
 
     private def saveAuthors(album: AlbumId, request: Request[F]) =
       val decode = request.as[Json].flatMap { value =>

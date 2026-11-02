@@ -308,7 +308,9 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
               "expectedSpreadIds" -> Json.arr(observed.toList.map(id => Json.fromString(id.value.toString))*),
               "spreadIds"         -> Json.arr(proposed.toList.map(id => Json.fromString(id.value.toString))*)
             ))
-          routes = Routes.make(EditingAccess.make(sessions))(ChapterCompositionApi.make(manager)).orNotFound
+          routes = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+            ChapterCompositionApi.make(manager)
+          ).orNotFound
           uncertain <- routes.run(request)
           failure   <- uncertain.as[Json]
           recovered <- readChapter(xa)
@@ -677,7 +679,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       _        <- sessions.bind(connection.session, connection.tab)
       _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Spread(target))
       manager  <- buildManager(xa)
-      access = EditingAccess.make(sessions)
+      access = EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa))
     yield (Routes.make(access)(AlbumSpreadApi.make(manager)) <+> Routes.make(access)(ChapterCompositionApi.make(manager))).orNotFound
 
   private def addRequest(after: SpreadId) =

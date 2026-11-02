@@ -129,7 +129,9 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             _        <- sessions.register(EditorId(new UUID(0L, 202L)), "Owner", maybeSession = None)
             _        <- sessions.bind(connection.session, connection.tab)
             _        <- sessions.select(connection, TargetRevision.initial, EditingTarget.Cover(album))
-            api = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(buildSpreadManager(xa), manager)).orNotFound
+            api = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+              PhotoPlacementApi.make(buildSpreadManager(xa), manager)
+            ).orNotFound
             outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot =>
               api.run(coverRequest(Method.POST, s"/api/albums/${album.value}/cover/placements", connection, grant).withEntity(Json.obj(
                 "slotId"  -> Json.fromString(slot.value.toString),
@@ -178,7 +180,9 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
               case _                            => fail("Expected spread ownership")
             covers    = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make)
             interiors = buildSpreadManager(xa)
-            api       = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(interiors, covers)).orNotFound
+            api       = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+              PhotoPlacementApi.make(interiors, covers)
+            ).orNotFound
             (coverResponse, spreadResponse) <- (
               api.run(coverRequest(Method.POST, s"/api/albums/${album.value}/cover/placements", coverOwner, coverLock.grant).withEntity(Json.obj(
                 "slotId"  -> Json.fromString(cover.front.id.value.toString),
@@ -263,7 +267,9 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
               case SelectResult.Owned(value, _) => value
               case _                            => fail("Expected other Cover ownership")
             covers = CoverManager.make[IO, ConnectionIO](repository, SqlitePhotoPlacementRepository.make)
-            api    = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(buildSpreadManager(xa), covers)).orNotFound
+            api    = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+              PhotoPlacementApi.make(buildSpreadManager(xa), covers)
+            ).orNotFound
             acknowledged <- api.run(coverRequest(Method.POST, base + "/placements", owner, lock.grant).withEntity(body))
             saved        <- repository.read(album).transact(xa)
             reconciled   <- api.run(Request[IO](Method.GET, Uri.unsafeFromString(base)))
@@ -349,7 +355,9 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
               case _                            => fail("Expected Cover ownership")
             covers  = CoverManager.make[IO, ConnectionIO](SqliteCoverRepository.make, SqlitePhotoPlacementRepository.make)
             spreads = buildSpreadManager(xa)
-            api     = Routes.make(EditingAccess.make(sessions))(PhotoPlacementApi.make(spreads, covers)).orNotFound
+            api     = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+              PhotoPlacementApi.make(spreads, covers)
+            ).orNotFound
             placed <- spreads.editPlacements(album, opening, SpreadManager.Edit.Place(openingSlot, firstPhoto))
             savedPlacement = placed match
               case SpreadManager.PlacementResult.Saved(value) => value.placements.headOption.getOrElse(fail("Expected placement"))

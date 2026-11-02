@@ -7,7 +7,7 @@ import photography.adapters.sqlite.SqliteConnection
 import photography.adapters.sqlite.SqliteCodecs.given
 
 import cats.data.NonEmptyList
-import cats.effect.{IO, Resource}
+import cats.effect.{Deferred, IO, Resource}
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
@@ -33,6 +33,7 @@ import org.typelevel.ci.CIString
 import io.circe.Json
 import org.http4s.circe.CirceEntityCodec.*
 import photography.ports.album.AlbumRepository.*
+import photography.ports.album.AlbumCompositionRepository
 
 import java.time.{Instant, LocalDate}
 import java.nio.file.Files
@@ -666,7 +667,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
       saveAuthors >> verifyRestartRetention
 
-  test("should reconcile an uncertain HTTP author save despite another browser's lock and reject obsolete replay without changing content"):
+  test("should reconcile uncertain HTTP synopsis and author saves without replay after reacquisition or obsolete connections"):
     val acknowledgements = Vector[Throwable](
       new IllegalStateException("Lost acknowledgement"),
       new SQLiteException("Lost acknowledgement", SQLiteErrorCode.SQLITE_CONSTRAINT)
@@ -687,8 +688,14 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
             owner    <- bind(sessions, owner = 901)
             locked   <- sessions.select(owner, TargetRevision.initial, EditingTarget.Cover(album.id))
             editor   <- bind(sessions, owner = 902)
+            opening  <- sessions.select(editor, TargetRevision.initial, EditingTarget.Spread(album.opening.id))
+            (grant, revision) = opening match
+              case SelectResult.Owned(lock, current) => (lock.grant, current)
+              case other                             => fail(s"Expected owned opening, obtained $other")
             manager = AlbumManager.make(uncertain, SqliteSpreadTemplateRepository.make[IO](xa), pageSize = 6)
-            server  = Routes.make(EditingAccess.make(sessions))(AlbumApi.make(manager, repository)).orNotFound
+            server  = Routes.make(EditingAccess.make(sessions, SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa)))(
+              AlbumApi.make(manager, repository)
+            ).orNotFound
             request = Request[IO](Method.PUT, Uri.unsafeFromString(s"/api/albums/${album.id.value}/authors"))
               .withEntity(Json.obj("authors" -> Json.arr(Json.fromString("Mara"))))
               .withHeaders(Headers(
@@ -696,22 +703,38 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
                 Header.Raw(CIString("X-Editor-Tab"), editor.tab.value.toString),
                 Header.Raw(CIString("X-Editor-Generation"), editor.generation.value.toString)
               ))
+            synopsisRequest = request.withUri(Uri.unsafeFromString(s"/api/albums/${album.id.value}/synopsis"))
+              .withEntity(Json.obj("text" -> Json.fromString("Saved once"))).putHeaders("X-Editor-Grant" -> grant.value.toString)
             _ <- repository.create(album, buildCover(album))
             _ <- sql"CREATE TABLE author_audit (writes INTEGER NOT NULL)".update.run.transact(xa)
             _ <- sql"""CREATE TRIGGER count_authors AFTER UPDATE OF authors ON album
                        BEGIN INSERT INTO author_audit VALUES (1); END""".update.run.transact(xa)
-            synopsis     <- uncertain.saveSynopsis(album.id, text = "Saved once")
-            authors      <- server.run(request)
-            body         <- authors.as[Json]
-            unchanged    <- sessions.readTarget(owner)
-            rebound      <- sessions.bind(editor.session, editor.tab)
-            obsolete     <- server.run(request)
-            obsoleteBody <- obsolete.as[Json]
-            renamed      <- uncertain.rename(album.id, title = changedTitle)
-            found        <- repository.get(album.id)
-            writes       <- sql"SELECT count(*) FROM author_audit".query[Long].unique.transact(xa)
+            _ <- sql"CREATE TABLE synopsis_audit (writes INTEGER NOT NULL)".update.run.transact(xa)
+            _ <- sql"""CREATE TRIGGER count_synopsis AFTER UPDATE OF synopsis ON album
+                       BEGIN INSERT INTO synopsis_audit VALUES (1); END""".update.run.transact(xa)
+            synopsis       <- server.run(synopsisRequest)
+            synopsisBody   <- synopsis.as[Json]
+            reconciled     <- repository.get(album.id)
+            _              <- sessions.release(editor, revision, grant)
+            _              <- sessions.select(editor, revision.next, EditingTarget.Spread(album.opening.id))
+            stale          <- server.run(synopsisRequest)
+            staleBody      <- stale.as[Json]
+            authors        <- server.run(request)
+            body           <- authors.as[Json]
+            unchanged      <- sessions.readTarget(owner)
+            rebound        <- sessions.bind(editor.session, editor.tab)
+            obsolete       <- server.run(request)
+            obsoleteBody   <- obsolete.as[Json]
+            renamed        <- uncertain.rename(album.id, title = changedTitle)
+            found          <- repository.get(album.id)
+            writes         <- sql"SELECT count(*) FROM author_audit".query[Long].unique.transact(xa)
+            synopsisWrites <- sql"SELECT count(*) FROM synopsis_audit".query[Long].unique.transact(xa)
           yield
-            assertEquals(synopsis, SaveSynopsisResult.Uncertain)
+            assertEquals(synopsis.status, Status.InternalServerError)
+            assertEquals(synopsisBody, Json.obj("code" -> Json.fromString("mutation_uncertain")))
+            assertEquals(reconciled, GetResult.Found(album.copy(synopsis = "Saved once")))
+            assertEquals(stale.status, Status.Conflict)
+            assertEquals(staleBody, Json.obj("code" -> Json.fromString("stale_grant")))
             assertEquals(authors.status, Status.InternalServerError)
             assertEquals(body, Json.obj("code" -> Json.fromString("mutation_uncertain")))
             locked match
@@ -723,9 +746,58 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
             assertEquals(obsolete.status, Status.Conflict)
             assertEquals(obsoleteBody, Json.obj("code" -> Json.fromString("obsolete_connection")))
             assertEquals(writes, 1L)
+            assertEquals(synopsisWrites, 1L)
             assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
             assertEquals(found, GetResult.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
     }
+
+  test("should serialize synopsis relationship admission and SQLite persistence against competing opening acquisition"):
+    buildTransactor.use: xa =>
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO] = mutex
+        val repository  = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val album       = buildAlbum(index = 1)
+        val saved       = album.copy(synopsis = "Admitted once")
+        for
+          _        <- repository.create(album, buildCover(album))
+          sessions <- EditorSessionManager.make[IO](lease = 30L)
+          owner    <- bind(sessions, owner = 901)
+          other    <- bind(sessions, owner = 902)
+          selected <- sessions.select(owner, TargetRevision.initial, EditingTarget.Spread(album.opening.id))
+          lock = selected match
+            case SelectResult.Owned(value, _) => value
+            case result                       => fail(s"Expected owned opening, obtained $result")
+          entered  <- Deferred[IO, Unit]
+          finish   <- Deferred[IO, Unit]
+          acquired <- Deferred[IO, (SelectResult, GetResult)]
+          membership = new AlbumCompositionRepository.MembershipRead[IO]:
+            override def composition(id: AlbumId): IO[AlbumCompositionRepository.CompositionResult] =
+              SqliteAlbumCompositionRepository.makeMembershipRead[IO](xa).composition(id)
+                .flatTap(_ => entered.complete(()).void >> finish.get)
+          manager = AlbumManager.make(repository, SqliteSpreadTemplateRepository.make[IO](xa), pageSize = 6)
+          server  = Routes.make(EditingAccess.make(sessions, membership))(AlbumApi.make(manager, repository)).orNotFound
+          request = Request[IO](Method.PUT, Uri.unsafeFromString(s"/api/albums/${album.id.value}/synopsis"))
+            .withEntity(Json.obj("text" -> Json.fromString(saved.synopsis))).putHeaders(
+              "X-Editor-Session"    -> owner.session.value.toString,
+              "X-Editor-Tab"        -> owner.tab.value.toString,
+              "X-Editor-Generation" -> owner.generation.value.toString,
+              "X-Editor-Grant"      -> lock.grant.value.toString
+            )
+          writing <- server.run(request).start
+          _       <- entered.get
+          waiting <- sessions.select(other, TargetRevision.initial, EditingTarget.Spread(album.opening.id))
+            .flatMap(result => repository.get(album.id).flatMap(current => acquired.complete((result, current)).void)).start
+          _             <- IO.cede
+          maybeAcquired <- acquired.tryGet
+          _             <- finish.complete(())
+          response      <- writing.joinWithNever
+          _             <- waiting.joinWithNever
+          observed      <- acquired.get
+        yield
+          assertEquals(maybeAcquired, None)
+          assertEquals(response.status, Status.Ok)
+          val blocked = SelectResult.Blocked(EditorId(buildUuid(index = 901)), "Owner", lock.expiresAt, TargetRevision.initial.next)
+          assertEquals(observed, (blocked, GetResult.Found(saved)))
 
   private def bind(sessions: EditorSessionManager[IO], owner: Int) =
     for

@@ -709,12 +709,17 @@
       "put": {
         "operationId": "saveAlbumSynopsis",
         "summary": "Save or clear album synopsis",
-        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears synopsis. Changes only synopsis and returns complete saved album metadata without rereading or retrying. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" }
+        ],
+        "description": "Requires a live bound connection and the exact grant for the album's current opening. Canonical private headers precede body decoding; current composition resolution, authorization and persistence share backend mutation coordination. Missing albums remain not found; failed relationship reads reject without writing. A live-admitted write may finish across expiry before waiting acquisitions proceed; waiting remains cancellable. Every matched response is no-store. Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears synopsis. Changes only synopsis and returns complete saved album metadata without rereading or retrying. Authoritative reconciliation uses GET /api/albums/{id}; after acknowledgement retry only a failed read. Uncertain writes and lost ownership require reconciliation, never automatic replay.",
         "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
         "responses": {
           "200": { "description": "Saved album metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlbumMetadata" } } } },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/AlbumNotFound" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ContentMutationFailure" }
         }
       }
