@@ -36,10 +36,10 @@ export type SessionEvent =
 export type TargetSelection = TargetState | { readonly revision: string; readonly alias: string; readonly remainingMillis: number };
 
 export interface EditorSessionTransport {
-  readonly register: (editorId: string, alias: string, maybeSessionId: string | undefined) => Promise<RegisteredSession>;
+  readonly register: (editorId: string, alias: string, maybeSessionId: string | undefined, maybeSignal?: AbortSignal) => Promise<RegisteredSession>;
   readonly subscribe: (sessionId: string, tabId: string, receive: (event: SessionEvent) => void, signal: AbortSignal) => Promise<void>;
-  readonly heartbeat: (connection: EditorConnection) => Promise<RegisteredSession>;
-  readonly readTarget: (connection: EditorConnection) => Promise<TargetState>;
+  readonly heartbeat: (connection: EditorConnection, maybeSignal?: AbortSignal) => Promise<RegisteredSession>;
+  readonly readTarget: (connection: EditorConnection, maybeSignal?: AbortSignal) => Promise<TargetState>;
   readonly select: (connection: EditorConnection, revision: string, target: EditingTarget) => Promise<TargetSelection>;
   readonly renew: (connection: EditorConnection, grantId: string) => Promise<TargetGrant>;
   readonly release: (connection: EditorConnection, revision: string, grantId: string) => Promise<{ readonly revision: string }>;
@@ -89,7 +89,7 @@ export function createEditorSession(
   let maybeStream: AbortController | undefined;
   let maybeHeartbeatConnection: EditorConnection | undefined;
   let transition = Promise.resolve(true);
-  let lastTarget: EditingTarget | null | undefined;
+  let maybeLastTarget: EditingTarget | null | undefined;
   let maybeExpiry: ReturnType<typeof setTimeout> | undefined;
   let requests = new AbortController();
 
@@ -122,9 +122,9 @@ export function createEditorSession(
   }
 
   function restore() {
-    const stored = storage.getItem(storageKey);
-    if (stored === null) return;
-    const value: unknown = JSON.parse(stored);
+    const maybeStored = storage.getItem(storageKey);
+    if (maybeStored === null) return;
+    const value: unknown = JSON.parse(maybeStored);
     if (
       typeof value !== "object" ||
       value === null ||
@@ -144,7 +144,7 @@ export function createEditorSession(
     setAlias(maybeRemembered.alias);
   }
 
-  async function bind(event: SessionEvent, current: number, registered: RegisteredSession) {
+  async function bind(event: SessionEvent, current: number, registered: RegisteredSession, signal: AbortSignal) {
     if (!active() || current !== attempt) return;
     if (event.kind === "tab_blocked") {
       setBlocked(true);
@@ -159,9 +159,9 @@ export function createEditorSession(
       if (event.sessionId !== registered.sessionId || event.tabId !== tabId) throw new Error("Unexpected tab binding.");
       const currentConnection = { sessionId: event.sessionId, tabId: event.tabId, generation: event.generation };
       const observedAt = Date.now();
-      await transport.heartbeat(currentConnection);
+      await transport.heartbeat(currentConnection, signal);
       if (!active() || current !== attempt) return;
-      const saved = await transport.readTarget(currentConnection);
+      const saved = await transport.readTarget(currentConnection, signal);
       if (!active() || current !== attempt) return;
       revision = saved.revision;
       sessionDeadline = observedAt + registered.leaseSeconds * 1000;
@@ -179,10 +179,11 @@ export function createEditorSession(
   }
 
   async function reconnect() {
-    if (!active() || connecting()) return;
+    if (!active()) return;
     const current = ++attempt;
     maybeStream?.abort();
-    maybeStream = undefined;
+    maybeStream = new AbortController();
+    const signal = maybeStream.signal;
     forgetAuthority("Connecting to the backend. Editing is unavailable.");
     setConnecting(true);
     try {
@@ -190,20 +191,19 @@ export function createEditorSession(
       if (maybeRemembered === undefined) {
         setIdentifying(true);
         setMessage("Identify this browser before opening the application.");
+        setConnecting(false);
         return;
       }
-      const registered = await transport.register(maybeRemembered.editorId, maybeRemembered.alias, maybeRemembered.sessionId);
+      const registered = await transport.register(maybeRemembered.editorId, maybeRemembered.alias, maybeRemembered.sessionId, signal);
       if (!active() || current !== attempt) return;
       remember({ editorId: maybeRemembered.editorId, alias: registered.alias, sessionId: registered.sessionId });
-      maybeStream = new AbortController();
-      const signal = maybeStream.signal;
       void transport
         .subscribe(
           registered.sessionId,
           tabId,
           (event) => {
             untrack(() => {
-              void bind(event, current, registered);
+              void bind(event, current, registered, signal);
             });
           },
           signal,
@@ -222,11 +222,8 @@ export function createEditorSession(
         );
     } catch (failure) {
       if (active() && current === attempt) {
-        setMessage(describeSessionFailure(failure));
-        setConnecting(false);
+        interrupt(describeSessionFailure(failure));
       }
-    } finally {
-      if (current === attempt && maybeStream === undefined) setConnecting(false);
     }
   }
 
@@ -246,12 +243,12 @@ export function createEditorSession(
   }
 
   function publishGrant(observed: TargetGrant | null, observedAt: number) {
-    const saved = observed !== null && observedAt + observed.remainingMillis > Date.now() ? observed : null;
-    const previous = grant()?.grantId;
-    setGrant(saved ?? undefined);
-    targetDeadline = saved === null ? 0 : observedAt + saved.remainingMillis;
-    setTargetMessage(saved === null ? "View only. Choose Edit spread to acquire ownership." : undefined);
-    if (previous !== saved?.grantId) setAuthority((current) => current + 1);
+    const maybeSaved = observed !== null && observedAt + observed.remainingMillis > Date.now() ? observed : null;
+    const maybePrevious = grant()?.grantId;
+    setGrant(maybeSaved ?? undefined);
+    targetDeadline = maybeSaved === null ? 0 : observedAt + maybeSaved.remainingMillis;
+    setTargetMessage(maybeSaved === null ? "View only. Choose Edit spread to acquire ownership." : undefined);
+    if (maybePrevious !== maybeSaved?.grantId) setAuthority((current) => current + 1);
     scheduleExpiry();
   }
 
@@ -260,58 +257,58 @@ export function createEditorSession(
   }
 
   function headers(): Record<string, string> {
-    const current = connection();
-    if (!active() || current === undefined || Date.now() >= sessionDeadline) {
+    const maybeConnection = connection();
+    if (!active() || maybeConnection === undefined || Date.now() >= sessionDeadline) {
       forgetAuthority("The session is unconfirmed or expired. Reconnect before editing.");
       throw new EditorSessionError("stale_session", "Editing is unavailable until the browser reconnects.");
     }
-    const saved = grant();
-    if (saved !== undefined && Date.now() >= targetDeadline) loseGrant("Editing ownership expired. Review drafts and choose Edit spread.");
-    const owned = grant();
+    const maybeSaved = grant();
+    if (maybeSaved !== undefined && Date.now() >= targetDeadline) loseGrant("Editing ownership expired. Review drafts and choose Edit spread.");
+    const maybeOwned = grant();
     return {
-      "X-Editor-Session": current.sessionId,
-      "X-Editor-Tab": current.tabId,
-      "X-Editor-Generation": current.generation,
-      ...(owned === undefined ? {} : { "X-Editor-Grant": owned.grantId }),
+      "X-Editor-Session": maybeConnection.sessionId,
+      "X-Editor-Tab": maybeConnection.tabId,
+      "X-Editor-Generation": maybeConnection.generation,
+      ...(maybeOwned === undefined ? {} : { "X-Editor-Grant": maybeOwned.grantId }),
     };
   }
 
   function targetReason(target: EditingTarget) {
     if (!available()) return targetMessage();
     if (targetPending()) return "Confirming editing ownership. Please wait.";
-    const saved = grant();
-    if (saved !== undefined && sameTarget(saved.target, target)) return undefined;
+    const maybeSaved = grant();
+    if (maybeSaved !== undefined && sameTarget(maybeSaved.target, target)) return undefined;
     return targetMessage() ?? "This spread is view only.";
   }
 
   async function changeTarget(target: EditingTarget | null, explicit: boolean) {
-    const current = connection();
-    if (!active() || current === undefined) return false;
+    const maybeConnection = connection();
+    if (!active() || maybeConnection === undefined) return false;
     setTargetPending(true);
-    const previousTarget = lastTarget;
-    lastTarget = target;
+    const maybePreviousTarget = maybeLastTarget;
+    maybeLastTarget = target;
     try {
       const observedAt = Date.now();
-      const state = await transport.readTarget(current);
-      if (!active() || current !== connection()) return false;
+      const state = await transport.readTarget(maybeConnection);
+      if (!active() || maybeConnection !== connection()) return false;
       revision = state.revision;
       const maybePreviousMessage = targetMessage();
       publishGrant(state.grant, observedAt);
       if (target === null) {
         if (state.grant !== null) {
-          const released = await transport.release(current, revision, state.grant.grantId);
-          if (!active() || current !== connection()) return false;
+          const released = await transport.release(maybeConnection, revision, state.grant.grantId);
+          if (!active() || maybeConnection !== connection()) return false;
           revision = released.revision;
         }
         publishGrant(null, observedAt);
       } else if (state.grant === null || !sameTarget(state.grant.target, target)) {
-        if (!explicit && previousTarget !== undefined && previousTarget !== null && sameTarget(previousTarget, target)) {
+        if (!explicit && maybePreviousTarget !== undefined && maybePreviousTarget !== null && sameTarget(maybePreviousTarget, target)) {
           setTargetMessage(maybePreviousMessage ?? "View only. Choose Edit spread to acquire ownership.");
           return false;
         }
         const selectedAt = Date.now();
-        const selected = await transport.select(current, revision, target);
-        if (!active() || current !== connection()) return false;
+        const selected = await transport.select(maybeConnection, revision, target);
+        if (!active() || maybeConnection !== connection()) return false;
         revision = selected.revision;
         if ("grant" in selected) publishGrant(selected.grant, selectedAt);
         else {
@@ -321,47 +318,47 @@ export function createEditorSession(
       }
       return true;
     } catch (failure) {
-      if (active() && current === connection()) {
+      if (active() && maybeConnection === connection()) {
         interrupt(`Editing ownership is uncertain. ${describeSessionFailure(failure)} Reconnect and read ownership before trying again.`);
       }
       return false;
     } finally {
-      if (active() && current === connection()) setTargetPending(false);
+      if (active() && maybeConnection === connection()) setTargetPending(false);
     }
   }
 
   function select(target: EditingTarget | null, explicit = false) {
-    const observedConnection = connection();
-    transition = transition.then(() => (observedConnection === connection() ? changeTarget(target, explicit) : false));
+    const maybeObservedConnection = connection();
+    transition = transition.then(() => (maybeObservedConnection === connection() ? changeTarget(target, explicit) : false));
     return transition;
   }
 
   async function heartbeat() {
-    const current = connection();
-    if (current === undefined || current === maybeHeartbeatConnection || targetPending()) return;
-    maybeHeartbeatConnection = current;
-    const saved = grant();
+    const maybeConnection = connection();
+    if (maybeConnection === undefined || maybeConnection === maybeHeartbeatConnection || targetPending()) return;
+    maybeHeartbeatConnection = maybeConnection;
+    const maybeSaved = grant();
     let renewingTarget = false;
     try {
       headers();
       const observedAt = Date.now();
-      const session = await transport.heartbeat(current);
-      if (!active() || current !== connection()) return;
+      const session = await transport.heartbeat(maybeConnection);
+      if (!active() || maybeConnection !== connection()) return;
       sessionDeadline = observedAt + session.leaseSeconds * 1000;
       scheduleExpiry();
-      if (saved !== undefined) {
+      if (maybeSaved !== undefined) {
         renewingTarget = true;
-        const renewed = await transport.renew(current, saved.grantId);
-        if (active() && current === connection() && saved.grantId === grant()?.grantId) {
+        const renewed = await transport.renew(maybeConnection, maybeSaved.grantId);
+        if (active() && maybeConnection === connection() && maybeSaved.grantId === grant()?.grantId) {
           targetDeadline = observedAt + renewed.remainingMillis;
           scheduleExpiry();
         }
       }
     } catch (failure) {
-      if (active() && current === connection() && (!renewingTarget || saved?.grantId === grant()?.grantId))
+      if (active() && maybeConnection === connection() && (!renewingTarget || maybeSaved?.grantId === grant()?.grantId))
         interrupt(describeSessionFailure(failure));
     } finally {
-      if (maybeHeartbeatConnection === current) maybeHeartbeatConnection = undefined;
+      if (maybeHeartbeatConnection === maybeConnection) maybeHeartbeatConnection = undefined;
     }
   }
 

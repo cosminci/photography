@@ -39,7 +39,6 @@ export function EditorSessionGate(props: {
             <Show when={!props.session.identifying()}>
               <button
                 type="button"
-                disabled={props.session.connecting()}
                 aria-describedby={props.session.connecting() ? "editor-session-message" : undefined}
                 onClick={() => {
                   void props.session.reconnect();

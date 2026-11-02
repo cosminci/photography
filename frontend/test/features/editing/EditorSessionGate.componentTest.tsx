@@ -35,11 +35,12 @@ describe("browser identification and tab gate", () => {
     fireEvent.input(draft, { target: { value: "Unsaved" } });
     setMessage("Connection lost.");
     setConnecting(true);
-    expect(screen.getByRole("button", { name: "Reconnect browser" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect browser" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
     expect(screen.getByRole("textbox", { name: "Retained draft" })).toHaveValue("Unsaved");
     setConnecting(false);
     fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
-    expect(reconnect).toHaveBeenCalledOnce();
+    expect(reconnect).toHaveBeenCalledTimes(2);
     setBlocked(true);
     expect(screen.queryByRole("main")).not.toBeInTheDocument();
     setBlocked(false);

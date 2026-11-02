@@ -15,12 +15,14 @@ export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTrans
     path: string,
     headers: Readonly<Record<string, string>>,
     maybeBody?: unknown,
+    maybeSignal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     const response = await fetcher(`/api/editor-session${path}`, {
       method,
       headers: { Accept: "application/json", ...headers, ...(maybeBody === undefined ? {} : { "Content-Type": "application/json" }) },
       ...(maybeBody === undefined ? {} : { body: JSON.stringify(maybeBody) }),
       cache: "no-store",
+      signal: maybeSignal ?? null,
     });
     const value = readObject(await response.json());
     if (!response.ok && value["code"] !== "target_locked") {
@@ -80,11 +82,15 @@ export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTrans
   }
 
   return {
-    register: async (editorId, alias, maybeSessionId) =>
-      readSession(await request("POST", "", maybeSessionId === undefined ? {} : { "X-Editor-Session": maybeSessionId }, { editorId, alias })),
+    register: async (editorId, alias, maybeSessionId, maybeSignal) =>
+      readSession(
+        await request("POST", "", maybeSessionId === undefined ? {} : { "X-Editor-Session": maybeSessionId }, { editorId, alias }, maybeSignal),
+      ),
     subscribe,
-    heartbeat: async (connection) => readSession(await request("POST", "/heartbeat", connectionHeaders(connection))),
-    readTarget: async (connection) => readTargetState(await request("GET", "/target", connectionHeaders(connection))),
+    heartbeat: async (connection, maybeSignal) =>
+      readSession(await request("POST", "/heartbeat", connectionHeaders(connection), undefined, maybeSignal)),
+    readTarget: async (connection, maybeSignal) =>
+      readTargetState(await request("GET", "/target", connectionHeaders(connection), undefined, maybeSignal)),
     select: async (connection, revision, target): Promise<TargetSelection> => {
       const value = await request("PUT", "/target", connectionHeaders(connection), { revision, target });
       if (value["code"] === "target_locked")

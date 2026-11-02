@@ -80,6 +80,77 @@ async function connect() {
 }
 
 describe("browser editing session", () => {
+  it.each([
+    { stage: "registration", outcome: "success" },
+    { stage: "registration", outcome: "failure" },
+    { stage: "binding heartbeat", outcome: "success" },
+    { stage: "binding heartbeat", outcome: "failure" },
+    { stage: "binding read", outcome: "success" },
+    { stage: "binding read", outcome: "failure" },
+  ])("should supersede hung $stage and isolate its late $outcome", async ({ stage, outcome }) => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const register = vi.fn<EditorSessionTransport["register"]>().mockResolvedValue(registered);
+    const heartbeat = vi.fn<EditorSessionTransport["heartbeat"]>().mockResolvedValue(registered);
+    const readTarget = vi.fn<EditorSessionTransport["readTarget"]>().mockResolvedValue({ revision: "0", grant: null });
+    const completeOld = async () => {
+      await pending;
+      if (outcome === "failure") throw new Error("Old establishment failed");
+    };
+    if (stage === "registration")
+      register.mockImplementationOnce(async () => {
+        await completeOld();
+        return registered;
+      });
+    if (stage === "binding heartbeat")
+      heartbeat.mockImplementationOnce(async () => {
+        await completeOld();
+        return registered;
+      });
+    if (stage === "binding read")
+      readTarget.mockImplementationOnce(async () => {
+        await completeOld();
+        return { revision: "0", grant: null };
+      });
+    localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
+    const built = buildSession({ register, heartbeat, readTarget });
+    if (stage !== "registration") {
+      await vi.waitFor(() => {
+        expect(built.transport.subscribe).toHaveBeenCalledOnce();
+      });
+      built.emit({ kind: "bound", sessionId, tabId, generation });
+      await vi.waitFor(() => {
+        expect(stage === "binding read" ? readTarget : heartbeat).toHaveBeenCalledOnce();
+      });
+    }
+
+    expect(built.session.connecting()).toBe(true);
+    const maybeOldSignal =
+      stage === "registration"
+        ? register.mock.calls[0]?.[3]
+        : stage === "binding read"
+          ? readTarget.mock.calls[0]?.[1]
+          : heartbeat.mock.calls[0]?.[1];
+    await built.session.reconnect();
+    expect(maybeOldSignal?.aborted).toBe(true);
+    await vi.waitFor(() => {
+      expect(built.transport.subscribe).toHaveBeenCalledTimes(stage === "registration" ? 1 : 2);
+    });
+    built.emit({ kind: "bound", sessionId, tabId, generation: identity });
+    await vi.waitFor(() => {
+      expect(built.session.available()).toBe(true);
+    });
+    finish();
+    await pending;
+    await Promise.resolve();
+
+    expect(built.session.headers()["X-Editor-Generation"]).toBe(identity);
+    expect(built.session.message()).toBeUndefined();
+    expect(built.session.connecting()).toBe(false);
+  });
+
   it("should cancel request lifetimes on target-only expiry and session loss without confusing the two leases", async () => {
     vi.useFakeTimers();
     const { session, transport } = await connect();
@@ -103,7 +174,7 @@ describe("browser editing session", () => {
 
     await session.identify("Mara");
 
-    expect(transport.register).toHaveBeenCalledExactlyOnceWith(identity, "Cosmin", sessionId);
+    expect(transport.register).toHaveBeenCalledExactlyOnceWith(identity, "Cosmin", sessionId, expect.any(AbortSignal));
     expect(session.alias()).toBe("Cosmin");
   });
 
@@ -290,7 +361,7 @@ describe("browser editing session", () => {
     expect(transport.register).not.toHaveBeenCalled();
     expect(session.message()).toMatch(/nonblank/i);
     await session.identify("Cosmin");
-    expect(transport.register).toHaveBeenCalledWith(identity, "Cosmin", undefined);
+    expect(transport.register).toHaveBeenCalledWith(identity, "Cosmin", undefined, expect.any(AbortSignal));
     expect(session.opened()).toBe(false);
     emit({ kind: "bound", sessionId, tabId, generation });
 
@@ -548,7 +619,6 @@ describe("browser editing session", () => {
     await vi.waitFor(() => {
       expect(transport.subscribe).toHaveBeenCalled();
     });
-    await session.reconnect();
     expect(transport.subscribe).toHaveBeenCalledOnce();
     const receive = vi.mocked(transport.subscribe).mock.calls[0]?.[2];
     if (receive === undefined) throw new Error("Missing subscription");

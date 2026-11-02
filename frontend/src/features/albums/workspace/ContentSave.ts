@@ -59,17 +59,17 @@ export function createContentSave<T, Saved = T>(operations: {
     const retained = draft();
     if (!active() || retained === undefined || pending()) return;
     setPending(true);
-    const observedAuthority = operations.maybeAuthority?.();
+    const maybeObservedAuthority = operations.maybeAuthority?.();
     try {
       const saved = await operations.read(retained.value);
       if (!active()) return;
-      if (operations.maybeAuthority !== undefined && observedAuthority !== operations.maybeAuthority()) {
+      if (operations.maybeAuthority !== undefined && maybeObservedAuthority !== operations.maybeAuthority()) {
         setError("Editing ownership changed while reading saved content. The draft is retained. Read saved content again.");
         return;
       }
       if (recovery() === "acknowledged" || operations.equal(saved, retained.value)) finish(saved, retained.value);
       else {
-        maybeReviewedAuthority = observedAuthority;
+        maybeReviewedAuthority = maybeObservedAuthority;
         setRecovery(undefined);
         setError("The draft is not saved. Review it before saving again.");
       }
@@ -85,24 +85,24 @@ export function createContentSave<T, Saved = T>(operations: {
     const retained = draft();
     if (!active() || retained === undefined || pending()) return;
     if (operations.maybeAuthority !== undefined) {
-      const current = operations.maybeAuthority();
-      if (current === undefined) {
+      const maybeCurrentAuthority = operations.maybeAuthority();
+      if (maybeCurrentAuthority === undefined) {
         ownershipChanged = true;
         setError("Editing ownership is unavailable. The draft is retained.");
         return;
       }
-      if (current !== maybeAuthority) ownershipChanged = true;
+      if (maybeCurrentAuthority !== maybeAuthority) ownershipChanged = true;
       if (ownershipChanged) {
         if (!reviewed) {
           setError("Editing ownership changed. Read saved content and explicitly review the draft before saving.");
           return;
         }
-        if (maybeReviewedAuthority !== current) {
+        if (maybeReviewedAuthority !== maybeCurrentAuthority) {
           setRecovery("uncertain");
           await reconcile();
           return;
         }
-        maybeAuthority = current;
+        maybeAuthority = maybeCurrentAuthority;
         ownershipChanged = false;
       }
     }

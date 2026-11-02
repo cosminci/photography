@@ -13,8 +13,10 @@ describe("editor session HTTP translation", () => {
     const registered = { sessionId, ownerId: tabId, alias: "Mara", leaseSeconds: 30, heartbeatSeconds: 10 };
     const fetcher = vi.fn<typeof fetch>();
     const transport = makeHttpEditorSession(fetcher);
+    const lifetime = new AbortController();
     fetcher.mockResolvedValue(new Response(JSON.stringify(registered)));
-    expect(await transport.register(tabId, "Mara", undefined)).toEqual(registered);
+    expect(await transport.register(tabId, "Mara", undefined, lifetime.signal)).toEqual(registered);
+    expect(fetcher.mock.lastCall?.[1]?.signal).toBe(lifetime.signal);
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
     fetcher.mockResolvedValue(new Response(JSON.stringify(registered)));
     expect(await transport.register(tabId, "Mara", sessionId)).toEqual(registered);
@@ -24,9 +26,11 @@ describe("editor session HTTP translation", () => {
       "X-Editor-Session": sessionId,
     });
     fetcher.mockResolvedValue(new Response(JSON.stringify(registered)));
-    expect(await transport.heartbeat(connection)).toEqual(registered);
+    expect(await transport.heartbeat(connection, lifetime.signal)).toEqual(registered);
+    expect(fetcher.mock.lastCall?.[1]?.signal).toBe(lifetime.signal);
     fetcher.mockResolvedValue(new Response(JSON.stringify({ revision: "0", grant: null })));
-    expect(await transport.readTarget(connection)).toEqual({ revision: "0", grant: null });
+    expect(await transport.readTarget(connection, lifetime.signal)).toEqual({ revision: "0", grant: null });
+    expect(fetcher.mock.lastCall?.[1]?.signal).toBe(lifetime.signal);
     fetcher.mockResolvedValue(new Response(JSON.stringify(grant)));
     expect(await transport.renew(connection, grant.grantId)).toEqual(grant);
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual(expect.objectContaining({ "X-Editor-Grant": grant.grantId }));

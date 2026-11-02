@@ -1,4 +1,4 @@
-import { Show, createEffect, createMemo, createUniqueId, on, onCleanup, onMount, untrack } from "solid-js";
+import { Show, createEffect, createMemo, createUniqueId, on, onCleanup, onMount } from "solid-js";
 import { createContentSave } from "./ContentSave";
 
 export function TextEditor(props: {
@@ -10,12 +10,11 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
-  maybeAuthority?: () => number | undefined;
-  maybeOnReconnect?: () => Promise<void>;
+  ownership: { maybeAuthority: number | undefined; recoveryLabel: string; reason: string; pending: boolean; recover: () => Promise<void> };
 }) {
   const feedback = createUniqueId();
   const save = createContentSave({
-    maybeAuthority: untrack(() => props.maybeAuthority),
+    maybeAuthority: () => props.ownership.maybeAuthority,
     save: (text: string) => props.save(text),
     read: () => props.read(),
     equal: (left, right) => left === right,
@@ -23,8 +22,8 @@ export function TextEditor(props: {
       props.onClose();
     },
   });
-  const needsReconnect = createMemo(() => props.maybeAuthority !== undefined && props.maybeAuthority() === undefined);
-  const unavailable = createMemo(() => (needsReconnect() ? "Editing ownership is unavailable. Your draft is retained." : save.unavailable()));
+  const needsOwnership = createMemo(() => props.ownership.maybeAuthority === undefined);
+  const unavailable = createMemo(() => (needsOwnership() ? props.ownership.reason : save.unavailable()));
   let dialog!: HTMLDialogElement;
   let input!: HTMLTextAreaElement;
   let status!: HTMLDivElement;
@@ -84,17 +83,17 @@ export function TextEditor(props: {
           void save.commit(true);
         }}
       >
-        <Show when={needsReconnect() ? props.maybeOnReconnect : undefined}>
-          {(reconnect) => (
-            <button
-              type="button"
-              onClick={() => {
-                void reconnect()();
-              }}
-            >
-              Reconnect browser
-            </button>
-          )}
+        <Show when={needsOwnership()}>
+          <button
+            type="button"
+            disabled={props.ownership.pending}
+            aria-describedby={feedback}
+            onClick={() => {
+              void props.ownership.recover();
+            }}
+          >
+            {props.ownership.recoveryLabel}
+          </button>
         </Show>
         <textarea
           ref={(element) => {
@@ -116,13 +115,7 @@ export function TextEditor(props: {
           id={feedback}
           tabindex="-1"
         >
-          <Show when={unavailable()}>
-            {(reason) => (
-              <p role="status" class="control-help">
-                {reason()}
-              </p>
-            )}
-          </Show>
+          <Show when={unavailable()}>{(reason) => <p role="status">{reason()}</p>}</Show>
           <Show when={save.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
           <Show when={save.recovery() !== undefined}>
             <button

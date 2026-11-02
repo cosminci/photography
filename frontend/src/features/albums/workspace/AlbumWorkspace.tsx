@@ -190,11 +190,11 @@ export function AlbumWorkspace(props: {
     placement.saving() ? "Saving photos. Please wait." : placement.loading() ? "Reading saved photos. Please wait." : undefined,
   );
   const photoApplyReason = createMemo(() => ownershipReason() ?? photoRecoveryReason());
-  async function confirmOwnership(target: EditingTarget | null, explicit: boolean, reconnect = false) {
+  async function confirmOwnership(maybeTarget: EditingTarget | null | undefined, explicit: boolean, reconnect = false) {
     const generation = ++ownershipGeneration;
     const before = props.session.authority();
     setOwnershipLoading(true);
-    await props.session.select(target, explicit);
+    await props.session.select(maybeTarget ?? null, explicit);
     if (!active || generation !== ownershipGeneration) return;
     if (explicit || reconnect || before !== props.session.authority()) await refresh();
     if (generation === ownershipGeneration) setOwnershipLoading(false);
@@ -210,7 +210,7 @@ export function AlbumWorkspace(props: {
       }
       const reconnect = !sessionWasAvailable;
       sessionWasAvailable = true;
-      void confirmOwnership(reader() ? null : (target ?? null), false, reconnect);
+      void confirmOwnership(reader() ? null : target, false, reconnect);
     }),
   );
   const displayedSpread = createMemo(() => {
@@ -959,10 +959,19 @@ export function AlbumWorkspace(props: {
       <Show when={textEdit()} keyed>
         {(action) => (
           <TextEditor
-            maybeOnReconnect={() => props.session.reconnect()}
-            maybeAuthority={() =>
-              props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined) ? props.session.authority() : undefined
-            }
+            ownership={{
+              maybeAuthority:
+                props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined)
+                  ? props.session.authority()
+                  : undefined,
+              recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
+              reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
+              pending: props.session.targetPending() || ownershipLoading(),
+              recover: async () => {
+                if (!props.session.available()) await props.session.reconnect();
+                else await confirmOwnership(editingTarget(), true);
+              },
+            }}
             heading={action.chapter === undefined ? "Album synopsis" : `Chapter description for ${action.chapter.name}`}
             label={action.chapter === undefined ? "Synopsis" : "Chapter description"}
             text={action.chapter?.description ?? props.album.synopsis}
