@@ -163,13 +163,18 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
             api.run(orderRequest(observed, proposed)),
             api.run(addRequest(opening.id))
           ).parTupled
-          body      <- addition.as[Json]
-          saved     <- composition.findChapterOrder(albumId, chapterId).transact(xa)
-          positions <- chapterOrder.transact(xa)
+          replacementBody <- if replacement.status === Status.Conflict then replacement.as[Json].map(_.some) else none[Json].pure[IO]
+          body            <- addition.as[Json]
+          saved           <- composition.findChapterOrder(albumId, chapterId).transact(xa)
+          positions       <- chapterOrder.transact(xa)
         yield
           val added = body.hcursor.get[UUID]("id").fold(error => fail(error.message), id => id)
           assertEquals(addition.status, Status.Created)
           assert(Set(Status.NoContent, Status.Conflict).contains(replacement.status))
+          assertEquals(
+            replacementBody,
+            Option.when(replacement.status === Status.Conflict)(Json.obj("code" -> Json.fromString("composition_changed")))
+          )
           assertEquals(saved.map(_.toList.map(_.value).toSet), Some(Set(opening.id.value, first.id.value, second.id.value, added)))
           assertEquals(saved.map(_.head.value), Some(opening.id.value))
           assertEquals(positions, List(0, 1, 2, 3))
@@ -187,9 +192,11 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           observed = NonEmptyList.of(opening.id, first.id, second.id)
           proposed = NonEmptyList.of(opening.id, second.id, first.id)
           replacements <- List.fill(2)(()).parTraverse(_ => api.run(orderRequest(observed, proposed)))
+          rejected     <- replacements.filter(_.status === Status.Conflict).traverse(_.as[Json])
           saved        <- composition.findChapterOrder(albumId, chapterId).transact(xa)
         yield
           assertEquals(replacements.map(_.status).toSet, Set(Status.NoContent, Status.Conflict))
+          assertEquals(rejected, List(Json.obj("code" -> Json.fromString("composition_changed"))))
           assertEquals(saved.map(_.toList.map(_.value)), Some(proposed.toList.map(_.value)))
 
   test("should cancel an order replacement while coordination is held without applying a write"):
@@ -231,12 +238,19 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           proposed    = NonEmptyList.of(opening.id, second.id, first.id)
           replacement = api.run(orderRequest(observed, proposed))
           deletion    = api.run(deleteRequest(first.id, confirm = true))
-          results   <- (replacement, deletion).parTupled
+          results         <- (replacement, deletion).parTupled
+          replacementBody <- results match
+            case (response, _) =>
+              if response.status === Status.Conflict then response.as[Json].map(_.some) else none[Json].pure[IO]
           saved     <- composition.findChapterOrder(albumId, chapterId).transact(xa)
           positions <- chapterOrder.transact(xa)
         yield
           val (replacement, deletion) = results
           assert(Set(Status.NoContent, Status.Conflict).contains(replacement.status))
+          assertEquals(
+            replacementBody,
+            Option.when(replacement.status === Status.Conflict)(Json.obj("code" -> Json.fromString("composition_changed")))
+          )
           assertEquals(deletion.status, Status.NoContent)
           assertEquals(saved.map(_.toList.map(_.value)), Some(List(opening.id.value, second.id.value)))
           assertEquals(positions, List(0, 1))
@@ -335,6 +349,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           maybeUnchanged                 <- composition.findSpread(albumId, photo.id).transact(xa)
           confirmed                      <-
             List.fill(2)(()).parTraverse(_ => api.run(deleteRequest(photo.id, confirm = true)))
+          rejected  <- confirmed.filter(_.status === Status.NotFound).traverse(_.as[Json])
           remaining <- placementRows.transact(xa)
         yield
           val occupied = Json.obj("code" -> Json.fromString("spread_occupied"), "placements" -> Json.fromInt(1))
@@ -342,6 +357,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           assertEquals(bodies, (occupied, occupied))
           assertEquals(maybeUnchanged.map(_.spread), maybeBefore.map(_.spread))
           assertEquals(confirmed.map(_.status).toSet, Set(Status.NoContent, Status.NotFound))
+          assertEquals(rejected, List(Json.obj("code" -> Json.fromString("spread_not_found"))))
           assertEquals(remaining, 0L)
 
   test("should reconcile a lost HTTP deletion acknowledgement from SQLite without replaying the destructive request"):
@@ -500,18 +516,22 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
           chapters.create(albumId, name = "Later trip", countries = NonEmptyList.one(country.id), period, sourceFolder = "/photos/later")
 
         for
-          api     <- buildApi(xa, target = SpreadId(new UUID(15L, 100L)))
-          opening <- seedChapter(xa)
-          photos  <- (1 to 62).toVector.traverse(index => buildPhotoSpread(xa, index = 100L + index.toLong, layout = defaultLayout))
-          _       <- photos.traverse_(spreads.insert(chapterId, _)).transact(xa)
-          results <- (api.run(addRequest(opening.id)), createChapter).parTupled
-          count   <- composition.countInteriorSpreads(albumId).transact(xa)
+          api        <- buildApi(xa, target = SpreadId(new UUID(15L, 100L)))
+          opening    <- seedChapter(xa)
+          photos     <- (1 to 62).toVector.traverse(index => buildPhotoSpread(xa, index = 100L + index.toLong, layout = defaultLayout))
+          _          <- photos.traverse_(spreads.insert(chapterId, _)).transact(xa)
+          results    <- (api.run(addRequest(opening.id)), createChapter).parTupled
+          spreadBody <- results match
+            case (response, _) => response.as[Json]
+          count <- composition.countInteriorSpreads(albumId).transact(xa)
         yield
           val (spread, chapter) = results
           val spreadWon         = spread.status match
             case Status.Created    => true
-            case Status.BadRequest => false
-            case other             => fail(s"Unexpected spread result: $other")
+            case Status.BadRequest =>
+              assertEquals(spreadBody, Json.obj("message" -> Json.fromString("An album can contain at most 65 interior spreads")))
+              false
+            case other => fail(s"Unexpected spread result: $other")
           val chapterWon = chapter match
             case _: ChapterMetadataManager.CreateResult.Created                           => true
             case ChapterMetadataManager.CreateResult.Rejected(ChapterConflict.AtCapacity) => false

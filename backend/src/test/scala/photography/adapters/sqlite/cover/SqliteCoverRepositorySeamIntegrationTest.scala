@@ -136,7 +136,8 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
                 "photoId" -> Json.fromString(firstPhoto.value.toString)
               )))
             )
-            current <- repository.read(album).transact(xa)
+            rejected <- outcomes.filter(_.status === Status.Conflict).traverse(_.as[Json])
+            current  <- repository.read(album).transact(xa)
           yield
             val savedCount    = outcomes.count(_.status === Status.Ok)
             val rejectedCount = outcomes.count(_.status === Status.Conflict)
@@ -145,6 +146,7 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
               case ReadResult.NotFound     => fail("Expected the saved cover")
             assertEquals(savedCount, 1)
             assertEquals(rejectedCount, 1)
+            assertEquals(rejected, Vector(Json.obj("code" -> Json.fromString("photo_already_used"))))
             assertEquals(currentPhotos, Vector(firstPhoto))
 
   test("should commit only one concurrent placement across cover and interior contexts"):

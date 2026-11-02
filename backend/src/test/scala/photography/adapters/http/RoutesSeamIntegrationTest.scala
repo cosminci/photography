@@ -54,11 +54,22 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
             assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
         }
         public <- server.run(Request[IO](Method.GET, Uri.unsafeFromString("/read")))
+        invalidPublic = new Routes[IO]:
+          override def routes: PartialFunction[Request[IO], Routes.Route[IO, ?]] =
+            case value if value.uri.path.renderString === "/invalid" =>
+              Routes.Route(
+                Routes.Access.Public,
+                Response[IO](Status.UnprocessableContent).asLeft[Unit].pure[IO],
+                (_: Unit) => written.update(_ + 1).as(Response[IO](Status.Ok))
+              )
+        failedPublic <- Routes.make(EditingAccess.make(sessions))(invalidPublic).orNotFound
+          .run(Request[IO](Method.GET, Uri.unsafeFromString("/invalid")))
         absent <- server.run(Request[IO](Method.PUT, Uri.unsafeFromString("/undeclared")))
         reads  <- decoded.get
         writes <- written.get
       yield
         assertEquals(public.status, Status.Ok)
+        assertEquals(failedPublic.status, Status.UnprocessableContent)
         assertEquals(absent.status, Status.NotFound)
         assertEquals(reads, 0)
         assertEquals(writes, 0)
