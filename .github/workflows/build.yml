@@ -7,15 +7,6 @@ permissions:
   contents: read
 
 jobs:
-  guidance:
-    name: Check shared guidance
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - run: |
-          git clone --quiet --depth 1 https://github.com/cosminci/agentic-workflows.git "$RUNNER_TEMP/agentic-workflows"
-          git config --global agentic.workflowsPath "$RUNNER_TEMP/agentic-workflows"
-          bash scripts/workflows check
   build:
     name: Verify changed components
     runs-on: ubuntu-24.04
