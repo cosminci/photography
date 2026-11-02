@@ -665,16 +665,25 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         val selected    = Set(Author.Mara).refineUnsafe[MinLength[1]]
 
         for
-          _        <- repository.create(album, buildCover(album))
+          _ <- repository.create(album, buildCover(album))
+          _ <- sql"CREATE TABLE field_audit (field TEXT NOT NULL)".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_authors AFTER UPDATE OF authors ON album
+                     BEGIN INSERT INTO field_audit VALUES ('authors'); END""".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_synopsis AFTER UPDATE OF synopsis ON album
+                     BEGIN INSERT INTO field_audit VALUES ('synopsis'); END""".update.run.transact(xa)
+          _ <- sql"""CREATE TRIGGER count_title AFTER UPDATE OF title ON album
+                     BEGIN INSERT INTO field_audit VALUES ('title'); END""".update.run.transact(xa)
           synopsis <- uncertain.saveSynopsis(album.id, text = "Saved once")
           authors  <- uncertain.saveAuthors(album.id, selected)
           renamed  <- uncertain.rename(album.id, title = changedTitle)
           found    <- repository.get(album.id)
+          writes   <- sql"SELECT field, count(*) FROM field_audit GROUP BY field ORDER BY field".query[(String, Long)].to[Vector].transact(xa)
         yield
           assertEquals(synopsis, SaveSynopsisResult.Uncertain)
           assertEquals(authors, SaveAuthorsResult.Uncertain)
           assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
           assertEquals(found, GetResult.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
+          assertEquals(writes, Vector(("authors", 1L), ("synopsis", 1L), ("title", 1L)))
     }
 
   private def buildConnection(path: Path) =
