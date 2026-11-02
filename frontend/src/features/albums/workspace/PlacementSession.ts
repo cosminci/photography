@@ -69,7 +69,7 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
   }
 
   function reconcile(saved: SpreadSnapshot) {
-    setSnapshot(saved);
+    if (navigationReason() === undefined && !loading()) setSnapshot(saved);
   }
 
   function clear() {
@@ -102,7 +102,7 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
 
   async function drain() {
     const selected = target();
-    if (saving() || recovery() !== undefined || selected === undefined) return;
+    if (saving() || recovery() !== undefined || selected === undefined || queue.size === 0) return;
     setSaving(true);
     setAdjusting(true);
     try {
@@ -120,10 +120,20 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     } catch {
       setRecovery("uncertain");
       setError("Photo adjustment is unsaved; its outcome is uncertain. Retry reads saved photos before attempting the adjustment again.");
+      setSaving(false);
+      setAdjusting(false);
+      return;
+    }
+    try {
+      await refreshInventory();
+    } catch {
+      setRecovery("refresh");
+      setError("Photos saved, but the collection could not be refreshed. Retry reads only.");
     } finally {
       setSaving(false);
       setAdjusting(false);
     }
+    if (queue.size > 0 && recovery() === undefined) await drain();
   }
 
   async function edit(command: PlacementEdit) {

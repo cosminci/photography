@@ -90,6 +90,7 @@ export function AlbumOpen(props: {
                 onRefresh={live.reload}
                 onSaved={live.saved}
                 workspaceError={live.error()}
+                workspaceLoading={live.loading()}
                 photoErrors={live.inventoryErrors()}
                 scheduling={live.scheduling()}
                 liveStatus={live.liveStatus()}

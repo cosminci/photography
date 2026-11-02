@@ -15,6 +15,72 @@ const initial: SpreadSnapshot = {
 const context: SpreadContext = { kind: "spread", id: "spread" };
 
 describe("placement save lifecycle", () => {
+  it.each(["preview", "pending", "uncertain", "acknowledged"] as const)(
+    "should retain %s photo state when a workspace read tries to reconcile older content",
+    async (state) => {
+      let finish!: (value: PlacementSnapshot) => void;
+      const pending = new Promise<PlacementSnapshot>((resolve) => {
+        finish = resolve;
+      });
+      const edit = vi.fn().mockReturnValue(pending);
+      const refresh = state === "acknowledged" ? vi.fn().mockRejectedValue(new Error("offline")) : vi.fn().mockResolvedValue(undefined);
+      const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn(), editPlacements: edit }, refresh));
+      const transformed = { x: 2, y: 3, zoom: 2, mirrored: false };
+      const saved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform: transformed })) };
+      session.selectSpread("album", initial);
+      if (state === "preview") session.preview("p", transformed);
+      else if (state === "pending") session.complete("p", transformed);
+      else {
+        if (state === "uncertain") edit.mockRejectedValueOnce(new Error("lost acknowledgement"));
+        else edit.mockResolvedValueOnce(saved);
+        await session.edit({ operation: "remove", placementId: "p" });
+      }
+
+      session.reconcile({ ...initial, placements: [] });
+
+      expect(session.snapshot()).toEqual(state === "acknowledged" ? saved : initial);
+      if (state === "preview" || state === "pending") expect(session.placements()[0]?.transform).toEqual(transformed);
+      if (state === "pending") {
+        finish(saved);
+        await vi.waitFor(() => {
+          expect(session.saving()).toBe(false);
+        });
+        expect(session.snapshot()).toEqual(saved);
+        expect(refresh).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it("should finish a newer adjustment queued during acknowledged saved-content reconciliation", async () => {
+    let finish!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const first = { x: 1, y: 2, zoom: 2, mirrored: false };
+    const latest = { ...first, x: 3 };
+    const firstSaved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform: first })) };
+    const latestSaved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform: latest })) };
+    const edit = vi.fn().mockResolvedValueOnce(firstSaved).mockResolvedValueOnce(latestSaved);
+    const refresh = vi.fn().mockReturnValueOnce(reading).mockResolvedValue(undefined);
+    const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn(), editPlacements: edit }, refresh));
+    session.selectSpread("album", initial);
+    session.complete("p", first);
+    await vi.waitFor(() => {
+      expect(refresh).toHaveBeenCalledOnce();
+    });
+
+    session.complete("p", latest);
+    finish();
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+
+    expect(session.snapshot()).toEqual(latestSaved);
+    expect(session.placements()).toEqual(latestSaved.placements);
+    expect(edit).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
   it("should ignore a late Cover response after navigation uses an already acquired spread", async () => {
     let resolve!: (value: PlacementSnapshot) => void;
     const old = new Promise<PlacementSnapshot>((finish) => {
@@ -114,7 +180,7 @@ describe("placement save lifecycle", () => {
     expect(edit).toHaveBeenCalledTimes(2);
     expect(session.placements()).toEqual(savedLatest.placements);
     expect(edit.mock.calls[1]?.[2]).toEqual({ operation: "adjust", placementId: "p", transform: latest });
-    expect(refresh).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
     expect(session.navigationReason()).toBeUndefined();
   });
 
@@ -142,7 +208,7 @@ describe("placement save lifecycle", () => {
     expect(session.navigationReason()).toBeUndefined();
   });
 
-  it("retries acknowledged-save collection failures as reads only", async () => {
+  it.each(["composition", "adjustment"] as const)("should retry acknowledged %s reconciliation failures as reads only", async (operation) => {
     const edit = vi.fn().mockResolvedValue(initial);
     const newer = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform: { ...row.transform, zoom: 3 } })) };
     const read = vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(newer);
@@ -150,7 +216,13 @@ describe("placement save lifecycle", () => {
     const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: edit }, refresh));
     await session.load("album", context);
 
-    await session.edit({ operation: "place", photoId: "photo", slotId: "s" });
+    if (operation === "composition") await session.edit({ operation: "place", photoId: "photo", slotId: "s" });
+    else {
+      session.complete("p", { x: 0, y: 0, zoom: 1, mirrored: false });
+      await vi.waitFor(() => {
+        expect(session.saving()).toBe(false);
+      });
+    }
     const acknowledgedSaveFeedback = session.error();
     await session.retry();
 
