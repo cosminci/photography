@@ -110,6 +110,70 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each(["spread", "cover"] as const)("should publish deferred %s reconnect content after cancelling a photo preview", async (kind) => {
+    const photo = {
+      id: "photo",
+      filename: "Mountain.jpg",
+      width: 1000,
+      height: 800,
+      capturedLocal: null,
+      caption: null,
+      thumbnail: { url: "/thumbnails/mountain.jpg", width: 1000, height: 800 },
+    };
+    const transform = { x: 0, y: 0, zoom: 2, mirrored: false };
+    const placed = { id: "placement", slotId: photoSlot.id, photoId: photo.id, captionCorner: "bottom_left" as const, transform };
+    const interior = { ...opening, placements: [{ ...placed, kind: "spread" as const }] };
+    const saved = {
+      ...workspace,
+      spreads: [interior, ...workspace.spreads.slice(1)],
+      photoInventories: { ...workspace.photoInventories, vacation: { ...inventory, photos: [photo] } },
+    };
+    const cover = {
+      kind: "cover" as const,
+      placements: [{ ...placed, kind: "cover" as const, slotId: "front", side: "front" as const }],
+      frontSlotId: "front",
+      backSlotId: "back",
+      spineOwner: "front" as const,
+    };
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const client = buildClient({ readPlacements: vi.fn().mockResolvedValue(cover) }, saved);
+    const liveEvents: AlbumPhotoEvents = {
+      subscribe: (_id, callback) => {
+        receive.mockImplementation(callback);
+        callback({ kind: "subscribed" });
+        return vi.fn();
+      },
+    };
+    if (kind === "cover") window.history.replaceState(null, "", "?part=cover");
+    render(() => <AlbumOpen id={album.id} client={client} events={liveEvents} />);
+    const surface = await screen.findByRole("button", { name: /: Mountain.jpg$/ });
+    await waitFor(() => expect(surface).toBeEnabled());
+    Object.defineProperty(surface, "setPointerCapture", { value: vi.fn() });
+    vi.spyOn(surface, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 400, 400));
+    fireEvent(surface, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 100 }));
+    fireEvent(surface, new MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 100 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeDisabled());
+    vi.mocked(client.spread).mockImplementation((_album, id) => {
+      const spread = saved.spreads.find((candidate) => candidate.id === id);
+      if (spread === undefined) throw new Error("Unknown spread");
+      return Promise.resolve({ ...spread, placements: [] });
+    });
+    vi.mocked(client.readPlacements).mockResolvedValue({ ...cover, placements: [] });
+
+    receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(client.chapters).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument());
+    expect(surface).toBeInTheDocument();
+    fireEvent(surface, new MouseEvent("pointercancel", { bubbles: true }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /: Mountain.jpg$/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    expect(client.editPlacements).not.toHaveBeenCalled();
+    expect(client.readPlacements).toHaveBeenCalledTimes(kind === "cover" ? 2 : 0);
+  });
+
   it("should retain book nodes and unchanged template and gear acquisitions through a caption-position save and workspace readback", async () => {
     const photo = {
       id: "photo",
@@ -336,6 +400,8 @@ describe("album workspace browser boundary", () => {
       expect(client.createChapter).toHaveBeenCalledTimes(phase === "uncertain" ? 2 : 1);
       expect(client.saveChapterGear).not.toHaveBeenCalled();
       expect(await screen.findByRole("heading", { name: "Home" })).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+      expect(client.composition).toHaveBeenCalledTimes(2);
     },
   );
   it("should validate an unsaved interchangeable body before writing metadata and permit closing a rejected gear phase", async () => {
@@ -480,6 +546,8 @@ describe("album workspace browser boundary", () => {
     expect(client.updateChapter).toHaveBeenCalledTimes(found ? 1 : 2);
     expect(client.saveChapterGear).not.toHaveBeenCalled();
     expect(await screen.findByRole("heading", { name: renamed.name })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    expect(client.gearCatalog).toHaveBeenCalledTimes(3);
   });
   it("should retain failed gear acquisition and the metadata draft until a successful resource retry", async () => {
     const client = buildClient({
@@ -531,6 +599,9 @@ describe("album workspace browser boundary", () => {
 
     expect(client.updateChapter).toHaveBeenCalledOnce();
     expect(client.saveChapterGear).toHaveBeenCalledExactlyOnceWith(album.id, vacation.id, selected);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    expect(client.gearCatalog).toHaveBeenCalledTimes(3);
+    expect(client.chapterGear).toHaveBeenCalledTimes(4);
   });
   it.each(["refresh", "spread save"] as const)("should explain content editing disabled during %s", async (phase) => {
     let finishWrite!: (id: string) => void;
@@ -1062,9 +1133,18 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("button", { name: "Cover" })).toHaveAccessibleDescription("Reload saved photos before leaving.");
   });
 
-  it("should use acquired saved spreads for selection and navigation without a second full GET", async () => {
+  it("should read current saved content on navigation and keep editing blocked until the saved workspace arrives", async () => {
     window.history.replaceState(null, "", "?part=vacation-photo");
+    let finish!: (chapters: readonly Chapter[]) => void;
+    const pending = new Promise<readonly Chapter[]>((resolve) => {
+      finish = resolve;
+    });
     const client = buildClient({
+      chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockReturnValueOnce(pending),
+      open: vi
+        .fn()
+        .mockResolvedValueOnce(album)
+        .mockResolvedValue({ ...album, authors: ["Mara"] }),
       readPlacements: vi.fn().mockRejectedValue(new Error("A second spread GET is unnecessary")),
     });
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
@@ -1072,8 +1152,72 @@ describe("album workspace browser boundary", () => {
     await screen.findByRole("button", { name: "Photo slot 1: empty" });
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
     expect(screen.getByRole("heading", { name: "Kyoto" })).toBeInTheDocument();
-    expect(client.spread).toHaveBeenCalledTimes(workspace.spreads.length);
+    expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit chapter description" })).toHaveAccessibleDescription("Refreshing saved workspace. Please wait.");
+    finish(workspace.chapters.map((owner) => (owner.id === vacation.id ? { ...owner, description: "Newly saved description" } : owner)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeEnabled());
+
+    expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent("Newly saved description");
+    expect(client.spread).toHaveBeenCalledTimes(workspace.spreads.length * 2);
     expect(client.readPlacements).not.toHaveBeenCalled();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it("should fail closed on a navigation read failure and retry saved content without changing focus or writing", async () => {
+    const client = buildClient({
+      chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace.chapters),
+    });
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    const chapter = await screen.findByRole("link", { name: "Kyoto" });
+    chapter.focus();
+    fireEvent.click(chapter);
+    const retry = await screen.findByRole("button", { name: "Retry workspace" });
+
+    expect(screen.getByRole("button", { name: "Add spread" })).toBeDisabled();
+    expect(chapter).toHaveFocus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
+
+    expect(chapter).toHaveFocus();
+    expect(window.location.search).toBe("?part=vacation");
+    expect(client.chapters).toHaveBeenCalledTimes(3);
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it.each(["history", "keyboard", "outline"] as const)("should acquire saved Synopsis content through %s navigation", async (entry) => {
+    window.history.replaceState(null, "", "?part=vacation");
+    const savedAlbum = { ...album, synopsis: "Synopsis saved in another browser" };
+    const client = buildClient({
+      open: vi.fn().mockResolvedValueOnce(album).mockResolvedValue(savedAlbum),
+    });
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+
+    if (entry === "history") {
+      window.history.replaceState(null, "", window.location.pathname);
+      fireEvent(window, new PopStateEvent("popstate"));
+    } else if (entry === "keyboard") fireEvent.keyDown(screen.getByRole("region", { name: "Album workspace" }), { key: "ArrowLeft" });
+    else fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(savedAlbum.synopsis));
+
+    expect(window.location.search).toBe("");
+    expect(client.open).toHaveBeenCalledTimes(2);
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it("should read saved Cover metadata and placements when switching from an interior spread", async () => {
+    const savedAlbum = { ...album, title: "Title saved in another browser", authors: ["Mara"] as const };
+    const client = buildClient({
+      open: vi.fn().mockResolvedValueOnce(album).mockResolvedValue(savedAlbum),
+    });
+    render(() => <AlbumOpen id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+
+    expect(screen.getByRole("group", { name: /Cover: back on the left; front on the right/ })).toHaveAccessibleName(/Title saved in another browser/);
+    expect(screen.getByText("by Mara · 2026")).toBeInTheDocument();
+    expect(client.readPlacements).toHaveBeenCalledExactlyOnceWith(album.id, { kind: "cover" });
+    expect(client.open).toHaveBeenCalledTimes(2);
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
@@ -1117,10 +1261,16 @@ describe("album workspace browser boundary", () => {
     async (failure) => {
       const client = buildClient({
         addSpread: vi.fn().mockRejectedValue(failure),
-        chapters: vi.fn().mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(workspace.chapters),
+        chapters: vi
+          .fn()
+          .mockResolvedValueOnce(workspace.chapters)
+          .mockResolvedValueOnce(workspace.chapters)
+          .mockRejectedValueOnce(new Error("offline"))
+          .mockResolvedValue(workspace.chapters),
       });
       render(() => <AlbumOpen id={album.id} client={client} events={events} />);
       fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
       fireEvent.click(await screen.findByRole("button", { name: "Reload saved workspace" }));
       await screen.findByText("Saved workspace could not be refreshed. Displayed photos may be out of date.");
@@ -1130,40 +1280,52 @@ describe("album workspace browser boundary", () => {
       });
 
       expect(client.addSpread).toHaveBeenCalledTimes(1);
-      expect(client.chapters).toHaveBeenCalledTimes(3);
+      expect(client.chapters).toHaveBeenCalledTimes(4);
     },
   );
 
   it("should add after selection, reload authoritative geometry and retain the deleted spread's album position", async () => {
     const inserted = { ...vacationPhoto, id: "inserted" };
     const added = { ...workspace, spreads: [opening, vacationOpening, inserted, ...workspace.spreads.slice(2)] };
+    let finishAdd!: (spreadId: string) => void;
+    const pendingAdd = new Promise<string>((resolve) => {
+      finishAdd = resolve;
+    });
     const client = buildClient(
       {
         composition: vi
           .fn()
           .mockResolvedValueOnce(membership(workspace.spreads))
+          .mockResolvedValueOnce(membership(workspace.spreads))
           .mockResolvedValueOnce(membership(added.spreads))
           .mockResolvedValue(membership(workspace.spreads)),
-        addSpread: vi.fn().mockResolvedValue("inserted"),
+        addSpread: vi.fn().mockReturnValueOnce(pendingAdd),
         deleteSpread: vi.fn().mockResolvedValue(undefined),
       },
       added,
     );
     render(() => <AlbumOpen id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: "Kyoto" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
+    expect(screen.getByRole("button", { name: "Cover" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cover" })).toHaveAccessibleDescription("Saving spread. Please wait.");
+    window.history.replaceState(null, "", "?part=home");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(window.location.search).toBe("?part=vacation");
+    finishAdd(inserted.id);
     await waitFor(() => {
       expect(window.location.search).toBe("?part=inserted");
     });
 
     expect(client.addSpread).toHaveBeenCalledWith(album.id, vacation.id, "vacation-opening");
-    expect(client.composition).toHaveBeenCalledTimes(2);
+    expect(client.composition).toHaveBeenCalledTimes(3);
     fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
     await waitFor(() => {
       expect(window.location.search).toBe("?part=vacation-photo");
     });
     expect(client.deleteSpread).toHaveBeenCalledWith(album.id, "inserted", false);
-    expect(client.composition).toHaveBeenCalledTimes(3);
+    expect(client.composition).toHaveBeenCalledTimes(4);
   });
 
   it.each(["next-photo", "next-chapter", "last"] as const)("should retain the deletion index at %s across authoritative reload", async (position) => {
@@ -1272,6 +1434,9 @@ describe("album workspace browser boundary", () => {
       expect(client.templates).toHaveBeenCalledWith(context);
       expect(categories.getAllByRole("button").map((button) => button.textContent)).toEqual(["1", "2", "10+"]);
       expect(applied).toHaveAttribute("aria-pressed", "true");
+      await waitFor(() => expect(applied).toBeEnabled());
+      fireEvent.click(applied);
+      expect(client.changeSpreadTemplate).not.toHaveBeenCalled();
       expect(categories.getByRole("button", { name: "2" })).toHaveAttribute("aria-pressed", "true");
       fireEvent.click(categories.getByRole("button", { name: "1" }));
       expect(screen.getByRole("button", { name: "One photo" })).toBeInTheDocument();
@@ -1372,9 +1537,10 @@ describe("album workspace browser boundary", () => {
     );
     expect(window.location.search).toBe("?part=vacation-photo");
     fireEvent.click(screen.getByRole("link", { name: "Home" }));
-    expect(earlier).toHaveAccessibleDescription("Select a photo spread first.");
+    await waitFor(() => expect(earlier).toHaveAccessibleDescription("Select a photo spread first."));
     expect(later).toBeDisabled();
     fireEvent.click(screen.getByRole("link", { name: "Kyoto · Photo spread 2" }));
+    await waitFor(() => expect(earlier).toBeEnabled());
     fireEvent.click(earlier);
     await waitFor(() => {
       expect(client.replaceChapterComposition).toHaveBeenCalledTimes(2);
@@ -1564,7 +1730,7 @@ describe("album workspace browser boundary", () => {
     window.history.replaceState(null, "", "?part=foreign");
     fireEvent(window, new PopStateEvent("popstate"));
 
-    expect(screen.getByRole("alert")).toHaveTextContent("This album part could not be found.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("This album part could not be found.");
 
     fireEvent.click(screen.getByRole("button", { name: "Go to Synopsis" }));
 
@@ -1623,13 +1789,16 @@ describe("album workspace browser boundary", () => {
         },
       });
       window.history.replaceState(null, "", `?part=${part}`);
-      const view = render(() => <AlbumOpen id={album.id} client={buildClient()} events={events} />);
+      const client = buildClient();
+      const view = render(() => <AlbumOpen id={album.id} client={client} events={events} />);
 
       try {
         await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
         fireEvent.click(await screen.findByRole("button", { name: "Reader mode" }));
         const exit = await screen.findByRole("button", { name: "Exit reader" });
         const readerControls = within(screen.getByRole("group", { name: "Reader controls" }));
+        const description = "Saved chapter text read during Reader navigation";
+        vi.mocked(client.chapters).mockResolvedValue(workspace.chapters.map((owner) => (owner.id === home.id ? { ...owner, description } : owner)));
 
         if (part === "cover") {
           expect(readerControls.getByRole("button", { name: "Previous spread" })).toBeDisabled();
@@ -1650,6 +1819,7 @@ describe("album workspace browser boundary", () => {
         fireEvent.keyDown(exit, { key: "ArrowRight" });
 
         expect(screen.getByRole("img", { name: "Home composition" })).toBeInTheDocument();
+        await waitFor(() => expect(screen.getByRole("img", { name: "Home composition" })).toHaveTextContent(description));
         expect(readerControls.getByRole("button", { name: "Next spread" })).toBeDisabled();
 
         fireEvent.keyDown(exit, { key: "ArrowLeft" });
@@ -1926,7 +2096,7 @@ describe("album workspace browser boundary", () => {
 
       if (count === 65) {
         expect(add).toBeDisabled();
-        expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
+        await waitFor(() => expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added."));
       } else {
         expect(add).toBeEnabled();
         fireEvent.click(add);
@@ -1943,7 +2113,7 @@ describe("album workspace browser boundary", () => {
           expect(screen.getByRole("region", { name: "Album workspace" })).toHaveFocus();
         });
         expect(add).toBeDisabled();
-        expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added.");
+        await waitFor(() => expect(add).toHaveAccessibleDescription("This album has 65 interior spreads. No more chapters can be added."));
       }
     },
   );
@@ -1961,6 +2131,7 @@ describe("album workspace browser boundary", () => {
     const vacationPhotos = { ...inventory, photos: [photo], counts: { unplaced: 0, total: 1 } };
     const homePhotos = { ...inventory, photos: [{ ...photo, id: "home-photo", filename: "Home.jpg" }], counts: { unplaced: 1, total: 1 } };
     const savedWorkspace = { ...workspace, photoInventories: { vacation: vacationPhotos, home: homePhotos } };
+    let failHomeRead = false;
     let receive: (event: PhotoEvent) => void = () => {
       throw new Error("Not subscribed");
     };
@@ -1973,14 +2144,13 @@ describe("album workspace browser boundary", () => {
     };
     const client = buildClient(
       {
-        chapterPhotos: vi
-          .fn()
-          .mockResolvedValueOnce(vacationPhotos)
-          .mockResolvedValueOnce(homePhotos)
-          .mockRejectedValueOnce(new Error("Inventory unavailable"))
-          .mockImplementation((id: string) =>
-            Promise.resolve(id === home.id ? { ...homePhotos, processing: { ...inventory.processing, state: "running" } } : vacationPhotos),
-          ),
+        chapterPhotos: vi.fn().mockImplementation((id: string) => {
+          if (id === home.id && failHomeRead) {
+            failHomeRead = false;
+            return Promise.reject(new Error("Inventory unavailable"));
+          }
+          return Promise.resolve(id === home.id ? { ...homePhotos, processing: { ...inventory.processing, state: "running" } } : vacationPhotos);
+        }),
       },
       savedWorkspace,
     );
@@ -1994,11 +2164,14 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
     expect(screen.queryByRole("img", { name: "Home.jpg" })).not.toBeInTheDocument();
     const refresh = screen.getByRole("button", { name: "Refresh photos" });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
     refresh.focus();
     fireEvent.click(refresh);
     await waitFor(() => {
       expect(client.refreshPhotos).toHaveBeenCalledExactlyOnceWith(vacation.id);
     });
+    failHomeRead = true;
     receive({ kind: "inventory-changed", chapterId: home.id });
     await waitFor(() => {
       expect(client.chapterPhotos).toHaveBeenCalledWith(home.id, expect.any(AbortSignal));
@@ -2006,10 +2179,18 @@ describe("album workspace browser boundary", () => {
     expect(refresh).toHaveFocus();
     expect(window.location.search).toBe("?part=vacation");
     fireEvent.click(screen.getByRole("link", { name: "Synopsis" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Retry inventory for Home" }));
     await waitFor(() => expect(within(screen.getByRole("region", { name: "Processing Home" })).getByText(/running/)).toBeInTheDocument());
+    await waitFor(() => expect(refresh).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Retry inventory for Home" })).not.toBeInTheDocument();
+    failHomeRead = true;
+    receive({ kind: "inventory-changed", chapterId: home.id });
+    fireEvent.click(await screen.findByRole("button", { name: "Retry inventory for Home" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Retry inventory for Home" })).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Cover" }));
     expect(screen.getByRole("img", { name: "Home.jpg" })).toBeInTheDocument();
+    await waitFor(() => expect(refresh).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Refresh photos" }));
     await waitFor(() => {
       expect(client.refreshPhotos).toHaveBeenCalledTimes(3);
@@ -2018,8 +2199,8 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByText(/Live updates interrupted/)).toBeInTheDocument();
     receive({ kind: "subscribed" });
     await waitFor(() => expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument());
-    expect(client.chapters).toHaveBeenCalledTimes(2);
-    expect(client.open).toHaveBeenCalledTimes(2);
+    expect(client.chapters).toHaveBeenCalledTimes(5);
+    expect(client.open).toHaveBeenCalledTimes(5);
     expect(window.location.search).toBe("?part=cover");
     view.unmount();
     expect(close).toHaveBeenCalledOnce();
@@ -2137,22 +2318,32 @@ describe("album workspace browser boundary", () => {
     const chapter = screen.getByRole("link", { name: "Kyoto" });
     fireEvent.click(chapter);
     chapter.focus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    const readsBeforeReconnect = vi.mocked(client.chapters).mock.calls.length;
+    vi.mocked(client.chapters).mockResolvedValue(
+      workspace.chapters.map((owner) => (owner.id === vacation.id ? { ...owner, description: "Saved while disconnected" } : owner)),
+    );
     receive({ kind: "subscribed" });
+    expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit chapter details" })).toHaveAccessibleDescription("Refreshing saved workspace. Please wait.");
     await waitFor(() => {
-      expect(client.chapters).toHaveBeenCalledTimes(2);
+      expect(client.chapters).toHaveBeenCalledTimes(readsBeforeReconnect + 1);
     });
     await waitFor(() => {
       expect(screen.queryByText(/Catching up/)).not.toBeInTheDocument();
     });
     expect(screen.getByRole("link", { name: "Kyoto" })).toBe(chapter);
     expect(chapter).toHaveFocus();
+    expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent("Saved while disconnected");
     const grip = screen.getByRole("button", { name: "Collapse photo pane" });
     grip.focus();
     fireEvent.keyDown(grip, { key: "ArrowRight" });
     expect(window.location.search).toBe("?part=vacation-photo");
     expect(grip).toHaveAccessibleDescription(/320px/);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
     fireEvent.keyDown(grip, { key: "ArrowLeft" });
     expect(window.location.search).toBe("?part=vacation");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
     fireEvent.keyDown(screen.getByRole("textbox", { name: "First day" }), { key: "ArrowRight" });
     expect(window.location.search).toBe("?part=vacation");

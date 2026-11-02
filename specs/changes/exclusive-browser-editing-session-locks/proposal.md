@@ -8,7 +8,7 @@
 
 Give one browser session exclusive editing ownership of an interior or exterior spread, including its photo captions and editable text. Other browsers can view the saved target and its owner's alias until release or expiry permits editing.
 
-Deliver other browsers' saved changes live, so cached content cannot silently become the basis of a new editing session. [Design](design.md) records the existing-owner evolution and agreed protection boundaries.
+Read authoritative saved content on navigation, editing acquisition and reconnect, so cached content cannot silently become the basis of a new editing session. [Design](design.md) records the existing-owner evolution and agreed protection boundaries.
 
 ## Contracts
 
@@ -27,12 +27,14 @@ Deliver other browsers' saved changes live, so cached content cannot silently be
 | Fencing | Expired, released or superseded grants cannot write, renew, release newer ownership or revive an obsolete acquisition. |
 | Connectivity | Unreachable backend or unconfirmed ownership immediately blocks editing; attempted heartbeats do not extend leases. |
 | Recovery | Lost acknowledgements require authoritative reconciliation; retained drafts never replay automatically after loss or reacquisition. |
-| Live views | Saved-edit and ownership notifications invalidate authoritative resources; reconnect reconciles fresh content and ownership before editing resumes. |
+| Fresh views | Navigation to a spread or Cover, editing acquisition and reconnect read authoritative saved content before editing resumes; existing photo-inventory and ownership notifications remain live. |
 | Restart | The single backend keeps volatile session authority; restart preserves saved albums but invalidates every previous session and target grant. |
 
 Locking is access coordination, not a saved-book snapshot or an undo implementation. Shared content retains its domain owner even when an affected target's lease protects its mutation.
 
 Album title editing and album deletion retain their existing behavior outside this feature's scope.
+
+Source-folder changes and background photo import/refresh retain their existing behavior without target-lock protection. Already-open views and Reader need not immediately display another browser's ordinary saved edits.
 
 ## Model evolution
 
@@ -53,12 +55,11 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 - Backend unreachability blocks editing immediately and preserves unsaved text and photo adjustments.
 - Ownership loss retains drafts separately from saved state and requires explicit review before another save.
 - Failed or lost acquisition/release acknowledgements show uncertainty until authoritative reads resolve ownership.
-- Protected caption, owner-text, template, deletion and source-change requests reject another session's affected lock without partial mutation.
-- Nondestructive spread insertion/reordering and author changes remain available and propagate without invalidating target identity.
+- Protected caption, owner-text, template and deletion requests reject another session's affected lock without partial mutation.
+- Nondestructive spread insertion/reordering and author changes remain available without invalidating target identity.
 - Concurrent structural changes and acquisition cannot bypass current-target protection.
-- Background photo transactions affecting another session's locked target retain saved data and report blocked processing, while unrelated photos can progress.
-- Live saved changes update other browsers' authoritative text, composition, inventories, attribution and ordering without silently discarding drafts.
-- Acquisition and reconnect reconcile current saved content before enabling editing, including changes missed while disconnected.
+- Navigation, including Reader navigation and browser history, reads saved text, composition, photo inventory, attribution and ordering without silently discarding drafts.
+- Acquisition and reconnect reconcile current saved content before enabling editing, including changes missed while disconnected; failed reads remain visible and retryable.
 - Restart rejects old session/grant credentials; the browser remembers its alias, retains drafts and obtains new ownership before editing.
 - Pending, locked, lost, reconnecting and retry states have accessible explanations and preserve keyboard/focus continuity at narrow widths.
 - A continuously held grant can support a later history feature; released or lost ownership invalidates that later history permanently.
@@ -67,8 +68,8 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 
 | Owner | Enduring change |
 | --- | --- |
-| `specs/design.md`, editing journey and architecture | Exclusive full-target ownership, single-tab identity, independently owned protected content, live authoritative reconciliation and draft-loss recovery. |
-| `specs/http-api.openapi.json` | Session, grant, alias and ownership-event contracts; protected-write credentials/errors, authors/order exceptions and saved-edit invalidations. |
+| `specs/design.md`, editing journey and architecture | Exclusive full-target ownership, single-tab identity, independently owned protected content, navigation/acquisition/reconnect reconciliation and draft-loss recovery. |
+| `specs/http-api.openapi.json` | Session, grant, alias and ownership-event contracts; protected-write credentials/errors and authors/order exceptions. |
 | `specs/testing.md`, confidence model | Fenced ownership, real mutation/SQLite races, independent-browser identity and disconnected/restart recovery. |
 | `specs/operational.md`, topology and recovery | Volatile single-backend authority, heartbeat expiry, browser compatibility, immediate connectivity blocking and restart ownership loss. |
 

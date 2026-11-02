@@ -61,6 +61,7 @@ export function AlbumWorkspace(props: {
   onRefresh: () => Promise<void>;
   onSaved: (result: ChapterSave) => Promise<void>;
   workspaceError: unknown;
+  workspaceLoading: boolean;
   photoErrors: Readonly<Record<string, string>>;
   scheduling: Readonly<Record<string, Scheduling | "pending">>;
   liveStatus: "connecting" | "catching-up" | "live" | "interrupted" | "invalid";
@@ -197,6 +198,17 @@ export function AlbumWorkspace(props: {
       void loadGearPresentation();
     }),
   );
+  let connected = false;
+  createEffect(
+    on(
+      () => props.liveStatus,
+      (status) => {
+        if (status !== "live") return;
+        if (connected) void loadGearPresentation();
+        connected = true;
+      },
+    ),
+  );
   const albumCountries = createMemo(() =>
     props.workspace.countries
       .filter((country) => props.workspace.chapters.some((owner) => owner.countries.includes(country.id)))
@@ -225,11 +237,13 @@ export function AlbumWorkspace(props: {
   const placementTarget = createMemo(() => (part() === "cover" ? props.workspace.spreads : selectedSpread()));
   createEffect(() => {
     placementTarget();
+    const canReconcile = placement.navigationReason() === undefined;
+    if (props.workspaceLoading || refreshing() || !canReconcile) return;
     untrack(() => {
       setChoice(undefined);
       const spread = selectedSpread();
       if (part() === "cover") {
-        if (placement.navigationReason() === undefined && !placement.loading()) void placement.load(props.album.id, { kind: "cover" });
+        if (!placement.loading()) void placement.load(props.album.id, { kind: "cover" });
       } else if (spread !== undefined) {
         const savedSpread = {
           kind: "spread",
@@ -249,7 +263,12 @@ export function AlbumWorkspace(props: {
     choice: choice(),
     onChoose: setChoice,
     unavailable:
-      contentReason() ?? (spreadPending() ? "Saving spread. Please wait." : refreshing() ? "Refreshing saved workspace. Please wait." : undefined),
+      contentReason() ??
+      (spreadPending()
+        ? "Saving spread. Please wait."
+        : refreshing() || props.workspaceLoading
+          ? "Refreshing saved workspace. Please wait."
+          : undefined),
     reader: reader(),
     captions,
     onEditText: (opener) => setTextEdit({ chapter: chapter(), opener }),
@@ -259,12 +278,17 @@ export function AlbumWorkspace(props: {
   }));
   const navigationReason = createMemo(
     () =>
-      contentReason() ?? (spreadNeedsReload() ? "Reload the saved workspace before choosing another spread action." : placement.navigationReason()),
+      contentReason() ??
+      (spreadPending()
+        ? "Saving spread. Please wait."
+        : spreadNeedsReload()
+          ? "Reload the saved workspace before choosing another spread action."
+          : placement.navigationReason()),
   );
   const refreshReason = createMemo(() =>
     spreadPending()
       ? "Saving spread. Please wait."
-      : refreshing()
+      : refreshing() || props.workspaceLoading
         ? "Refreshing saved workspace. Please wait."
         : props.workspaceError !== undefined
           ? "Reload the saved workspace before editing chapters."
@@ -288,6 +312,7 @@ export function AlbumWorkspace(props: {
       return;
     }
     const next = readPart();
+    void refresh();
     setPart(next);
     if (next !== "cover") setInterior(next);
   }
@@ -317,6 +342,11 @@ export function AlbumWorkspace(props: {
 
   function select(next: string | null) {
     if (navigationReason() !== undefined) return;
+    void refresh();
+    showSelection(next);
+  }
+
+  function showSelection(next: string | null) {
     const url = new URL(window.location.href);
     if (next === null) url.searchParams.delete("part");
     else url.searchParams.set("part", next);
@@ -332,6 +362,7 @@ export function AlbumWorkspace(props: {
     try {
       if (result === undefined) await props.onRefresh();
       else await props.onSaved(result);
+      if (active && generation === refreshGeneration && props.workspaceError === undefined) await loadGearPresentation();
     } finally {
       if (generation === refreshGeneration) setRefreshing(false);
     }
@@ -340,9 +371,8 @@ export function AlbumWorkspace(props: {
   function saved(result: ChapterSave, action: { chapter: Chapter | undefined; opener: HTMLElement }) {
     const opener = action.opener;
     setDialog(undefined);
-    if (action.chapter === undefined) select(result.id);
+    if (action.chapter === undefined) showSelection(result.id);
     void refresh(result).then(() => {
-      if (active && action.chapter?.id === selectedChapterId()) void loadGearPresentation();
       if (opener instanceof HTMLButtonElement && opener.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
       else workspaceElement.focus({ preventScroll: true });
     });
@@ -368,7 +398,7 @@ export function AlbumWorkspace(props: {
     }
     const destination =
       target.destination.kind === "part" ? target.destination.part : findDeletionSelection(props.workspace.spreads, target.destination.index);
-    select(destination);
+    showSelection(destination);
     setSpreadError(undefined);
     setReloadTarget(undefined);
     restoreFocus(target.opener);
@@ -771,9 +801,8 @@ export function AlbumWorkspace(props: {
             }}
             onReconciled={(chapterId) => {
               setDialog(undefined);
-              if (action.chapter === undefined) select(chapterId);
+              if (action.chapter === undefined) showSelection(chapterId);
               void refresh().then(() => {
-                if (active && action.chapter?.id === chapter()?.id) void loadGearPresentation();
                 if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
                   action.opener.focus({ preventScroll: true });
                 else workspaceElement.focus({ preventScroll: true });
