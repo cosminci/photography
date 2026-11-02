@@ -8,14 +8,13 @@ import io.github.iltotore.iron.*
 import org.http4s.{HttpRoutes, Request, Response, ServerSentEvent}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
-import org.typelevel.ci.CIString
+import photography.adapters.http.EditorCredentials.*
 import photography.domain.editing.*
 import photography.domain.album.AlbumId
 import photography.domain.layout.SpreadId
 import photography.usecases.editing.EditorSessionManager
 import photography.usecases.editing.EditorSessionManager.*
 
-import java.util.UUID
 import scala.concurrent.duration.*
 
 object EditorSessionApi:
@@ -106,12 +105,7 @@ object EditorSessionApi:
       }.map(_.putHeaders("Cache-Control" -> "no-store"))
 
     private def withConnection(request: Request[F])(run: EditorConnection => F[Response[F]]) =
-      val parsed = (
-        requiredId(request, "X-Editor-Session"),
-        requiredId(request, "X-Editor-Tab"),
-        requiredId(request, "X-Editor-Generation")
-      ).mapN((session, tab, generation) => EditorConnection(SessionId(session), TabId(tab), ConnectionGeneration(generation)))
-      parsed.fold(message => BadRequest(code(message)), run).map(_.putHeaders("Cache-Control" -> "no-store"))
+      readConnection(request).fold(message => BadRequest(code(message)), run).map(_.putHeaders("Cache-Control" -> "no-store"))
 
     private def withGrant(request: Request[F])(run: GrantId => F[Response[F]]) =
       requiredId(request, "X-Editor-Grant").fold(message => BadRequest(code(message)), id => run(GrantId(id)))
@@ -189,18 +183,6 @@ object EditorSessionApi:
         (parseId(owner), alias.refineEither[EditorAliasConstraint]).mapN((id, label) => (EditorId(id), label))
       }.validate(_.keys.exists(_.toSet === Set("editorId", "alias")), "Invalid registration")
 
-    private def requiredId(request: Request[F], name: String) =
-      optionalId(request, name).flatMap(_.toRight("missing_credentials"))
-
-    private def optionalId(request: Request[F], name: String) =
-      request.headers.headers.filter(_.name === CIString(name)).map(_.value) match
-        case Nil          => none[UUID].asRight[String]
-        case value :: Nil => parseId(value).map(_.some)
-        case _            => "invalid_credentials".asLeft[Option[UUID]]
-
-    private def parseId(value: String) =
-      Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value).toRight("invalid_credentials")
-
     private def encodeSession(session: EditorSession) = Json.obj(
       "sessionId"        -> Json.fromString(session.id.value.toString),
       "ownerId"          -> Json.fromString(session.owner.value.toString),
@@ -208,12 +190,6 @@ object EditorSessionApi:
       "leaseSeconds"     -> Json.fromLong((session.expiresAt - session.lastHeartbeat).toSeconds),
       "heartbeatSeconds" -> Json.fromLong(10L)
     )
-
-    private def encodeFailure(reason: Failure) = reason match
-      case Failure.StaleSession       => "stale_session"
-      case Failure.ObsoleteConnection => "obsolete_connection"
-      case Failure.StaleTransition    => "stale_transition"
-      case Failure.StaleGrant         => "stale_grant"
 
     private def code(value: String) = Json.obj("code" -> Json.fromString(value))
 
