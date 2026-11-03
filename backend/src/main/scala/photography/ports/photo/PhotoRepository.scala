@@ -3,6 +3,7 @@ package photography.ports.photo
 import photography.domain.album.*
 
 trait PhotoRepository[Db[_]]:
+  def find(photo: PhotoId): Db[PhotoRepository.FindResult]
   def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult]
   def listChapter(chapter: ChapterId): Db[PhotoRepository.ListResult]
   def save(photo: Photo): Db[PhotoRepository.WriteResult]
@@ -12,6 +13,11 @@ trait PhotoRepository[Db[_]]:
   def listUnfinishedWrites: Db[PhotoRepository.ListUnfinishedWritesResult]
 
 object PhotoRepository:
+  enum FindResult:
+    case Found(photo: Photo)
+    case NotFound
+    case Failed(cause: Throwable)
+
   enum SaveCaptionResult:
     case Saved, PhotoNotFound, Uncertain
     case Failed(cause: Throwable)

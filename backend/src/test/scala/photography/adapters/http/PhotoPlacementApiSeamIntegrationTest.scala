@@ -62,6 +62,23 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     photoSlots = NonEmptyList.one(slot),
     placements = Vector.empty[SpreadPlacement]
   )
+  private val contentBox = Json.obj(
+    "x"      -> Json.fromDoubleOrNull(700.0 / 2381.102),
+    "y"      -> Json.fromDoubleOrNull(700.0 / 765.354),
+    "width"  -> Json.fromDoubleOrNull(50.0 - 700.0 / 2381.102),
+    "height" -> Json.fromDoubleOrNull((100.0 - 700.0 / 765.354) - 700.0 / 765.354)
+  )
+  private val expectedSlot = Json.obj(
+    "id"         -> Json.fromString(slot.id.value.toString),
+    "kind"       -> Json.fromString("photo"),
+    "x"          -> Json.fromInt(0),
+    "y"          -> Json.fromInt(0),
+    "width"      -> Json.fromInt(50),
+    "height"     -> Json.fromInt(100),
+    "bleed"      -> Json.arr(),
+    "contentBox" -> contentBox,
+    "visibleBox" -> contentBox
+  )
 
   private val editScenarios = Vector(
     EditScenario(
@@ -97,6 +114,115 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     )
   )
 
+  test("should dispatch bleed and spine ownership through their exact editing targets and return acknowledged state"):
+    val refs = Refs()
+    val api  = buildApi(
+      refs,
+      result = CoverManager.Result.Failed,
+      bleedResult = SpreadManager.SetBleedResult.Saved(spread),
+      spineResult = CoverManager.SetSpineOwnerResult.Saved(composition)
+    )
+    val requests = Vector(
+      (s"$spreadPath/bleed", Json.obj("enabled" -> Json.True)),
+      (s"$coverPath/spine-owner", Json.obj("owner" -> Json.fromString("back")))
+    )
+
+    for
+      responses <- requests.traverse { case (path, body) =>
+        send(api, Request[IO](Method.PUT, Uri.unsafeFromString(path)).withEntity(body))
+      }
+      calls <- refs.calls.get
+    yield
+      assertEquals(responses.map { case (status, _) => status }, Vector(Status.Ok, Status.Ok))
+      assertEquals(calls, Vector(PlacementCall.SetBleed(album, spread.id, enabled = true), PlacementCall.SetSpineOwner(album, SpineOwner.Back)))
+
+  test("should preserve explicit enabled and mixed saved edges and reject unusable frame geometry"):
+    val cases = Vector(
+      (Set(SpreadEdge.Top, SpreadEdge.Bottom, SpreadEdge.Left), "enabled", Set("top", "bottom", "left")),
+      (SpreadEdge.values.toSet, "mixed", Set("top", "bottom", "left", "right"))
+    )
+    val reads = cases.traverse_ { case (directions, state, expectedDirections) =>
+      val saved = spread.copy(photoSlots = NonEmptyList.one(slot.copy(bleed = directions)))
+      val api   = buildApi(result = CoverManager.Result.Failed, spreadRead = SpreadManager.PlacementReadResult.Found(saved))
+      send(api, Request[IO](Method.GET, Uri.unsafeFromString(spreadPath))).map { case (status, body) =>
+        assertEquals(status, Status.Ok)
+        assertEquals(body.hcursor.get[String]("bleedState").toOption, state.some)
+        assertEquals(
+          body.hcursor.downField("slots").downArray.get[Vector[String]]("bleed").toOption.map(_.toSet),
+          expectedDirections.some
+        )
+      }
+    }
+    val invalid = spread.copy(photoSlots = NonEmptyList.one(slot.copy(box = SlotBox(x = 0.0, y = 0.0, width = 0.1, height = 100.0))))
+    val api     = buildApi(result = CoverManager.Result.Failed, spreadRead = SpreadManager.PlacementReadResult.Found(invalid))
+
+    reads >> send(api, Request[IO](Method.GET, Uri.unsafeFromString(spreadPath))).map { case (status, body) =>
+      assertEquals(status, Status.InternalServerError)
+      assertEquals(body.hcursor.get[String]("code").toOption, "invalid_spread_geometry".some)
+    }
+
+  test("should deliver bleed and spine rejection outcomes without retrying commands"):
+    val bleedCases = Vector(
+      (SpreadManager.SetBleedResult.Rejected, Status.Conflict, "bleed_unavailable"),
+      (SpreadManager.SetBleedResult.AlbumNotFound, Status.NotFound, "album_not_found"),
+      (SpreadManager.SetBleedResult.SpreadNotFound, Status.NotFound, "spread_not_found"),
+      (SpreadManager.SetBleedResult.Failed, Status.InternalServerError, "service_failure")
+    )
+    val spineCases = Vector(
+      (CoverManager.SetSpineOwnerResult.CoverNotFound, Status.NotFound, "cover_not_found"),
+      (CoverManager.SetSpineOwnerResult.Failed, Status.InternalServerError, "service_failure")
+    )
+    val bleed = bleedCases.traverse_ { case (result, status, code) =>
+      val refs = Refs()
+      val api  = buildApi(refs, result = CoverManager.Result.Failed, bleedResult = result)
+      for
+        response <- send(api, Request[IO](Method.PUT, Uri.unsafeFromString(s"$spreadPath/bleed")).withEntity(Json.obj("enabled" -> Json.True)))
+        calls    <- refs.calls.get
+      yield
+        assertEquals(response._1, status)
+        assertEquals(response._2.hcursor.get[String]("code").toOption, code.some)
+        assertEquals(calls, Vector(PlacementCall.SetBleed(album, spread.id, enabled = true)))
+    }
+    val spine = spineCases.traverse_ { case (result, status, code) =>
+      val refs = Refs()
+      val api  = buildApi(refs, result = CoverManager.Result.Failed, spineResult = result)
+      for
+        response <- send(
+          api,
+          Request[IO](Method.PUT, Uri.unsafeFromString(s"$coverPath/spine-owner")).withEntity(Json.obj("owner" -> Json.fromString("front")))
+        )
+        calls <- refs.calls.get
+      yield
+        assertEquals(response, (status, Json.obj("code" -> Json.fromString(code))))
+        assertEquals(calls, Vector(PlacementCall.SetSpineOwner(album, SpineOwner.Front)))
+    }
+    bleed >> spine
+
+  test("should reject malformed or ambiguous composition settings before application work"):
+    val refs  = Refs()
+    val api   = buildApi(refs, result = CoverManager.Result.Failed)
+    val cases = Vector(
+      (s"$spreadPath/bleed", "{}"),
+      (s"$spreadPath/bleed", """{"enabled":"yes"}"""),
+      (s"$spreadPath/bleed", """{"enabled":true,"other":1}"""),
+      (s"$coverPath/spine-owner", "{}"),
+      (s"$coverPath/spine-owner", """{"owner":"unknown"}"""),
+      (s"$coverPath/spine-owner", """{"owner":null}"""),
+      (s"$coverPath/spine-owner", """{"owner":"front","other":1}""")
+    )
+    for
+      _ <- cases.traverse_ { case (path, body) =>
+        send(
+          api,
+          Request[IO](Method.PUT, Uri.unsafeFromString(path))
+            .withBodyStream(Stream.emits(body.getBytes(StandardCharsets.UTF_8)).covary[IO])
+            .withContentType(`Content-Type`(MediaType.application.json))
+        )
+          .map { case (status, _) => assertEquals(status, Status.BadRequest) }
+      }
+      calls <- refs.calls.get
+    yield assertEquals(calls, Vector.empty[PlacementCall])
+
   Vector(
     CornerScenario(CaptionCorner.TopLeft, encoded = "top_left"),
     CornerScenario(CaptionCorner.TopRight, encoded = "top_right"),
@@ -111,18 +237,13 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       val refs         = Refs()
       val api          = buildApi(refs, result = CoverManager.Result.Failed, spreadResult = result)
       val expectedBody = Json.obj(
-        "id"         -> Json.fromString(spread.id.value.toString),
-        "kind"       -> Json.fromString("photos_only"),
-        "templateId" -> Json.fromString(spread.template.value.toString),
-        "slots"      -> Json.arr(Json.obj(
-          "id"     -> Json.fromString(slot.id.value.toString),
-          "kind"   -> Json.fromString("photo"),
-          "x"      -> Json.fromInt(0),
-          "y"      -> Json.fromInt(0),
-          "width"  -> Json.fromInt(50),
-          "height" -> Json.fromInt(100)
-        )),
-        "placements" -> Json.arr(expectedPlacement.deepMerge(Json.obj("captionCorner" -> Json.fromString(scenario.encoded))))
+        "id"             -> Json.fromString(spread.id.value.toString),
+        "kind"           -> Json.fromString("photos_only"),
+        "templateId"     -> Json.fromString(spread.template.value.toString),
+        "bleedState"     -> Json.fromString("disabled"),
+        "bleedAvailable" -> Json.True,
+        "slots"          -> Json.arr(expectedSlot),
+        "placements"     -> Json.arr(expectedPlacement.deepMerge(Json.obj("captionCorner" -> Json.fromString(scenario.encoded))))
       )
       val request = Request[IO](Method.PATCH, Uri.unsafeFromString(s = s"$spreadPath/placements/${target.value}"))
         .withEntity(b = Json.obj("captionCorner" -> Json.fromString(scenario.encoded)))
@@ -256,18 +377,13 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     cases.traverse_ { case (placements, encodedPlacements) =>
       val saved        = spread.copy(placements = placements)
       val expectedBody = Json.obj(
-        "id"         -> Json.fromString(spread.id.value.toString),
-        "kind"       -> Json.fromString("photos_only"),
-        "templateId" -> Json.fromString(spread.template.value.toString),
-        "slots"      -> Json.arr(Json.obj(
-          "id"     -> Json.fromString(slot.id.value.toString),
-          "kind"   -> Json.fromString("photo"),
-          "x"      -> Json.fromInt(0),
-          "y"      -> Json.fromInt(0),
-          "width"  -> Json.fromInt(50),
-          "height" -> Json.fromInt(100)
-        )),
-        "placements" -> encodedPlacements
+        "id"             -> Json.fromString(spread.id.value.toString),
+        "kind"           -> Json.fromString("photos_only"),
+        "templateId"     -> Json.fromString(spread.template.value.toString),
+        "bleedState"     -> Json.fromString("disabled"),
+        "bleedAvailable" -> Json.True,
+        "slots"          -> Json.arr(expectedSlot),
+        "placements"     -> encodedPlacements
       )
       val api = buildApi(
         result = CoverManager.Result.Failed,
@@ -501,6 +617,8 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     case Edit(album: AlbumId, spread: SpreadId, edit: SpreadManager.Edit)
     case ReadCover(album: AlbumId)
     case EditCover(album: AlbumId, edit: CoverManager.Edit)
+    case SetBleed(album: AlbumId, spread: SpreadId, enabled: Boolean)
+    case SetSpineOwner(album: AlbumId, owner: SpineOwner)
   final private case class Refs():
     val calls: Ref[IO, Vector[PlacementCall]] = Ref.unsafe(a = Vector.empty[PlacementCall])
 
@@ -512,9 +630,13 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       coverRead: CoverManager.ReadResult = CoverManager.ReadResult.Found(composition),
       spreadRead: SpreadManager.PlacementReadResult = SpreadManager.PlacementReadResult.SpreadNotFound,
       maybeCoverEdit: Option[CoverManager.Edit] = None,
-      maybeSpreadEdit: Option[SpreadManager.Edit] = None
+      maybeSpreadEdit: Option[SpreadManager.Edit] = None,
+      bleedResult: SpreadManager.SetBleedResult = SpreadManager.SetBleedResult.Failed,
+      spineResult: CoverManager.SetSpineOwnerResult = CoverManager.SetSpineOwnerResult.Failed
   ) =
     val covers = new CoverManager[IO]:
+      override def setSpineOwner(album: AlbumId, owner: SpineOwner): IO[CoverManager.SetSpineOwnerResult] =
+        refs.calls.update(_ :+ PlacementCall.SetSpineOwner(album, owner)).as(spineResult)
       override def read(id: AlbumId): IO[CoverManager.ReadResult] =
         assertEquals(id, album)
         refs.calls.update(_ :+ PlacementCall.ReadCover(id)).as(coverRead)
@@ -523,6 +645,8 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
         maybeCoverEdit.foreach(expected => assertEquals(request, expected))
         refs.calls.update(_ :+ PlacementCall.EditCover(id, request)).as(result)
     val spreads = new SpreadManager[IO]:
+      override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
+        refs.calls.update(_ :+ PlacementCall.SetBleed(album, spread, enabled)).as(bleedResult)
       override def replaceChapterOrder(
           album: AlbumId,
           chapter: ChapterId,
@@ -572,6 +696,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           case other => fail(s"Expected spread ownership declaration, obtained $other")
         write.map(EditingAccess.Result.Completed(_))
     val definitions = PhotoPlacementApi.make(spreads, covers)
+    Vector(s"$coverPath/spine-owner" -> EditingTarget.Cover(album), s"$spreadPath/bleed" -> EditingTarget.Spread(spread.id)).foreach {
+      case (path, target) =>
+        val request = Request[IO](Method.PUT, Uri.unsafeFromString(path))
+        assertEquals(definitions.routes.lift(request).map(_.access), Some(Routes.Access.Editor(EditingAccess.Protection.OwnSpread(target))))
+    }
     Vector(coverPath -> EditingTarget.Cover(album), spreadPath -> EditingTarget.Spread(spread.id)).foreach { case (path, target) =>
       editScenarios.foreach { scenario =>
         val request = Request[IO](scenario.request.method, Uri.unsafeFromString(path + scenario.request.suffix))

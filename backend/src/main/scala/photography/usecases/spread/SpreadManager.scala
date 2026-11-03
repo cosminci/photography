@@ -36,6 +36,7 @@ trait SpreadManager[F[_]]:
   def delete(album: AlbumId, spread: SpreadId, confirmPlacements: Boolean): F[DeleteResult]
   def readPlacements(album: AlbumId, spread: SpreadId): F[PlacementReadResult]
   def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult]
+  def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): F[SetBleedResult]
 
 object SpreadManager:
   def make[F[_]: MonadCancelThrow: IdGenerator: Logger, Db[_]: MonadThrow](
@@ -149,6 +150,16 @@ object SpreadManager:
                       case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
                       case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
           Transaction[Db, F].run(mutation)
+
+    override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): F[SetBleedResult] =
+      val mutation =
+        for
+          _       <- composition.hasAlbum(album).map(Either.cond(_, (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
+          target  <- composition.findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
+          changed <- target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult).eitherT[Db]
+          _       <- spreads.replace(changed).lift[SetBleedResult]
+        yield SetBleedResult.Saved(changed): SetBleedResult
+      act(SetBleedResult.Failed)(Transaction[Db, F].run(mutation.merge))
 
     private def isReplacement(expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
       val observed          = expected.toList.map(_.value)
@@ -330,6 +341,10 @@ object SpreadManager:
 
   enum ReplacementResult derives CanEqual:
     case Saved, Invalid, NotFound, Stale, Failed, Uncertain
+
+  enum SetBleedResult:
+    case Saved(spread: Spread)
+    case Rejected, AlbumNotFound, SpreadNotFound, Failed
 
   enum PlacementReadResult:
     case Found(spread: Spread)

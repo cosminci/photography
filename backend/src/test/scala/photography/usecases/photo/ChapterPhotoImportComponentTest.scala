@@ -287,6 +287,8 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
       private val next                  = Ref.unsafe[IO, Long](10L)
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(index => new UUID(0L, index))
     val photos = new PhotoRepository[Db]:
+      override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
+        Kleisli.liftF[IO, Unit, PhotoRepository.FindResult](IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read")))
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         Kleisli.liftF[
           IO,

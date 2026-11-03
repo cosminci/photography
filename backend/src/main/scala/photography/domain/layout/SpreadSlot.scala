@@ -8,8 +8,10 @@ enum SpreadEdge derives CanEqual:
 sealed trait SpreadSlot derives CanEqual
 
 object SpreadSlot:
-  final case class Photo(id: PhotoSpreadSlotId, box: SlotBox, bleed: Set[SpreadEdge]) extends SpreadSlot
-  final case class Text(id: TextSpreadSlotId, box: SlotBox)                           extends SpreadSlot
+  final case class Photo(id: PhotoSpreadSlotId, box: SlotBox, bleed: Set[SpreadEdge]) extends SpreadSlot:
+    def contentBox: Either[String, SlotBox] = box.contentBox
+    def visibleBox: Either[String, SlotBox] = box.visibleBox(bleed)
+  final case class Text(id: TextSpreadSlotId, box: SlotBox) extends SpreadSlot
 
 opaque type PhotoSpreadSlotId = UUID
 object PhotoSpreadSlotId:

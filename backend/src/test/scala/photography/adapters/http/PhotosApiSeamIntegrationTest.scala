@@ -33,12 +33,29 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
   )
   private val unexpectedCaption   = IO.raiseError[SaveCaptionResult](new AssertionError("Unexpected caption write"))
   private val unexpectedInventory = IO.raiseError[ChapterPhotoInventory.Result](new AssertionError("Unexpected inventory read"))
+  private val unexpectedPhoto     = IO.raiseError[PhotoManager.ReadResult](new AssertionError("Unexpected photo read"))
+
+  test("should distinguish individual photo absence, failed acquisition and noncanonical identity without inventory work"):
+    val cases = Vector(
+      (PhotoManager.ReadResult.NotFound, Status.NotFound, "photo_not_found"),
+      (PhotoManager.ReadResult.Failed, Status.InternalServerError, "service_failure")
+    )
+    val failed = cases.traverse_ { case (result, status, code) =>
+      val server = buildApi(Refs(), unexpectedCaption, unexpectedInventory, result.pure[IO])
+      sendJson(server, Method.GET, s"/api/photos/${photo.value}").map(response =>
+        assertEquals(response, ApiResponse(status, Json.obj("code" -> Json.fromString(code))))
+      )
+    }
+    val server = buildApi(Refs(), unexpectedCaption, unexpectedInventory, unexpectedPhoto)
+    failed >> sendJson(server, Method.GET, "/api/photos/bad").map(response =>
+      assertEquals(response, ApiResponse(Status.NotFound, Json.obj("code" -> Json.fromString("photo_not_found"))))
+    )
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
     val result = SaveCaptionResult.Saved
     test(s"should deliver caption $result with exact text ${Json.fromString(text).noSpaces}"):
       val refs        = Refs()
-      val server      = buildApi(refs, result.pure[IO], unexpectedInventory)
+      val server      = buildApi(refs, result.pure[IO], unexpectedInventory, unexpectedPhoto)
       val requestBody = Json.obj("text" -> Json.fromString(text)).noSpaces
 
       for
@@ -56,7 +73,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
   ).foreach { scenario =>
     test(s"should deliver caption ${scenario.result} without read import or retry"):
       val refs   = Refs()
-      val server = buildApi(refs, scenario.result.pure[IO], unexpectedInventory)
+      val server = buildApi(refs, scenario.result.pure[IO], unexpectedInventory, unexpectedPhoto)
 
       for
         response <- send(server, path = path, body = """{"text":"once"}""")
@@ -69,7 +86,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
 
   test("should reject malformed captions and canonical identity violations before application work"):
     val refs          = Refs()
-    val server        = buildApi(refs, unexpectedCaption, unexpectedInventory)
+    val server        = buildApi(refs, unexpectedCaption, unexpectedInventory, unexpectedPhoto)
     val malformed     = Vector("{", "[]", "null", "{}", """{"text":null}""", """{"text":1}""", """{"text":[]}""")
     val checkPayloads = malformed.traverse_ { body =>
       val expected = WireResponse(
@@ -122,7 +139,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       InventoryScenario(ChapterPhotoInventory.Result.Failed, Status.InternalServerError)
     )
     scenarios.traverse_ { scenario =>
-      val server = buildApi(Refs(), unexpectedCaption, scenario.result.pure[IO])
+      val server = buildApi(Refs(), unexpectedCaption, scenario.result.pure[IO], unexpectedPhoto)
 
       for
         read    <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
@@ -155,7 +172,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       val execution         = ExecutionOutcome(status, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue])
       val snapshot          = ChapterPhotoInventory.Snapshot(empty, execution)
       val found             = ChapterPhotoInventory.Result.Found(snapshot)
-      val server            = buildApi(Refs(), unexpectedCaption, found.pure[IO])
+      val server            = buildApi(Refs(), unexpectedCaption, found.pure[IO], unexpectedPhoto)
       val expectedInventory = Json.obj(
         "photos"         -> Json.arr(),
         "placedPhotoIds" -> Json.arr(),
@@ -239,9 +256,10 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       val expectedUnplaced = expectedPhoto.deepMerge(Json.obj("id" -> Json.fromString(unplacedPhoto.id.value.toString)))
 
       placements.traverse_ { case (placed, encodedPlaced, unplaced) =>
-        val inventory         = PhotoInventory.Inventory(photos = photos, placed = placed)
-        val snapshot          = ChapterPhotoInventory.Snapshot(inventory, execution)
-        val server            = buildApi(Refs(), unexpectedCaption, ChapterPhotoInventory.Result.Found(snapshot).pure[IO])
+        val inventory = PhotoInventory.Inventory(photos = photos, placed = placed)
+        val snapshot  = ChapterPhotoInventory.Snapshot(inventory, execution)
+        val server    =
+          buildApi(Refs(), unexpectedCaption, ChapterPhotoInventory.Result.Found(snapshot).pure[IO], PhotoManager.ReadResult.Found(photo).pure[IO])
         val expectedInventory = Json.obj(
           "photos"         -> Json.arr(expectedPhoto, expectedSecond, expectedUnplaced),
           "placedPhotoIds" -> encodedPlaced,
@@ -250,9 +268,13 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         )
 
         for
-          read <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
+          read           <- sendJson(server, Method.GET, s"/api/chapters/${chapter.value}/photos")
+          individual     <- server.run(Request[IO](Method.GET, Uri.unsafeFromString(s"/api/photos/${photo.id.value}")))
+          individualBody <- individual.as[String]
         yield
           assertEquals(read, ApiResponse(Status.Ok, expectedInventory))
+          assertEquals(individual.status, Status.Ok)
+          assertEquals(json(individualBody), expectedPhoto)
           assert(!read.body.noSpaces.contains("/private") && !read.body.noSpaces.contains(intent.value.toString))
       }
     }
@@ -265,8 +287,15 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
   final private case class Refs():
     val calls: Ref[IO, Vector[CaptionCall]] = Ref.unsafe(a = Vector.empty[CaptionCall])
 
-  private def buildApi(refs: Refs, result: IO[SaveCaptionResult], inventoryResult: IO[ChapterPhotoInventory.Result]) =
+  private def buildApi(
+      refs: Refs,
+      result: IO[SaveCaptionResult],
+      inventoryResult: IO[ChapterPhotoInventory.Result],
+      individualResult: IO[PhotoManager.ReadResult]
+  ) =
     val photos = new PhotoManager[IO]:
+      override def read(photo: PhotoId): IO[PhotoManager.ReadResult] =
+        individualResult
       override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): IO[SaveCaptionResult] =
         refs.calls.update(_ :+ CaptionCall(chapter, photo, text = text)) >> result
       override def refresh(chapter: ChapterId, source: PhotoSource): IO[PhotoManager.RefreshResult] =

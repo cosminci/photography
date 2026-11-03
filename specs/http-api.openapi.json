@@ -522,6 +522,63 @@
         } } } } }
       }
     },
+    "/api/photos/{photoId}": {
+      "get": {
+        "operationId": "readPhoto",
+        "summary": "Read one photograph referenced by a saved composition",
+        "description": "Public read with no editing acquisition. Uses the same photo representation as chapter inventories; the response contains no original filesystem path. Successful reads are no-store.",
+        "parameters": [{ "name": "photoId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "Saved photograph", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Photo" } } } },
+          "404": { "description": "Missing or noncanonical photo identity; code photo_not_found" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/spreads/{spreadId}/bleed": {
+      "put": {
+        "operationId": "setSpreadBleed",
+        "summary": "Apply the complete eligible bleed selection or clear all saved directions",
+        "description": "Requires the exact current spread grant. Full-height outer slots bleed top, bottom and outward; outer stacks bleed outward together; inner slots stay inset. Preserves raw template boxes, placements and transforms. Reads preserve mixed selections; enabled edges reach the boundary and disabled edges retract to seven-point margins. Every response is no-store. Reconcile uncertain outcomes with an authoritative read before another mutation.",
+        "parameters": [
+          { "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/SpreadId" },
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["enabled"], "additionalProperties": false, "properties": { "enabled": { "type": "boolean" } }
+        } } } },
+        "responses": {
+          "200": { "description": "Acknowledged saved spread", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SpreadPlacements" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "description": "Missing album or spread; code album_not_found or spread_not_found" },
+          "409": { "description": "No eligible slots (bleed_unavailable), or current editing ownership rejected" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
+    "/api/albums/{id}/cover/spine-owner": {
+      "put": {
+        "operationId": "setCoverSpineOwner",
+        "summary": "Change which cover side owns the spine and gutter",
+        "description": "Requires the exact current cover grant. Updates only spine ownership, preserving both slots, photographs, placement identities, transforms and intrinsic cover bleed. Every response is no-store. Cover reads retain their existing response shape.",
+        "parameters": [
+          { "$ref": "#/components/parameters/WorkspaceAlbumId" },
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["owner"], "additionalProperties": false, "properties": { "owner": { "enum": ["front", "back"] } }
+        } } } },
+        "responses": {
+          "200": { "description": "Acknowledged saved cover", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CoverPlacements" } } } },
+          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "404": { "description": "Missing cover; code cover_not_found" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" },
+          "500": { "$ref": "#/components/responses/ServiceFailure" }
+        }
+      }
+    },
     "/api/albums/{id}/spreads/{spreadId}/placements/{placementId}": {
       "description": "All mutations require a live session, current bound tab generation and exact spread grant. Admission and atomic persistence share one coordination interval; a live-admitted write may finish across expiry before competing acquisition. Every response is Cache-Control: no-store. Reconcile uncertain saved state before explicit resubmission; ownership loss never permits automatic replay.",
       "parameters": [
@@ -2072,11 +2129,13 @@
       },
       "SpreadPlacements": {
         "type": "object",
-        "required": ["id", "kind", "templateId", "slots", "placements"],
+        "required": ["id", "kind", "templateId", "bleedState", "bleedAvailable", "slots", "placements"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
           "kind": { "enum": ["album_start", "chapter_start", "photos_only"] },
           "templateId": { "type": "string", "format": "uuid" },
+          "bleedState": { "enum": ["disabled", "enabled", "mixed"] },
+          "bleedAvailable": { "type": "boolean", "description": "At least one photo slot has an eligible outer edge, including unoccupied slots." },
           "slots": { "type": "array", "items": { "$ref": "#/components/schemas/SpreadSlot" } },
           "placements": { "type": "array", "items": { "allOf": [
             { "$ref": "#/components/schemas/PhotoPlacement" },
@@ -2333,9 +2392,26 @@
           {
             "type": "object",
             "required": ["id"],
-            "properties": { "id": { "type": "string", "format": "uuid" } }
+            "properties": { "id": { "type": "string", "format": "uuid" } },
+            "if": { "properties": { "kind": { "const": "photo" } }, "required": ["kind"] },
+            "then": {
+              "required": ["bleed", "contentBox", "visibleBox"],
+              "properties": {
+                "bleed": { "type": "array", "uniqueItems": true, "items": { "enum": ["top", "bottom", "left", "right"] } },
+                "contentBox": { "$ref": "#/components/schemas/PhotoFrame" },
+                "visibleBox": { "$ref": "#/components/schemas/PhotoFrame" }
+              }
+            }
           }
         ]
+      },
+      "PhotoFrame": {
+        "type": "object", "required": ["x", "y", "width", "height"],
+        "description": "Authoritative finite spread-percent frame derived from saved geometry and explicit directions; does not replace the raw template box.",
+        "properties": {
+          "x": { "type": "number", "minimum": 0 }, "y": { "type": "number", "minimum": 0 },
+          "width": { "type": "number", "exclusiveMinimum": 0 }, "height": { "type": "number", "exclusiveMinimum": 0 }
+        }
       },
       "AlbumSummary": {
         "type": "object",

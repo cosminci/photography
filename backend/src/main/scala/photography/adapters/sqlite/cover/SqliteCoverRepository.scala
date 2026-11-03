@@ -7,7 +7,7 @@ import photography.adapters.sqlite.SqliteCodecs.given
 import photography.domain.album.{AlbumId, PhotoId}
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
-import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult}
+import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult, SetSpineOwnerResult}
 import java.util.UUID
 
 object SqliteCoverRepository:
@@ -30,6 +30,13 @@ object SqliteCoverRepository:
       exists.flatMap:
         case false => ReplaceResult.NotFound.pure[ConnectionIO]
         case true  => (remove.update.run >> placements.traverse_(insertPlacement(album, _))).as(ReplaceResult.Replaced)
+
+    override def setSpineOwner(album: AlbumId, owner: SpineOwner): ConnectionIO[SetSpineOwnerResult] =
+      val encoded = owner match
+        case SpineOwner.Front => "front"
+        case SpineOwner.Back  => "back"
+      sql"UPDATE cover SET spine_owner = $encoded WHERE album_id = ${album.value}".update.run.map: changed =>
+        if changed === 0 then SetSpineOwnerResult.NotFound else SetSpineOwnerResult.Updated
 
     private def loadPlacements(album: AlbumId) =
       sql"""SELECT p.id, p.cover_slot_id, p.photo_id, p.shift_x, p.shift_y, p.mirrored, p.zoom

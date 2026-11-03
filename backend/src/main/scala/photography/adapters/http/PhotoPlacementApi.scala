@@ -26,6 +26,12 @@ object PhotoPlacementApi:
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
       case GET -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) =>
         Route.public(readSpread(AlbumId(album), SpreadId(spread)))
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "bleed" =>
+        Route(
+          Routes.Access.Editor(Protection.OwnSpread(EditingTarget.Spread(SpreadId(spread)))),
+          decode(request, bleedDecoder),
+          (enabled: Boolean) => spreads.setBleed(AlbumId(album), SpreadId(spread), enabled).flatMap(respondToBleed)
+        )
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" =>
         editSpread(AlbumId(album), SpreadId(spread), request, spreadPlaceDecoder)
       case DELETE ->
@@ -39,6 +45,12 @@ object PhotoPlacementApi:
         editSpread(AlbumId(album), SpreadId(spread), request, spreadUpdateDecoder(placement))
       case GET -> Root / "api" / "albums" / CanonicalId(album) / "cover" =>
         Route.public(readCover(AlbumId(album)))
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "spine-owner" =>
+        Route(
+          Routes.Access.Editor(Protection.OwnSpread(EditingTarget.Cover(AlbumId(album)))),
+          decode(request, spineOwnerDecoder),
+          (owner: SpineOwner) => covers.setSpineOwner(AlbumId(album), owner).flatMap(respondToSpineOwner)
+        )
       case request @ POST -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" =>
         editCover(AlbumId(album), request, coverPlaceDecoder)
       case DELETE -> Root / "api" / "albums" / CanonicalId(album) / "cover" / "placements" / CanonicalId(placement) =>
@@ -51,8 +63,8 @@ object PhotoPlacementApi:
 
     private def readSpread(album: AlbumId, spread: SpreadId) =
       spreads.readPlacements(album, spread).flatMap:
-        case SpreadManager.PlacementReadResult.Found(value)   => Ok(encodeSpread(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-        case SpreadManager.PlacementReadResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
+        case SpreadManager.PlacementReadResult.Found(value)  => respondWithSpread(value).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case SpreadManager.PlacementReadResult.AlbumNotFound => NotFound(Map("code" -> "album_not_found"))
         case SpreadManager.PlacementReadResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
         case SpreadManager.PlacementReadResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
 
@@ -79,7 +91,7 @@ object PhotoPlacementApi:
       )
 
     private def respondToSpreadEdit(result: SpreadManager.PlacementResult) = result match
-      case SpreadManager.PlacementResult.Saved(value)     => Ok(encodeSpread(value))
+      case SpreadManager.PlacementResult.Saved(value)     => respondWithSpread(value)
       case SpreadManager.PlacementResult.Rejected(reason) => Conflict(Map("code" -> explainSpreadFailure(reason)))
       case SpreadManager.PlacementResult.AlbumNotFound    => NotFound(Map("code" -> "album_not_found"))
       case SpreadManager.PlacementResult.SpreadNotFound   => NotFound(Map("code" -> "spread_not_found"))
@@ -90,6 +102,19 @@ object PhotoPlacementApi:
       case CoverManager.Result.Rejected(reason) => Conflict(Map("code" -> explainCoverFailure(reason)))
       case CoverManager.Result.CoverNotFound    => NotFound(Map("code" -> "cover_not_found"))
       case CoverManager.Result.Failed           => InternalServerError(Map("code" -> "service_failure"))
+
+    private def respondToBleed(result: SpreadManager.SetBleedResult) = result match
+      case SpreadManager.SetBleedResult.Saved(value) => respondWithSpread(value)
+      case SpreadManager.SetBleedResult.Rejected     =>
+        Conflict(Map("code" -> "bleed_unavailable", "message" -> "This spread has no eligible outer photo slots."))
+      case SpreadManager.SetBleedResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
+      case SpreadManager.SetBleedResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
+      case SpreadManager.SetBleedResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
+
+    private def respondToSpineOwner(result: CoverManager.SetSpineOwnerResult) = result match
+      case CoverManager.SetSpineOwnerResult.Saved(value)  => Ok(encodeCover(value))
+      case CoverManager.SetSpineOwnerResult.CoverNotFound => NotFound(Map("code" -> "cover_not_found"))
+      case CoverManager.SetSpineOwnerResult.Failed        => InternalServerError(Map("code" -> "service_failure"))
 
     private def explainSpreadFailure(reason: SpreadManager.Failure) = reason match
       case SpreadManager.Failure.PhotoNotInCollection => "photo_not_in_collection"
@@ -114,6 +139,18 @@ object PhotoPlacementApi:
       validateCreation(cursor) >> (decodeId(cursor, field = "slotId"), decodeId(cursor, field = "photoId")).mapN { (slot, photo) =>
         SpreadManager.Edit.Place(PhotoSpreadSlotId(slot), PhotoId(photo))
       }
+    private val bleedDecoder = Decoder.instance[Boolean]: cursor =>
+      Either.cond(cursor.keys.exists(_.toSet === Set("enabled")), (), DecodingFailure("Supply only enabled", cursor.history)) >>
+        cursor.get[Boolean]("enabled")
+
+    private val spineOwnerDecoder = Decoder.instance[SpineOwner]: cursor =>
+      val ownerDecoder = Decoder.decodeString.emap[SpineOwner] {
+        case "front" => SpineOwner.Front.asRight[String]
+        case "back"  => SpineOwner.Back.asRight[String]
+        case _       => "Select front or back".asLeft[SpineOwner]
+      }
+      Either.cond(cursor.keys.exists(_.toSet === Set("owner")), (), DecodingFailure("Supply only owner", cursor.history)) >>
+        cursor.get[SpineOwner]("owner")(using ownerDecoder)
     private def spreadUpdateDecoder(id: UUID) = Decoder.instance[SpreadManager.Edit]: cursor =>
       if cursor.keys.exists(_.toSet === Set("slotId")) then
         decodeId(cursor, field = "slotId").map(slot => SpreadManager.Edit.Move(SpreadPlacementId(id), PhotoSpreadSlotId(slot)))
@@ -166,6 +203,12 @@ object PhotoPlacementApi:
     private def decodeId(cursor: HCursor, field: String) =
       cursor.get[String](field).flatMap(value => CanonicalId.unapply(value).toRight(DecodingFailure("IDs must be canonical UUIDs", cursor.history)))
 
+    private def respondWithSpread(spread: Spread) =
+      encodeSpread(spread).fold(
+        reason => InternalServerError(Map("code" -> "invalid_spread_geometry", "message" -> reason)),
+        Ok(_)
+      )
+
     private def encodeSpread(spread: Spread) =
       val placements = spread.placements.map: value =>
         encodePlacement(id = value.id.value, slot = value.slot.value, value.photo, value.transform)
@@ -174,25 +217,48 @@ object PhotoPlacementApi:
         case value: Spread.AlbumStart   => ("album_start", value.photoSlots, Some(value.textSlot))
         case value: Spread.ChapterStart => ("chapter_start", value.photoSlots, Some(value.textSlot))
         case value: Spread.PhotosOnly   => ("photos_only", value.photoSlots.toList.toVector, None)
-      val slots = photos.map(value => encodeSlot(value.id.value, kind = "photo", value.box)) ++
-        maybeText.toList.toVector.map(value => encodeSlot(value.id.value, kind = "text", value.box))
-      Json.obj(
-        "id"         -> Json.fromString(spread.id.value.toString),
-        "kind"       -> Json.fromString(kind),
-        "templateId" -> Json.fromString(spread.template.value.toString),
-        "slots"      -> Json.arr(slots*),
-        "placements" -> Json.arr(placements*)
-      )
+      val state = spread.bleedState match
+        case Spread.BleedState.Disabled => "disabled"
+        case Spread.BleedState.Enabled  => "enabled"
+        case Spread.BleedState.Mixed    => "mixed"
+      photos.traverse(encodePhotoSlot).map: encodedPhotos =>
+        val slots = encodedPhotos ++ maybeText.toList.toVector.map(value => encodeSlot(value.id.value, kind = "text", value.box))
+        Json.obj(
+          "id"             -> Json.fromString(spread.id.value.toString),
+          "kind"           -> Json.fromString(kind),
+          "templateId"     -> Json.fromString(spread.template.value.toString),
+          "bleedState"     -> Json.fromString(state),
+          "bleedAvailable" -> Json.fromBoolean(photos.exists(_.box.eligibleBleed.nonEmpty)),
+          "slots"          -> Json.arr(slots*),
+          "placements"     -> Json.arr(placements*)
+        )
+
+    private def encodePhotoSlot(slot: SpreadSlot.Photo) =
+      for
+        content <- slot.contentBox
+        visible <- slot.visibleBox
+      yield encodeSlot(slot.id.value, kind = "photo", slot.box).deepMerge(Json.obj(
+        "bleed"      -> Json.arr(SpreadEdge.values.toVector.filter(slot.bleed.contains).map(edge => Json.fromString(encodeEdge(edge)))*),
+        "contentBox" -> encodeBox(content),
+        "visibleBox" -> encodeBox(visible)
+      ))
 
     private def encodeSlot(id: UUID, kind: String, box: SlotBox) =
+      encodeBox(box).deepMerge(Json.obj("id" -> Json.fromString(id.toString), "kind" -> Json.fromString(kind)))
+
+    private def encodeBox(box: SlotBox) =
       Json.obj(
-        "id"     -> Json.fromString(id.toString),
-        "kind"   -> Json.fromString(kind),
         "x"      -> Json.fromDoubleOrNull(box.x),
         "y"      -> Json.fromDoubleOrNull(box.y),
         "width"  -> Json.fromDoubleOrNull(box.width),
         "height" -> Json.fromDoubleOrNull(box.height)
       )
+
+    private def encodeEdge(edge: SpreadEdge) = edge match
+      case SpreadEdge.Top    => "top"
+      case SpreadEdge.Bottom => "bottom"
+      case SpreadEdge.Left   => "left"
+      case SpreadEdge.Right  => "right"
 
     private def encodeCorner(corner: CaptionCorner) = corner match
       case CaptionCorner.TopLeft     => "top_left"

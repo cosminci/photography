@@ -37,6 +37,26 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
   private val read         = PhotoStorage.ReadResult.Read(content, metadata)
   private val error        = new RuntimeException("boundary failed")
 
+  test("should read the complete individual photo and distinguish missing, rejected and unavailable repository reads"):
+    val cases = Vector(
+      PhotoRepository.FindResult.Found(existing).pure[IO] -> ReadResult.Found(existing),
+      PhotoRepository.FindResult.NotFound.pure[IO]        -> ReadResult.NotFound,
+      PhotoRepository.FindResult.Failed(error).pure[IO]   -> ReadResult.Failed,
+      error.raiseError[IO, PhotoRepository.FindResult]    -> ReadResult.Failed
+    )
+
+    cases.traverse_ { case (response, expected) =>
+      Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
+        val manager = buildManager(events, maybeFound = response.some, resolving = events.update(_ :+ "resolve"))
+
+        for
+          result <- manager.read(existing.id)
+          calls  <- events.get
+        yield
+          assertEquals(result, expected)
+          assertEquals(calls, Vector("resolve", s"find:${existing.id.value}"))
+    }
+
   test("should save exact captions and clear through the photo owner without import or read work"):
     val cases = Vector(
       PhotoRepository.SaveCaptionResult.Saved         -> SaveCaptionResult.Saved,
@@ -348,6 +368,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       completing: IO[PhotoRepository.CompleteWriteResult] = PhotoRepository.CompleteWriteResult.Completed.pure[IO],
       resolving: IO[Unit] = IO.unit,
       nextId: IO[UUID] = new UUID(0L, 9L).pure[IO],
+      maybeFound: Option[IO[PhotoRepository.FindResult]] = None,
       caption: (PhotoId, String) => IO[PhotoRepository.SaveCaptionResult] =
         (_, _) => IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
   ) =
@@ -370,6 +391,11 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
     val writePhoto  = save
     val removePhoto = remove
     val repository  = new PhotoRepository[Db]:
+      override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
+        val found = maybeFound.getOrElse(current.get.map(_.find(
+          _.id.value === photo.value
+        ).fold[PhotoRepository.FindResult](PhotoRepository.FindResult.NotFound)(PhotoRepository.FindResult.Found(_))))
+        Kleisli.liftF[IO, Unit, PhotoRepository.FindResult](events.update(_ :+ s"find:${photo.value}") >> found)
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.SaveCaptionResult](caption(id, text))
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =

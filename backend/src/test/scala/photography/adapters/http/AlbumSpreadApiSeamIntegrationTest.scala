@@ -186,6 +186,8 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
     val changeOutcome = change
     val deleteOutcome = delete
     val spreads       = new SpreadManager[IO]:
+      override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
+        IO.raiseError[SpreadManager.SetBleedResult](new AssertionError("Unexpected bleed change"))
       override def replaceChapterOrder(
           album: AlbumId,
           chapter: ChapterId,

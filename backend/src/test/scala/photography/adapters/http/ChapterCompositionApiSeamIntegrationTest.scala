@@ -116,6 +116,8 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
   final private case class Scenario(name: String, result: ReplacementResult, status: Status, maybeBody: Option[Json])
 
   private def buildManager(result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
+    override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
+      IO.raiseError[SpreadManager.SetBleedResult](new AssertionError("Unexpected bleed change"))
     override def replaceChapterOrder(
         id: AlbumId,
         target: ChapterId,
