@@ -35,6 +35,20 @@ class CoverManagerComponentTest extends CatsEffectSuite:
   private val second     = CoverPlacement(otherId, cover.back.id, otherPhoto, initial)
   private val empty      = Composition(cover, placements = Vector.empty[CoverPlacement])
 
+  test("should change either spine owner without changing either photograph or its framing"):
+    val occupied = empty.copy(placements = Vector(first, second))
+
+    for
+      state   <- Ref.of[IO, Composition](occupied)
+      manager <- buildManager(state)
+      front   <- manager.setSpineOwner(cover.album, SpineOwner.Front)
+      back    <- manager.setSpineOwner(cover.album, SpineOwner.Back)
+      saved   <- state.get
+    yield
+      assertEquals(front, SetSpineOwnerResult.Saved(occupied.copy(cover = cover.copy(spineOwner = SpineOwner.Front))))
+      assertEquals(back, SetSpineOwnerResult.Saved(occupied))
+      assertEquals(saved, occupied)
+
   test("should initialize, replace, release and re-place photos without changing cover structure"):
     val placed   = empty.copy(placements = Vector(first.copy(transform = initial)))
     val replaced = empty.copy(placements = Vector(first.copy(photo = otherPhoto, transform = initial)))
@@ -132,6 +146,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       failedInspection <- uninspectable.edit(cover.album, Edit.Place(cover.front.id, photo))
       failedWrite      <- unwritable.edit(cover.album, Edit.Place(cover.front.id, photo))
       vanishedWrite    <- vanished.edit(cover.album, Edit.Place(cover.front.id, photo))
+      absentOwner      <- manager.setSpineOwner(absent, SpineOwner.Front)
+      failedOwnerRead  <- broken.setSpineOwner(cover.album, SpineOwner.Front)
+      failedOwnerWrite <- unwritable.setSpineOwner(cover.album, SpineOwner.Front)
+      vanishedOwner    <- vanished.setSpineOwner(cover.album, SpineOwner.Front)
       saved            <- state.get
     yield
       assertEquals(absentRead, ReadResult.CoverNotFound)
@@ -141,6 +159,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       assertEquals(failedInspection, Result.Failed)
       assertEquals(failedWrite, Result.Failed)
       assertEquals(vanishedWrite, Result.CoverNotFound)
+      assertEquals(absentOwner, SetSpineOwnerResult.CoverNotFound)
+      assertEquals(failedOwnerRead, SetSpineOwnerResult.Failed)
+      assertEquals(failedOwnerWrite, SetSpineOwnerResult.Failed)
+      assertEquals(vanishedOwner, SetSpineOwnerResult.CoverNotFound)
       assertEquals(saved, empty)
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -153,6 +175,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       replaceMissing: Boolean = false
   ) =
     val repository = new CoverRepository[IO]:
+      override def setSpineOwner(album: AlbumId, owner: SpineOwner): IO[CoverRepository.SetSpineOwnerResult] =
+        if writeFails then IO.raiseError[CoverRepository.SetSpineOwnerResult](new IllegalStateException("write failed"))
+        else if replaceMissing then CoverRepository.SetSpineOwnerResult.NotFound.pure[IO]
+        else state.update(value => value.copy(cover = value.cover.copy(spineOwner = owner))).as(CoverRepository.SetSpineOwnerResult.Updated)
       override def read(album: AlbumId): IO[CoverRepository.ReadResult] =
         if readFails then IO.raiseError[CoverRepository.ReadResult](new IllegalStateException("read failed"))
         else

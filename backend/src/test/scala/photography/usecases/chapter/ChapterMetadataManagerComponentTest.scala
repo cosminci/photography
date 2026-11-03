@@ -691,7 +691,11 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         IO.raiseError[AlbumRepository.DeleteResult](new AssertionError("Unexpected deletion"))
     val writeUpdate = update
     val repository  = new ChapterRepository.Metadata[IO]:
-      override def saveDescription(parent: AlbumId, id: ChapterId, text: String): IO[ChapterRepository.SaveDescriptionResult] =
+      override def saveDescription(
+          parent: AlbumId,
+          id: ChapterId,
+          text: String
+      ): IO[ChapterRepository.SaveDescriptionResult] =
         refs.descriptions.update(_ :+ (parent, id, text)) >> descriptionWrite
       override def findSource(id: ChapterId): IO[ChapterRepository.SourceResult] =
         val saved =
@@ -732,7 +736,13 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         override def status(id: ChapterId): IO[ExecutionOutcome] =
           ExecutionOutcome(Status.Idle, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue]).pure[IO]
       val photoRepository = new PhotoRepository[IO]:
-        override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): IO[PhotoRepository.SaveCaptionResult] =
+        override def find(photo: PhotoId): IO[PhotoRepository.FindResult] =
+          IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))
+        override def saveCaption(
+            chapter: ChapterId,
+            id: PhotoId,
+            text: String
+        ): IO[PhotoRepository.SaveCaptionResult] =
           IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption save"))
         override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] =
           refs.photoReads.update(_ :+ id) >> listed

@@ -594,6 +594,42 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(uncertain, ReplacementResult.Uncertain)
       assertEquals(after, Vector((chapter.id, proposed)))
 
+  test("should commit spread bleed atomically while retaining geometry and placements and reject empty eligibility"):
+    val refs      = Refs()
+    val expected  = firstOccupied.withBleed(enabled = true).fold(message => fail(message), identity)
+    val populated = buildAlbumWithSpreads(Vector(firstOccupied, second))
+
+    for
+      manager      <- buildManager(refs, maybeAlbum = populated.some)
+      enabled      <- manager.setBleed(album.id, firstOccupied.id, enabled = true)
+      disabled     <- manager.setBleed(album.id, firstOccupied.id, enabled = false)
+      rejected     <- manager.setBleed(album.id, albumOpening.id, enabled = true)
+      replacements <- refs.replacements.get
+    yield
+      assertEquals(enabled, SetBleedResult.Saved(expected))
+      assertEquals(disabled, SetBleedResult.Saved(firstOccupied))
+      assertEquals(rejected, SetBleedResult.Rejected)
+      assertEquals(replacements, Vector(expected, firstOccupied))
+
+  test("should expose missing and failed bleed writes without changing another spread"):
+    val refs        = Refs()
+    val unavailable = new IllegalStateException("Unavailable")
+
+    for
+      manager      <- buildManager(refs)
+      missingAlbum <- buildManager(refs, maybeAlbum = none[Album])
+      broken       <- buildManager(refs, maybeReadError = unavailable.some)
+      unwritable   <- buildManager(refs, maybeWriteError = unavailable.some)
+      absent       <- manager.setBleed(album.id, newId, enabled = true)
+      noAlbum      <- missingAlbum.setBleed(album.id, first.id, enabled = true)
+      failedRead   <- broken.setBleed(album.id, first.id, enabled = true)
+      failedWrite  <- unwritable.setBleed(album.id, first.id, enabled = true)
+    yield
+      assertEquals(absent, SetBleedResult.SpreadNotFound)
+      assertEquals(noAlbum, SetBleedResult.AlbumNotFound)
+      assertEquals(failedRead, SetBleedResult.Failed)
+      assertEquals(failedWrite, SetBleedResult.Failed)
+
   final private case class Refs():
     val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]]    = Ref.unsafe(Vector.empty)
     val replacements: Ref[IO, Vector[Spread]]                                        = Ref.unsafe(Vector.empty)

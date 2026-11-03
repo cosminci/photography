@@ -16,6 +16,7 @@ import photography.usecases.cover.CoverManager.*
 trait CoverManager[F[_]]:
   def read(album: AlbumId): F[ReadResult]
   def edit(album: AlbumId, request: Edit): F[Result]
+  def setSpineOwner(album: AlbumId, owner: SpineOwner): F[SetSpineOwnerResult]
 
 object CoverManager:
   def make[F[_]: MonadCancelThrow: IdGenerator: Logger, Db[_]: MonadThrow](
@@ -32,6 +33,16 @@ object CoverManager:
         case CoverRepository.ReadResult.Found(value) => ReadResult.Found(value)
         case CoverRepository.ReadResult.NotFound     => ReadResult.CoverNotFound
       coordinate(ReadResult.Failed)(Transaction[Db, F].run(read))
+
+    override def setSpineOwner(album: AlbumId, owner: SpineOwner): F[SetSpineOwnerResult] =
+      val mutation = covers.read(album).flatMap:
+        case CoverRepository.ReadResult.NotFound       => SetSpineOwnerResult.CoverNotFound.pure[Db]
+        case CoverRepository.ReadResult.Found(current) =>
+          covers.setSpineOwner(album, owner).map[SetSpineOwnerResult]:
+            case CoverRepository.SetSpineOwnerResult.NotFound => SetSpineOwnerResult.CoverNotFound
+            case CoverRepository.SetSpineOwnerResult.Updated  =>
+              SetSpineOwnerResult.Saved(current.copy(cover = current.cover.copy(spineOwner = owner)))
+      coordinate(SetSpineOwnerResult.Failed)(Transaction[Db, F].run(mutation))
 
     override def edit(album: AlbumId, request: Edit): F[Result] =
       coordinate(Result.Failed):
@@ -119,6 +130,10 @@ object CoverManager:
   enum Result:
     case Saved(composition: Composition)
     case Rejected(reason: Failure)
+    case CoverNotFound, Failed
+
+  enum SetSpineOwnerResult:
+    case Saved(composition: Composition)
     case CoverNotFound, Failed
 
   enum Failure derives CanEqual:

@@ -177,6 +177,8 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       completing: IO[PhotoRepository.CompleteWriteResult] = PhotoRepository.CompleteWriteResult.Completed.pure[IO]
   ) =
     val photos = new PhotoRepository[IO]:
+      override def find(photo: PhotoId): IO[PhotoRepository.FindResult] =
+        IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): IO[PhotoRepository.SaveCaptionResult] =
         IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
       override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] = IO(assertEquals(id, chapter)) >> listed

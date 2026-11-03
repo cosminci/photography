@@ -15,6 +15,7 @@ import photography.ports.photo.{PhotoRepository, PhotoStorage, ThumbnailStorage}
 import photography.usecases.photo.PhotoManager.*
 
 trait PhotoManager[F[_]]:
+  def read(photo: PhotoId): F[ReadResult]
   def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): F[SaveCaptionResult]
   def refresh(chapter: ChapterId, source: PhotoSource): F[RefreshResult]
 
@@ -30,6 +31,13 @@ object PhotoManager:
       photos: PhotoRepository[Db],
       thumbnails: PhotoThumbnailGenerator[F]
   )(using Transaction[Db, F]) extends PhotoManager[F]:
+    override def read(photo: PhotoId): F[ReadResult] =
+      Transaction[Db, F].resolve(photos.find(photo)).flatMap:
+        case PhotoRepository.FindResult.Found(value)  => ReadResult.Found(value).pure[F]
+        case PhotoRepository.FindResult.NotFound      => ReadResult.NotFound.pure[F]
+        case PhotoRepository.FindResult.Failed(error) => Logger[F].error(error)("Photo read failed").as(ReadResult.Failed)
+      .handleErrorWith(error => Logger[F].error(error)("Photo read failed").as(ReadResult.Failed))
+
     override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): F[SaveCaptionResult] =
       Async[F].uncancelable: _ =>
         Transaction[Db, F].run(photos.saveCaption(chapter, photo, text = text)).flatMap:
@@ -149,6 +157,10 @@ object PhotoManager:
 
   enum SaveCaptionResult:
     case Saved, PhotoNotFound, Failed, Uncertain
+
+  enum ReadResult:
+    case Found(photo: Photo)
+    case NotFound, Failed
 
   final case class RefreshResult(unsupportedCount: Int :| GreaterEqual[0], issues: Vector[Issue])
 

@@ -3,7 +3,7 @@ package photography.adapters.sqlite.photo
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import org.typelevel.doobie.{ConnectionIO, Meta, Read}
+import org.typelevel.doobie.{ConnectionIO, Fragment, Meta, Read}
 import org.typelevel.doobie.free.connection
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
@@ -18,14 +18,21 @@ object SqlitePhotoRepository:
   def make: PhotoRepository[ConnectionIO] = new LiveSqlitePhotoRepository
 
   final private class LiveSqlitePhotoRepository extends PhotoRepository[ConnectionIO]:
+    override def find(photo: PhotoId): ConnectionIO[FindResult] = (selectPhoto ++ fr"WHERE p.id = ${photo.value}").query[Photo].option
+      .map(_.fold[FindResult](FindResult.NotFound)(FindResult.Found(_)))
+      .handleError(error => FindResult.Failed(error))
+
     override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): ConnectionIO[SaveCaptionResult] =
       writeCaption(chapter, photo, maybeCaption = Option.when(text.nonEmpty)(text)).map:
         case Right(1)    => SaveCaptionResult.Saved
         case Right(_)    => SaveCaptionResult.PhotoNotFound
         case Left(cause) => SaveCaptionResult.Failed(cause)
 
-    override def listChapter(chapter: ChapterId): ConnectionIO[ListResult] =
-      sql"""
+    override def listChapter(chapter: ChapterId): ConnectionIO[ListResult] = (selectPhoto ++ fr"WHERE p.chapter_id = ${chapter.value} ORDER BY p.id")
+      .query[Photo].to[Vector].map(photos => ListResult.Listed(photos = photos))
+
+    private def selectPhoto: Fragment =
+      fr"""
         SELECT
           p.id,
           p.chapter_id,
@@ -44,10 +51,7 @@ object SqlitePhotoRepository:
           p.caption
         FROM photo p
         JOIN chapter c ON c.id = p.chapter_id
-        WHERE p.chapter_id = ${chapter.value}
-        ORDER BY p.id
       """
-        .query[Photo].to[Vector].map(photos => ListResult.Listed(photos = photos))
 
     override def save(photo: Photo): ConnectionIO[WriteResult] =
       sql"""

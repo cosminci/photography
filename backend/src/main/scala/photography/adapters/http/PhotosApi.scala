@@ -24,6 +24,10 @@ object PhotosApi:
   final private class LivePhotosApi[F[_]: Async](inventories: ChapterPhotoInventory[F], photos: PhotoManager[F])
       extends PhotosApi[F] with Http4sDsl[F]:
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
+      case GET -> Root / "api" / "photos" / CanonicalId(photo) =>
+        Route.public(readPhoto(PhotoId(photo)))
+      case GET -> Root / "api" / "photos" / _ =>
+        Route.public(NotFound(body = Map("code" -> "photo_not_found")))
       case GET -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" =>
         Route.public(listChapter(ChapterId(chapter)))
       case request @ PUT -> Root / "api" / "chapters" / CanonicalId(chapter) / "photos" / CanonicalId(photo) / "caption" =>
@@ -39,6 +43,12 @@ object PhotosApi:
         api.decoded() === "api" && chapters.decoded() === "chapters" && photos.decoded() === "photos" &&
         CanonicalId.unapply(chapter.decoded()).isEmpty
       case _ => false
+
+    private def readPhoto(photo: PhotoId) =
+      photos.read(photo).flatMap:
+        case PhotoManager.ReadResult.Found(value) => Ok(encodePhoto(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case PhotoManager.ReadResult.NotFound     => NotFound(body = Map("code" -> "photo_not_found"))
+        case PhotoManager.ReadResult.Failed       => InternalServerError(body = Map("code" -> "service_failure"))
 
     private def listChapter(chapter: ChapterId) =
       inventories.read(chapter).flatMap:

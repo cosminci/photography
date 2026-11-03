@@ -59,7 +59,7 @@ New commands accept only spread bleed selection or cover ownership; target valid
 | A10 | Pending or failed saves retain usable feedback; acknowledged-refresh failures retry reads only, and uncertain writes reconcile before another confirmed mutation. |
 | A11 | Preview updates preserve selection and scrolling; new controls support keyboard/focus continuity and narrow layouts with explained unavailable states. |
 
-Locking is a separate feature; browser-local undo remains pending its actual contracts and approved reversible operations, not excluded or claimed complete here.
+Finishing mutations use shipped session/target ownership and existing save reconciliation; preview reads require no editing authority.
 
 ## Doc Sync
 

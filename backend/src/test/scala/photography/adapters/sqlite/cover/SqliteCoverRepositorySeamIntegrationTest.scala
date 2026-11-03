@@ -11,7 +11,7 @@ import photography.adapters.sqlite.SqliteCodecs.given
 import photography.app.config.SqliteConfig
 import photography.domain.album.{AlbumId, PhotoId}
 import photography.domain.layout.*
-import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult}
+import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult, SetSpineOwnerResult}
 import photography.syntax.SyncSyntax.*
 import java.nio.file.{Files, Path}
 import java.util.UUID
@@ -95,6 +95,36 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           assertEquals(committed, ReadResult.Found(Composition(cover, placements = Vector(first))))
           assertEquals(removed, empty)
           assertEquals(title, "Album")
+
+  test("should persist either spine owner independently of placements and preserve it on later placement saves"):
+    val database = Resource.make(Files.createTempFile(Path.of("target"), "cover-owner-", ".sqlite").blocking[IO]): path =>
+      Files.deleteIfExists(path).blocking[IO].void
+
+    database.evalTap(path => FlywayMigrator.make[IO](path).use(_.migrate).void).use: path =>
+      SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 1, maxSessions = 1)).buildTransactor.use: xa =>
+        val repository  = SqliteCoverRepository.make
+        val absent      = AlbumId(new UUID(0L, 99L))
+        val changed     = cover.copy(spineOwner = SpineOwner.Front)
+        val cause       = new IllegalStateException("Lost owner acknowledgement")
+        val interrupted = Transactor.after.set(xa, xa.strategy.after >> cause.raiseError[ConnectionIO, Unit])
+
+        for
+          _         <- seedComposition.transact(xa)
+          _         <- repository.replace(album, placements = Vector(first, second)).transact(xa)
+          front     <- repository.setSpineOwner(album, SpineOwner.Front).transact(xa)
+          saved     <- repository.read(album).transact(xa)
+          _         <- repository.replace(album, placements = Vector(first)).transact(xa)
+          later     <- repository.read(album).transact(xa)
+          missing   <- repository.setSpineOwner(absent, SpineOwner.Front).transact(xa)
+          lost      <- repository.setSpineOwner(album, SpineOwner.Back).transact(interrupted).attempt
+          finalRead <- repository.read(album).transact(xa)
+        yield
+          assertEquals(front, SetSpineOwnerResult.Updated)
+          assertEquals(saved, ReadResult.Found(Composition(changed, placements = Vector(first, second))))
+          assertEquals(later, ReadResult.Found(Composition(changed, placements = Vector(first))))
+          assertEquals(missing, SetSpineOwnerResult.NotFound)
+          assertEquals(lost, cause.asLeft[SetSpineOwnerResult])
+          assertEquals(finalRead, ReadResult.Found(Composition(cover, placements = Vector(first))))
 
   test("should reject invalid persisted cover shape, identities and transforms and propagate unavailable reads"):
     val database = Resource.make(Files.createTempFile(Path.of("target"), "cover-validity-", ".sqlite").blocking[IO]): path =>
