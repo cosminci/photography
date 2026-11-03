@@ -108,7 +108,7 @@ export function BrowserAlias(props: { session: Pick<WorkspaceEditingSession, "al
           opener = element;
         }}
         type="button"
-        class="alias-action"
+        class="alias-action alias-edit"
         aria-label="Edit your name"
         title="Edit your name"
         hidden={editing()}

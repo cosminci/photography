@@ -13,7 +13,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   min-width: 0;
   padding: 2px 6px;
   border: 1px solid var(--line);
@@ -23,6 +23,7 @@
 }
 .browser-alias > span {
   max-width: 24ch;
+  margin-right: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -30,11 +31,12 @@
 .browser-alias form {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
 }
 .browser-alias input {
   width: 14ch;
   min-width: 0;
+  margin-right: 4px;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 3px;
@@ -45,9 +47,9 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 28px;
+  width: 24px;
   min-height: 28px;
-  padding: 4px;
+  padding: 2px;
   border-color: transparent;
   color: var(--muted);
   background: transparent;
@@ -63,6 +65,9 @@
   stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+.alias-edit svg {
+  transform: translateY(2px);
 }
 .browser-alias [role="alert"],
 .browser-alias-help {
