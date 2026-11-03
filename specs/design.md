@@ -48,7 +48,7 @@ Cameras and lenses have independent, shared catalog lifecycles; chapters select 
 
 The application decides compatibility against current catalog state, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
 
-Book presentation preserves editorial text and derives headings and supporting information from structured data. Formatting is a projection of saved state, not another source of truth for content or catalog identities.
+Book presentation preserves editorial text and derives headings and supporting information from structured data. Editing, navigation and Reader share presentation policy over saved composition, keeping content and catalog identities with their existing owners.
 
 Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
 
