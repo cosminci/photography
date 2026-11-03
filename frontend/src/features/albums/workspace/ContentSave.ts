@@ -7,6 +7,8 @@ export function createContentSave<T, Saved = T>(operations: {
   read: (draft: T) => Promise<Saved>;
   equal: (left: Saved, right: T) => boolean;
   onSaved: (saved: Saved, draft: T) => void;
+  onCompleted?: (original: T, saved: Saved) => void;
+  rebase?: (saved: Saved, original: T) => T;
   maybeAuthority?: (() => number | undefined) | undefined;
 }) {
   const [draft, setDraft] = createSignal<{ original: T; value: T }>();
@@ -17,6 +19,8 @@ export function createContentSave<T, Saved = T>(operations: {
   let maybeAuthority: number | undefined;
   let maybeReviewedAuthority: number | undefined;
   let ownershipChanged = false;
+  let recorded = false;
+  let completionOriginal: { value: T } | undefined;
   onCleanup(() => {
     setActive(false);
   });
@@ -25,6 +29,8 @@ export function createContentSave<T, Saved = T>(operations: {
   );
 
   function begin(value: T) {
+    recorded = false;
+    completionOriginal = undefined;
     maybeAuthority = operations.maybeAuthority?.();
     maybeReviewedAuthority = maybeAuthority;
     ownershipChanged = false;
@@ -46,6 +52,11 @@ export function createContentSave<T, Saved = T>(operations: {
   function finish(saved: Saved, value: T) {
     setRecovery("acknowledged");
     try {
+      const retained = draft();
+      if (!recorded && retained !== undefined && (operations.maybeAuthority === undefined || maybeAuthority === operations.maybeAuthority())) {
+        operations.onCompleted?.(completionOriginal === undefined ? retained.original : completionOriginal.value, saved);
+        recorded = true;
+      }
       operations.onSaved(saved, value);
     } catch (cause) {
       throw new AcknowledgedWriteError("The saved result could not be published. Read saved content again.", { cause });
@@ -69,6 +80,7 @@ export function createContentSave<T, Saved = T>(operations: {
       }
       if (recovery() === "acknowledged" || operations.equal(saved, retained.value)) finish(saved, retained.value);
       else {
+        if (operations.rebase !== undefined) completionOriginal = { value: operations.rebase(saved, retained.original) };
         maybeReviewedAuthority = maybeObservedAuthority;
         setRecovery(undefined);
         setError("The draft is not saved. Review it before saving again.");

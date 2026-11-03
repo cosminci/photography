@@ -13,6 +13,7 @@ export function createCaptionEditing(operations: {
   read: (photoId: string) => Promise<string>;
   onBlock: (photoId: string, reason: string | undefined) => void;
   maybeAuthority?: () => number | undefined;
+  onCompleted?: (photoId: string, before: string, after: string) => void;
 }) {
   const [sessions, setSessions] = createSignal<readonly CaptionState[]>([]);
   const [requestedFocus, setRequestedFocus] = createSignal<string>();
@@ -41,7 +42,9 @@ export function createCaptionEditing(operations: {
         },
         read: () => operations.read(photoId),
         equal: (left, right) => left === right,
+        rebase: (saved) => saved,
         onSaved: () => undefined,
+        onCompleted: (before, after) => operations.onCompleted?.(photoId, before, after),
       });
       createEffect(() => {
         operations.onBlock(photoId, save.draft() === undefined ? undefined : (save.unavailable() ?? "Finish the caption edit before leaving."));

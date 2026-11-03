@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createUniqueId, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createUniqueId, onCleanup, untrack } from "solid-js";
 import { albumAuthors, type Author } from "../model/Album";
 import { createContentSave } from "./ContentSave";
 
@@ -8,6 +8,8 @@ export function AlbumAuthors(props: {
   read: () => Promise<readonly Author[]>;
   unavailable: string | undefined;
   onBlock: (reason: string | undefined) => void;
+  onCompleted?: (before: readonly Author[], after: readonly Author[]) => void;
+  maybeAuthority?: () => number | undefined;
 }) {
   const feedback = createUniqueId();
   let group!: HTMLDivElement;
@@ -21,10 +23,13 @@ export function AlbumAuthors(props: {
     });
   }
   const save = createContentSave({
+    maybeAuthority: untrack(() => props.maybeAuthority),
     save: (authors: readonly Author[]) => props.save(authors),
     read: () => props.read(),
     equal: (left, right) => left.length === right.length && left.every((author) => right.includes(author)),
+    rebase: (saved) => saved,
     onSaved: restoreFocus,
+    onCompleted: (before, after) => props.onCompleted?.(before, after),
   });
   const reason = createMemo(() => save.unavailable() ?? props.unavailable);
   const selection = createMemo(() => save.draft()?.value ?? props.authors);
@@ -72,7 +77,8 @@ export function AlbumAuthors(props: {
                   const selected = albumAuthors.filter((candidate) =>
                     candidate === author ? !selection().includes(candidate) : selection().includes(candidate),
                   );
-                  save.begin(selected);
+                  save.begin(props.authors);
+                  save.change(selected);
                   void save.commit();
                 }}
               >
@@ -99,7 +105,8 @@ export function AlbumAuthors(props: {
               disabled={save.pending()}
               aria-describedby={feedback}
               onClick={() => {
-                void save.commit();
+                if (save.recovery() !== undefined) void save.reconcile();
+                else void save.commit(true);
               }}
             >
               {save.recovery() === undefined ? "Retry authors" : "Read saved authors"}

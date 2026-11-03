@@ -10,6 +10,7 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
+  onCompleted?: (before: string, after: string) => void;
   ownership: { maybeAuthority: number | undefined; recoveryLabel: string; reason: string; pending: boolean; recover: () => Promise<void> };
 }) {
   const feedback = createUniqueId();
@@ -18,6 +19,8 @@ export function TextEditor(props: {
     save: (text: string) => props.save(text),
     read: () => props.read(),
     equal: (left, right) => left === right,
+    rebase: (saved) => saved,
+    onCompleted: (before, after) => props.onCompleted?.(before, after),
     onSaved: () => {
       props.onClose();
     },

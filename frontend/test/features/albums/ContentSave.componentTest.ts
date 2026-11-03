@@ -4,6 +4,63 @@ import { AcknowledgedWriteError, AlbumRequestError } from "../../../src/features
 import { createContentSave } from "../../../src/features/albums/workspace/ContentSave";
 
 describe("content save lifecycle", () => {
+  it("should preserve the authoritative reviewed baseline for a new completed edit without replacing its retained draft", async () => {
+    let authority = 1;
+    let saved = "A";
+    const completed = vi.fn();
+    const session = createRoot(() =>
+      createContentSave<string>({
+        save: (value) => {
+          saved = value;
+          return Promise.resolve(value);
+        },
+        read: () => Promise.resolve(saved),
+        equal: (left, right) => left === right,
+        rebase: (current) => current,
+        maybeAuthority: () => authority,
+        onSaved: vi.fn(),
+        onCompleted: completed,
+      }),
+    );
+    session.begin("A");
+    session.change("C");
+    authority = 2;
+    saved = "B";
+
+    await session.commit(true);
+    expect(session.draft()).toEqual({ original: "A", value: "C" });
+    await session.commit(true);
+
+    expect(saved).toBe("C");
+    expect(completed).toHaveBeenCalledExactlyOnceWith("B", "C");
+  });
+
+  it("should publish one completed edit after acknowledgement even when local publication requires recovery", async () => {
+    const completed = vi.fn();
+    const onSaved = vi.fn().mockImplementationOnce(() => {
+      throw new Error("Publication failed");
+    });
+    const save = vi.fn().mockResolvedValue("Saved");
+    const session = createRoot(() =>
+      createContentSave<string>({
+        save,
+        read: vi.fn().mockResolvedValue("Saved"),
+        onSaved,
+        onCompleted: completed,
+        equal: (left, right) => left === right,
+      }),
+    );
+    session.begin("Original");
+    session.change("Saved");
+
+    await session.commit();
+    await session.reconcile();
+
+    expect(completed).toHaveBeenCalledExactlyOnceWith("Original", "Saved");
+    expect(save).toHaveBeenCalledOnce();
+    expect(session.draft()).toBeUndefined();
+  });
+
   it.each(["Draft", "Another editor's saved text"])(
     "should not treat readback of %s from obsolete ownership as review of a new grant",
     async (saved) => {

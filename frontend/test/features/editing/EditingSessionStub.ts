@@ -3,6 +3,7 @@ import type { WorkspaceEditingSession } from "../../../src/features/editing/Edit
 export const editingSession: WorkspaceEditingSession = {
   available: () => true,
   authority: () => 1,
+  lossRevision: () => 0,
   targetReason: () => undefined,
   targetPending: () => false,
   select: () => Promise.resolve(true),

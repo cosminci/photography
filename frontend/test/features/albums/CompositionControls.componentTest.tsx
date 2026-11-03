@@ -9,7 +9,7 @@ const spread: SpreadSnapshot = {
   kind: "spread",
   id: "spread",
   placements: [],
-  layout: { kind: "photos_only", templateId: "template", slots: [], bleed: { state: "mixed", available: true } },
+  layout: { kind: "photos_only", templateId: "template", slots: [], bleed: { state: "disabled", available: true } },
 };
 const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
 
@@ -45,9 +45,58 @@ describe("saved composition controls", () => {
     });
     expect(next).toHaveFocus();
   });
-  it("should show mixed without writing and preserve focus while acknowledged bleed saves are pending", async () => {
+  it("should preserve nonstandard saved bleed and explain why its toggle is disabled", () => {
+    const mixed: SpreadSnapshot = {
+      ...spread,
+      layout: {
+        ...spread.layout,
+        bleed: { state: "mixed", available: true },
+        slots: [
+          {
+            id: "outer",
+            kind: "photo",
+            x: 0,
+            y: 0,
+            width: 50,
+            height: 100,
+            presentation: {
+              bleed: ["top"],
+              contentBox: { x: 7, y: 7, width: 36, height: 86 },
+              visibleBox: { x: 7, y: 0, width: 36, height: 93 },
+            },
+          },
+        ],
+      },
+    };
+    const read = vi.fn();
+    const edit = vi.fn();
+    const refresh = vi.fn();
+    const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: edit }, refresh));
+    session.selectSpread("album", mixed);
+    render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);
+    const toggle = screen.getByRole("checkbox", { name: "Spread bleed" });
+
+    expect(toggle).toHaveAttribute("aria-checked", "mixed");
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAccessibleDescription("This spread has nonstandard bleed. The bleed toggle is unavailable.");
+    fireEvent.click(toggle);
+
+    expect(session.snapshot()).toBe(mixed);
+    expect(read).not.toHaveBeenCalled();
+    expect(edit).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+    session.selectSpread("album", spread);
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it.each(["disabled", "enabled"] as const)("should toggle standard %s bleed and preserve focus while its save is pending", async (state) => {
     let acknowledge!: (value: SpreadSnapshot) => void;
-    const saved = { ...spread, layout: { ...spread.layout, bleed: { state: "enabled" as const, available: true } } };
+    const enabled = state === "disabled";
+    const saved = {
+      ...spread,
+      layout: { ...spread.layout, bleed: { state: enabled ? ("enabled" as const) : ("disabled" as const), available: true } },
+    };
     const edit = vi.fn().mockImplementation(
       () =>
         new Promise<SpreadSnapshot>((resolve) => {
@@ -55,15 +104,15 @@ describe("saved composition controls", () => {
         }),
     );
     const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn(), editPlacements: edit }, vi.fn()));
-    session.selectSpread("album", spread);
+    session.selectSpread("album", { ...spread, layout: { ...spread.layout, bleed: { state, available: true } } });
     render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);
     const toggle = screen.getByRole("checkbox", { name: "Spread bleed" });
-    expect(toggle).toHaveAttribute("aria-checked", "mixed");
+    expect(toggle).toHaveAttribute("aria-checked", String(!enabled));
     expect(edit).not.toHaveBeenCalled();
 
     toggle.focus();
     fireEvent.click(toggle);
-    expect(edit).toHaveBeenCalledWith("album", { kind: "spread", id: "spread" }, { operation: "bleed", enabled: true });
+    expect(edit).toHaveBeenCalledWith("album", { kind: "spread", id: "spread" }, { operation: "bleed", enabled });
     expect(toggle).toBeDisabled();
     expect(toggle).toHaveAccessibleDescription("Saving photos. Please wait.");
     document.body.tabIndex = -1;
@@ -72,7 +121,7 @@ describe("saved composition controls", () => {
     expect(toggle).not.toHaveFocus();
     acknowledge(saved);
     await waitFor(() => expect(toggle).toBeEnabled());
-    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toHaveAttribute("aria-checked", String(enabled));
     expect(toggle).toHaveFocus();
   });
 

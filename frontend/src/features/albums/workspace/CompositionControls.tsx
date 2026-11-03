@@ -15,7 +15,13 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
     return saved?.kind === "cover" ? saved : undefined;
   });
   const reason = () => props.unavailable ?? props.session.unavailable() ?? props.session.navigationReason();
-  const bleedReason = () => reason() ?? (spread()?.layout.bleed.available === false ? "This spread has no eligible outer photo slots." : undefined);
+  const bleedReason = () =>
+    reason() ??
+    (spread()?.layout.bleed.state === "mixed"
+      ? "This spread has nonstandard bleed. The bleed toggle is unavailable."
+      : spread()?.layout.bleed.available === false
+        ? "This spread has no eligible outer photo slots."
+        : undefined);
   const sharedFeedback = () => (props.session.error() !== undefined && reason() === props.session.error() ? props.feedbackId : undefined);
 
   function edit(command: PlacementEdit, opener: HTMLButtonElement | HTMLSelectElement) {

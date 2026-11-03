@@ -3,11 +3,18 @@ import type { PlacementClient, PlacementContext, PlacementEdit, PlacementSnapsho
 import { AlbumRequestError } from "../model/Album";
 
 type Recovery = "read" | "uncertain" | "refresh" | "ownership";
+interface Completion {
+  before: PlacementSnapshot;
+  command: PlacementEdit;
+  authority: number | undefined;
+  generation: number;
+}
 
 export function createPlacementSession(
   client: PlacementClient,
   refreshInventory: () => Promise<void>,
   access?: { available: () => boolean; authority: () => number },
+  onCompleted?: (before: PlacementSnapshot, after: PlacementSnapshot, edit: PlacementEdit) => void,
 ) {
   const [snapshot, setSnapshot] = createSignal<PlacementSnapshot>();
   const [previews, setPreviews] = createSignal<Readonly<Record<string, PhotoTransform>>>({});
@@ -17,16 +24,20 @@ export function createPlacementSession(
   const [error, setError] = createSignal<string>();
   const [recovery, setRecovery] = createSignal<Recovery>();
   const [retained, setRetained] = createSignal(false);
-  const queue = new Map<string, PhotoTransform>();
+  let queue: { id: string; transform: PhotoTransform }[] = [];
+  let maybeUnconfirmed: Completion | undefined;
   const [target, setTarget] = createSignal<{ album: string; context: PlacementContext }>();
   let generation = 0;
   let authority = access?.authority();
   function ownsDrafts() {
     return access === undefined || (access.available() && authority === access.authority());
   }
+  function canRecord(completion: Completion) {
+    return completion.generation === generation && (access === undefined || (access.available() && completion.authority === access.authority()));
+  }
   function canWrite() {
     if (ownsDrafts()) return true;
-    setRetained(queue.size > 0 || Object.keys(previews()).length > 0);
+    setRetained(queue.length > 0 || Object.keys(previews()).length > 0);
     setRecovery("ownership");
     setError("Editing ownership changed. Read saved photos, review retained adjustments, then explicitly apply or discard them.");
     return false;
@@ -34,7 +45,7 @@ export function createPlacementSession(
   createEffect(() => {
     const current = access?.authority();
     if (current === authority) return;
-    if (queue.size > 0 || Object.keys(previews()).length > 0) canWrite();
+    if (queue.length > 0 || Object.keys(previews()).length > 0) canWrite();
     else authority = current;
   });
   const placements = createMemo(() => snapshot()?.placements.map((row) => ({ ...row, transform: previews()[row.id] ?? row.transform })) ?? []);
@@ -98,7 +109,8 @@ export function createPlacementSession(
   function clear() {
     generation++;
     setTarget(undefined);
-    queue.clear();
+    queue = [];
+    maybeUnconfirmed = undefined;
     setSnapshot(undefined);
     setPreviews({});
     setRecovery(undefined);
@@ -120,26 +132,34 @@ export function createPlacementSession(
 
   function complete(id: string, transform: PhotoTransform) {
     preview(id, transform);
-    queue.set(id, transform);
+    queue.push({ id, transform });
     void drain();
   }
 
   async function drain() {
     const selected = target();
-    if (saving() || recovery() !== undefined || selected === undefined || queue.size === 0 || !canWrite()) return;
+    if (saving() || recovery() !== undefined || selected === undefined || queue.length === 0 || !canWrite()) return;
     setSaving(true);
     setAdjusting(true);
     try {
-      while (queue.size > 0) {
-        for (const [id, transform] of new Map(queue)) {
+      while (queue.length > 0) {
+        for (const { id, transform } of [...queue]) {
           if (!canWrite()) {
             setSaving(false);
             setAdjusting(false);
             return;
           }
-          const saved = await client.editPlacements(selected.album, selected.context, { operation: "adjust", placementId: id, transform });
+          const before = snapshot();
+          /* v8 ignore next -- Canvas gestures require an acquired snapshot and navigation blocks while the FIFO drains. */
+          if (before === undefined) throw new Error("Saved photo state is unavailable.");
+          const command = { operation: "adjust", placementId: id, transform } as const;
+          const completion = { before, command, authority, generation };
+          maybeUnconfirmed = completion;
+          const saved = await client.editPlacements(selected.album, selected.context, command);
           setSnapshot(saved);
-          if (queue.get(id) === transform) queue.delete(id);
+          queue.shift();
+          maybeUnconfirmed = undefined;
+          if (canRecord(completion)) onCompleted?.(before, saved, command);
           setPreviews((current) => {
             if (current[id] !== transform) return current;
             return withoutPreview(current, id);
@@ -162,7 +182,7 @@ export function createPlacementSession(
       setSaving(false);
       setAdjusting(false);
     }
-    if (queue.size > 0 && recovery() === undefined) await drain();
+    if (queue.length > 0 && recovery() === undefined) await drain();
   }
 
   async function edit(command: PlacementEdit) {
@@ -170,8 +190,15 @@ export function createPlacementSession(
     if (selected === undefined || unavailable() !== undefined || navigationReason() !== undefined || !canWrite()) return;
     setSaving(true);
     try {
+      const before = snapshot();
+      /* v8 ignore next -- unavailable() rejects an absent snapshot before this synchronous read. */
+      if (before === undefined) throw new Error("Saved photo state is unavailable.");
+      const completion = { before, command, authority, generation };
+      maybeUnconfirmed = completion;
       const saved = await client.editPlacements(selected.album, selected.context, command);
       setSnapshot(saved);
+      maybeUnconfirmed = undefined;
+      if (canRecord(completion)) onCompleted?.(before, saved, command);
     } catch {
       setRecovery("uncertain");
       setError("Photo change could not be confirmed. Reload saved photos before choosing the action again.");
@@ -196,17 +223,21 @@ export function createPlacementSession(
       const saved = await client.readPlacements(selected.album, selected.context);
       setSnapshot(saved);
       const ownershipChanged = !ownsDrafts();
-      for (const [id, transform] of queue) {
+      const unconfirmed = maybeUnconfirmed;
+      if (unconfirmed !== undefined && canRecord(unconfirmed) && matchesCompletedEdit(saved, unconfirmed.command))
+        onCompleted?.(unconfirmed.before, saved, unconfirmed.command);
+      maybeUnconfirmed = undefined;
+      for (const { id, transform } of [...queue]) {
         const confirmed = saved.placements.find((row) => row.id === id);
         if ((confirmed === undefined && !ownershipChanged) || (confirmed !== undefined && sameTransform(confirmed.transform, transform))) {
-          queue.delete(id);
+          queue = queue.filter((entry) => entry.id !== id || entry.transform !== transform);
           setPreviews((current) => {
-            return withoutPreview(current, id);
+            return current[id] === transform ? withoutPreview(current, id) : current;
           });
         }
       }
       await refreshInventory();
-      const hasDrafts = queue.size > 0 || Object.keys(previews()).length > 0;
+      const hasDrafts = queue.length > 0 || Object.keys(previews()).length > 0;
       if (hasDrafts && !ownsDrafts()) {
         setRetained(true);
         setRecovery("ownership");
@@ -244,13 +275,13 @@ export function createPlacementSession(
     setRecovery(undefined);
     setError(undefined);
     setRetained(false);
-    for (const [id, transform] of Object.entries(previews())) queue.set(id, transform);
+    queue = Object.entries(previews()).map(([id, transform]) => ({ id, transform }));
     await drain();
   }
 
   async function discardRetained() {
     if (saving() || loading()) return;
-    queue.clear();
+    queue = [];
     setPreviews({});
     setRetained(false);
     authority = access?.authority();
@@ -285,6 +316,17 @@ export function sameTransform(left: PhotoTransform, right: PhotoTransform): bool
 }
 
 export type PlacementSession = ReturnType<typeof createPlacementSession>;
+
+export function matchesCompletedEdit(saved: PlacementSnapshot, command: PlacementEdit): boolean {
+  if (command.operation === "place") return saved.placements.some((row) => row.slotId === command.slotId && row.photoId === command.photoId);
+  if (command.operation === "bleed") return saved.kind === "spread" && saved.layout.bleed.state === (command.enabled ? "enabled" : "disabled");
+  if (command.operation === "spineOwner") return saved.kind === "cover" && saved.spineOwner === command.owner;
+  const placement = saved.placements.find((row) => row.id === command.placementId);
+  if (command.operation === "remove") return placement === undefined;
+  if (command.operation === "move") return placement?.slotId === command.slotId;
+  if (command.operation === "adjust") return placement !== undefined && sameTransform(placement.transform, command.transform);
+  return placement?.kind === "spread" && placement.captionCorner === command.captionCorner;
+}
 
 function withoutPreview(current: Readonly<Record<string, PhotoTransform>>, id: string) {
   return Object.fromEntries(Object.entries(current).filter(([key]) => key !== id));

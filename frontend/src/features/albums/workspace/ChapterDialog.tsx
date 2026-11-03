@@ -5,10 +5,11 @@ import type { ChapterSave } from "../model/Photo";
 import { sameGear, validateGear, type CameraSelection, type GearCatalog, type GearClient } from "../model/Gear";
 import { describeFailure } from "../model/Presentation";
 import { CountryPicker } from "./CountryPicker";
-import { displayCalendarDay, matchesChapterDetails, readCalendarDay, suggestFolder, validateChapter } from "./ChapterDetails";
+import { chapterDetails, displayCalendarDay, matchesChapterDetails, readCalendarDay, suggestFolder, validateChapter } from "./ChapterDetails";
 import { createContentSave, type ContentSave } from "./ContentSave";
 import { ChapterGearFields } from "./ChapterGearFields";
 import { GearCatalogDialog } from "./GearCatalogDialog";
+import type { ChapterBookState } from "./ChapterCompensation";
 import "./gear.css";
 
 export function ChapterDialog(props: {
@@ -21,15 +22,23 @@ export function ChapterDialog(props: {
   resources: { client: Pick<AlbumClient, "chapters"> & GearClient; albumId: string; maybeChapterId: string | undefined };
   onSaved: (result: ChapterSave) => void;
   onReconciled: (chapterId: string) => void;
+  onBookSaved?: ((before: ChapterBookState, after: ChapterBookState) => void) | undefined;
+  onHistoryBoundary?: () => void;
+  maybeAuthority?: () => number | undefined;
   onBlock: (reason: string | undefined) => void;
   onClose: () => void;
   returnFocus: () => void;
 }) {
   const existing = untrack(() => props.chapter);
+  let originalDetails = existing === undefined ? undefined : chapterDetails(existing);
+  let savedDetails: ChapterDetails | undefined;
+  let sourceBoundary = false;
   const firstYear = existing?.start.slice(0, 4) ?? String(untrack(() => props.year));
   const lastYear = existing?.end.slice(0, 4) ?? String(untrack(() => props.year));
   const homeAvailable = untrack(() => props.homeAvailable);
   const resources = untrack(() => props.resources);
+  const maybeAuthority = untrack(() => props.maybeAuthority);
+  let bookRevision = maybeAuthority?.();
   const [kind, setKind] = createSignal<"vacation" | "home" | "">(existing?.kind ?? (homeAvailable ? "" : "vacation"));
   const [name, setName] = createSignal(existing?.name ?? "");
   const [countries, setCountries] = createSignal<readonly string[]>(
@@ -52,17 +61,37 @@ export function ChapterDialog(props: {
   let status!: HTMLDivElement;
   let active = true;
   const gear = createContentSave<{ chapterId: string; cameras: readonly CameraSelection[] }, readonly CameraSelection[]>({
+    maybeAuthority,
     save: async (draft) => {
       await resources.client.saveChapterGear(resources.albumId, draft.chapterId, draft.cameras);
       return undefined;
     },
-    read: (draft) => resources.client.chapterGear(resources.albumId, draft.chapterId, controller.signal),
+    read: async (draft) => {
+      const revision = maybeAuthority?.();
+      const saved = await resources.client.chapterGear(resources.albumId, draft.chapterId, controller.signal);
+      if (bookRevision !== revision) {
+        const chapters = await resources.client.chapters(resources.albumId, controller.signal);
+        if (revision !== maybeAuthority?.()) return saved;
+        const chapter = chapters.find((item) => item.id === draft.chapterId);
+        if (chapter === undefined) throw new AlbumRequestError(404, "The saved chapter could not be found.");
+        originalDetails = chapterDetails(chapter);
+        savedDetails = originalDetails;
+        sourceBoundary = false;
+        bookRevision = revision;
+      }
+      if (gear.recovery() !== "acknowledged" && !sameGear(saved, draft.cameras)) setOriginalGear(saved);
+      return saved;
+    },
     equal: (saved, draft) => sameGear(saved, draft.cameras),
+    onCompleted: (draft) => {
+      recordBook(draft.cameras);
+    },
     onSaved: (_saved, draft) => {
       closeSaved(draft.chapterId);
     },
   });
   const metadata: ContentSave<ChapterDetails, string | undefined> = createContentSave({
+    maybeAuthority,
     save: async (details) => {
       const saved = await props.save(details);
       setReceipt(saved);
@@ -76,9 +105,18 @@ export function ChapterDialog(props: {
           ? chapters.find((item) => item.kind === details.kind && item.sourceFolder === details.sourceFolder)
           : chapters.find((item) => item.id === id);
       if (chapter === undefined && metadata.recovery() === "acknowledged") throw new AlbumRequestError(404, "The saved chapter could not be found.");
-      return chapter !== undefined && (metadata.recovery() === "acknowledged" || matchesChapterDetails(chapter, details)) ? chapter.id : undefined;
+      const matches = chapter !== undefined && matchesChapterDetails(chapter, details);
+      if (chapter !== undefined && metadata.recovery() !== "acknowledged" && !matches) originalDetails = chapterDetails(chapter);
+      return chapter !== undefined && (metadata.recovery() === "acknowledged" || matches) ? chapter.id : undefined;
     },
     equal: (chapterId) => chapterId !== undefined,
+    onCompleted: (details) => {
+      bookRevision = maybeAuthority?.();
+      savedDetails = details;
+      sourceBoundary = originalDetails?.sourceFolder !== details.sourceFolder;
+      if (sourceBoundary) props.onHistoryBoundary?.();
+      else recordBook(originalGear());
+    },
     onSaved: (chapterId) => {
       /* v8 ignore next */
       if (chapterId === undefined) throw new AcknowledgedWriteError("The saved chapter identity could not be acquired.");
@@ -137,6 +175,11 @@ export function ChapterDialog(props: {
     if (saved !== undefined) props.onSaved(saved);
     else props.onReconciled(chapterId);
   }
+  function recordBook(cameras: readonly CameraSelection[] | undefined) {
+    const savedGear = originalGear();
+    if (!sourceBoundary && originalDetails !== undefined && savedDetails !== undefined && savedGear !== undefined && cameras !== undefined)
+      props.onBookSaved?.({ details: originalDetails, gear: savedGear }, { details: savedDetails, gear: cameras });
+  }
   function close() {
     if (closeReason() !== undefined) return;
     const chapterId = confirmed();
@@ -179,13 +222,20 @@ export function ChapterDialog(props: {
       return;
     }
     setError(undefined);
+    const revision = maybeAuthority?.();
+    if (resources.maybeChapterId !== undefined && gear.draft() === undefined) gear.begin({ chapterId: resources.maybeChapterId, cameras });
     if (confirmed() === undefined) {
-      metadata.begin(details);
-      await metadata.commit();
+      if (metadata.draft() === undefined) metadata.begin(details);
+      else metadata.change(details);
+      await metadata.commit(true);
     }
-    if (confirmed() !== undefined && metadata.recovery() === undefined) await saveGear();
+    if (revision !== maybeAuthority?.()) {
+      setError("Editing access changed. Review the retained chapter before saving its remaining gear.");
+      return;
+    }
+    if (confirmed() !== undefined && metadata.recovery() === undefined) await saveGear(true);
   }
-  async function saveGear() {
+  async function saveGear(reviewed: boolean) {
     if (!active) return;
     const chapterId = confirmed();
     const cameras = selected();
@@ -194,15 +244,17 @@ export function ChapterDialog(props: {
     if (chapterId === undefined || cameras === undefined || original === undefined) throw new Error("Chapter gear has not been acquired.");
     if (sameGear(original, cameras)) closeSaved(chapterId);
     else {
-      gear.begin({ chapterId, cameras });
-      await gear.commit();
+      if (gear.draft() === undefined) gear.begin({ chapterId, cameras });
+      else gear.change({ chapterId, cameras });
+      await gear.commit(reviewed);
     }
   }
   async function reconcile() {
+    const revision = maybeAuthority?.();
     status.focus();
     if (metadata.recovery() !== undefined) {
       await metadata.reconcile();
-      if (confirmed() !== undefined && metadata.recovery() === undefined) await saveGear();
+      if (confirmed() !== undefined && metadata.recovery() === undefined && revision === maybeAuthority?.()) await saveGear(false);
     } else await gear.reconcile();
   }
   function openCalendar(event: Event & { currentTarget: HTMLInputElement }) {
@@ -377,6 +429,9 @@ export function ChapterDialog(props: {
                   }}
                 />
               </label>
+              <Show when={folder() !== existing?.sourceFolder}>
+                <p class="history-boundary-notice">Saving this chapter or new photo source starts a new Undo history. Your current book is kept.</p>
+              </Show>
             </section>
             <section class="chapter-gear-column" aria-label="Chapter gear selection">
               <Show when={catalog()}>
