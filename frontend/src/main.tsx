@@ -36,7 +36,8 @@ render(() => {
     >
       <Show when={identity()} fallback={<p role="status">Opening browser identification…</p>}>
         {(editorId) => {
-          const session = createEditorSession(makeHttpEditorSession(fetch), localStorage, createBrowserIdentity, editorId());
+          const reloading = performance.getEntriesByType("navigation").some((entry) => "type" in entry && entry.type === "reload");
+          const session = createEditorSession(makeHttpEditorSession(fetch), localStorage, createBrowserIdentity, editorId(), reloading);
           const client = makeHttpAlbumClient(makeEditorRequests(fetch, session));
           return (
             <EditorSessionGate session={session}>

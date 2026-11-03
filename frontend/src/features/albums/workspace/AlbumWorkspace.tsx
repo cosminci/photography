@@ -340,6 +340,23 @@ export function AlbumWorkspace(props: {
           ? "Reload the saved workspace before choosing another spread action."
           : placement.navigationReason()),
   );
+  const otherOwner = createMemo(() => {
+    const maybeTarget = editingTarget();
+    return maybeTarget === undefined ? undefined : props.session.owner(maybeTarget);
+  });
+  let observedOwnershipRevision = untrack(() => props.session.ownershipRevision());
+  createEffect(
+    on(
+      [() => props.session.ownershipRevision(), ownershipLoading, () => props.session.targetPending(), navigationReason],
+      ([revision, loading, pending, maybeNavigationReason]) => {
+        if (revision === observedOwnershipRevision || loading || pending || maybeNavigationReason !== undefined) return;
+        observedOwnershipRevision = revision;
+        const maybeTarget = editingTarget();
+        if (!reader() && props.session.available() && maybeTarget !== undefined && otherOwner() !== undefined)
+          void confirmOwnership(maybeTarget, true);
+      },
+    ),
+  );
   const refreshReason = createMemo(() =>
     !props.session.available()
       ? "The browser session is unconfirmed. Reconnect before editing."
@@ -557,6 +574,23 @@ export function AlbumWorkspace(props: {
           </a>
         </div>
         <div class="workspace-controls" role="group" aria-label="Workspace controls">
+          <span class="browser-alias" title="This browser">
+            {props.session.alias()}
+          </span>
+          <Show when={!reader() && ownershipReason() !== undefined && otherOwner() === undefined && editingTarget()}>
+            {(target) => (
+              <button
+                type="button"
+                disabled={!props.session.available() || props.session.targetPending() || ownershipLoading()}
+                aria-describedby="editing-ownership-reason"
+                onClick={() => {
+                  void confirmOwnership(target(), true);
+                }}
+              >
+                Edit spread
+              </button>
+            )}
+          </Show>
           <div ref={setReaderEntry} />
           <div class="workspace-mode" role="group" aria-label="Canvas view">
             <button
@@ -591,25 +625,9 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={!reader() && ownershipReason()}>
         {(reason) => (
-          <div class="editing-ownership">
-            <p id="editing-ownership-reason" role="status">
-              {reason()}
-            </p>
-            <Show when={editingTarget()}>
-              {(target) => (
-                <button
-                  type="button"
-                  disabled={!props.session.available() || props.session.targetPending() || ownershipLoading()}
-                  aria-describedby="editing-ownership-reason"
-                  onClick={() => {
-                    void confirmOwnership(target(), true);
-                  }}
-                >
-                  Edit spread
-                </button>
-              )}
-            </Show>
-          </div>
+          <p id="editing-ownership-reason" role="status" class="control-help">
+            {reason()}
+          </p>
         )}
       </Show>
       <Show when={placement.error()}>
@@ -828,22 +846,31 @@ export function AlbumWorkspace(props: {
                     </p>
                   )}
                 </Show>
-                <Show when={part() === "cover"}>
-                  <CoverCanvas title={props.album.title} year={props.workspace.year} authors={props.album.authors} editing={editing()} />
-                </Show>
-                <Show when={displayedSpread()}>
-                  {(spread) => (
-                    <SpreadCanvas
-                      slots={spread().slots}
-                      title={chapter()?.name ?? props.album.title}
-                      text={chapter()?.description ?? props.album.synopsis}
-                      label={label()}
-                      gear={gearText()}
-                      synopsisCountries={spread().kind === "album_start" ? albumCountries() : undefined}
-                      editing={editing()}
-                    />
-                  )}
-                </Show>
+                <div class="workspace-lock-frame" classList={{ "workspace-locked": otherOwner() !== undefined }}>
+                  <Show when={otherOwner()}>
+                    {(owner) => (
+                      <span class="workspace-lock-owner" role="status">
+                        {owner()}
+                      </span>
+                    )}
+                  </Show>
+                  <Show when={part() === "cover"}>
+                    <CoverCanvas title={props.album.title} year={props.workspace.year} authors={props.album.authors} editing={editing()} />
+                  </Show>
+                  <Show when={displayedSpread()}>
+                    {(spread) => (
+                      <SpreadCanvas
+                        slots={spread().slots}
+                        title={chapter()?.name ?? props.album.title}
+                        text={chapter()?.description ?? props.album.synopsis}
+                        label={label()}
+                        gear={gearText()}
+                        synopsisCountries={spread().kind === "album_start" ? albumCountries() : undefined}
+                        editing={editing()}
+                      />
+                    )}
+                  </Show>
+                </div>
               </FullscreenReader>
               <Show when={contentEditReason()}>
                 {(reason) => (

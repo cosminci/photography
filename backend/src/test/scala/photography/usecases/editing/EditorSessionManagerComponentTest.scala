@@ -1,7 +1,7 @@
 package photography.usecases.editing
 
 import cats.effect.{Deferred, IO, Outcome, Ref}
-import cats.effect.std.Mutex
+import cats.effect.std.{Mutex, Queue}
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
@@ -21,6 +21,51 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
   private val tab                = TabId(new UUID(0L, 2L))
   private val duplicate          = TabId(new UUID(0L, 3L))
   private val alias: EditorAlias = "Cosmin"
+
+  Vector("release", "switch", "expiry").foreach { transition =>
+    test(s"should notify waiting browsers of acquisition and $transition through the ownership stream"):
+      TestControl.executeEmbed {
+        val target = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+        for
+          manager  <- buildManager()
+          writer   <- registerConnection(manager, owner, tab)
+          viewer   <- registerConnection(manager, EditorId(new UUID(0L, 4L)), duplicate)
+          events   <- Queue.unbounded[IO, OwnershipChangeResult]
+          observed <- manager.ownershipChanges(viewer).evalMap(events.offer).compile.drain.background.use { _ =>
+            for
+              initial  <- events.take
+              lock     <- manager.select(writer, TargetRevision.initial, target).flatMap(requireLock)
+              acquired <- events.take
+              _        <- transition match
+                case "release" => manager.release(writer, TargetRevision.initial.next, lock.grant).void
+                case "switch"  =>
+                  manager.select(writer, TargetRevision.initial.next, EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))).void
+                case _ =>
+                  IO.sleep(20.seconds) >> manager.heartbeat(writer) >> manager.heartbeat(viewer) >> IO.sleep(10.seconds)
+              changed <- events.take
+            yield Vector(initial, acquired, changed)
+          }
+        yield assertEquals(observed, Vector.fill(3)(OwnershipChangeResult.Changed))
+      }
+  }
+
+  test("should close an obsolete ownership subscription without affecting its successor binding"):
+    for
+      manager    <- buildManager()
+      connection <- registerConnection(manager, owner, tab)
+      events     <- Queue.unbounded[IO, OwnershipChangeResult]
+      observed   <- manager.ownershipChanges(connection).evalMap(events.offer).compile.drain.background.use { _ =>
+        for
+          initial     <- events.take
+          replacement <- manager.bind(connection.session, tab).flatMap(requireConnection)
+          lost        <- events.take
+          alive       <- manager.authorizeConnection(replacement)
+        yield (Vector(initial, lost), alive)
+      }
+    yield
+      val (notifications, authorization) = observed
+      assertEquals(notifications, Vector(OwnershipChangeResult.Changed, OwnershipChangeResult.Rejected(Failure.ObsoleteConnection)))
+      assertEquals(authorization, ConnectionAuthorizationResult.Authorized)
 
   test("should require a nonblank identification alias"):
     assert(" \t\n".refineEither[EditorAliasConstraint].isLeft)

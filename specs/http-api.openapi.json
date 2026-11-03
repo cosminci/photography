@@ -44,6 +44,26 @@
         }
       }
     },
+    "/api/editor-session/binding": {
+      "delete": {
+        "operationId": "releaseEditorTab",
+        "summary": "Release only the exact departing document binding",
+        "description": "Supports a keepalive fetch during page departure. Releases only the supplied live connection generation, retaining the session and target grant for reload recovery. An obsolete departure cannot release a successor binding. All responses are Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" },
+          { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "responses": {
+          "200": { "description": "Exact binding released", "content": { "application/json": { "schema": {
+            "type": "object", "required": ["released"], "additionalProperties": false,
+            "properties": { "released": { "const": true } }
+          } } } },
+          "400": { "$ref": "#/components/responses/EditorSessionInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      }
+    },
     "/api/editor-session/heartbeat": {
       "post": {
         "operationId": "heartbeatEditorSession",
@@ -65,14 +85,14 @@
       "get": {
         "operationId": "bindEditorTab",
         "summary": "Bind application access to one document through header-authenticated SSE",
-        "description": "The response body acquires the binding when consumed. HTTP 200 alone does not grant application access: wait for bound with private {sessionId,tabId,generation}. A different live document receives tab_blocked with public {ownerId,alias}, then the stream closes. A stale credential receives session_lost with {code:stale_session}. Reconnecting the same document advances generation; cancellation releases only that exact generation and retains session/target leases. Every 10 seconds, validate without renewing and send a heartbeat comment, or terminal session_lost with {code} on expiry/obsolete binding. This stream establishes session access, not target ownership.",
+        "description": "The response body acquires the binding when consumed. HTTP 200 alone does not grant application access: wait for bound with private {sessionId,tabId,generation}. A different live document receives tab_blocked with public {ownerId,alias}, then the stream closes. A stale credential receives session_lost with {code:stale_session}. Reconnecting the same document advances generation; cancellation releases only that exact generation and retains session/target leases. Ownership observation emits ownership_changed with {} initially and after target acquisition, release, switch or expiry; lease renewal alone emits nothing. Notifications confer no authority: waiting viewers must reconcile and acquire before editing. Expiry is observed within one second; obsolete connections receive terminal session_lost with {code}. Every 10 seconds send a heartbeat comment without renewing either lease. No saved-edit content is streamed.",
         "parameters": [
           { "$ref": "#/components/parameters/EditorSession" },
           { "$ref": "#/components/parameters/EditorTab" }
         ],
         "responses": {
           "200": {
-            "description": "Binding result followed by liveness comments; terminal failures close the stream",
+            "description": "Binding result followed by ownership invalidations and liveness comments; terminal failures close the stream",
             "headers": {
               "Cache-Control": { "schema": { "const": "no-store" } },
               "X-Accel-Buffering": { "schema": { "const": "no" } }

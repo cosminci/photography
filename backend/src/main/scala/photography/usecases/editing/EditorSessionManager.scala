@@ -1,7 +1,10 @@
 package photography.usecases.editing
 
-import cats.effect.{Clock, Ref, Sync}
+import cats.Eq
+import cats.effect.{Async, Clock}
 import cats.effect.std.Mutex
+import fs2.Stream
+import fs2.concurrent.SignallingRef
 import cats.instances.bigInt.*
 import cats.instances.uuid.*
 import cats.syntax.all.*
@@ -16,6 +19,7 @@ trait EditorSessionManager[F[_]]:
   def unbind(connection: EditorConnection): F[EditorSessionManager.UnbindResult]
   def heartbeat(connection: EditorConnection): F[EditorSessionManager.HeartbeatResult]
   def read(connection: EditorConnection): F[EditorSessionManager.ReadResult]
+  def ownershipChanges(connection: EditorConnection): Stream[F, EditorSessionManager.OwnershipChangeResult]
   def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): F[EditorSessionManager.SelectResult]
   def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): F[EditorSessionManager.ReleaseResult]
   def renewTarget(connection: EditorConnection, grant: GrantId): F[EditorSessionManager.RenewTargetResult]
@@ -29,11 +33,26 @@ trait EditorSessionManager[F[_]]:
   ): F[EditorSessionManager.AuthorizationResult]
 
 object EditorSessionManager:
-  def make[F[_]: Sync: IdGenerator: Mutex](lease: SessionLease): F[EditorSessionManager[F]] =
-    Ref.of[F, EditorSessionState](EditorSessionState(Map.empty, Set.empty)).map(new LiveEditorSessionManager(_, lease))
+  def make[F[_]: Async: IdGenerator: Mutex](lease: SessionLease): F[EditorSessionManager[F]] =
+    SignallingRef[F, EditorSessionState](EditorSessionState(Map.empty, Set.empty)).map(new LiveEditorSessionManager(_, lease))
 
-  final private class LiveEditorSessionManager[F[_]: Sync: IdGenerator: Mutex](state: Ref[F, EditorSessionState], lease: SessionLease)
+  final private class LiveEditorSessionManager[F[_]: Async: IdGenerator: Mutex](state: SignallingRef[F, EditorSessionState], lease: SessionLease)
       extends EditorSessionManager[F]:
+    override def ownershipChanges(connection: EditorConnection): Stream[F, OwnershipChangeResult] =
+      val changes = state.discrete.map { current =>
+        findConnection(current, connection).map(_ => current.locks.map(lock => (lock.target, lock.grant)))
+      }.changes(using Eq.fromUniversalEquals).map[OwnershipChangeResult] {
+        case Right(_)      => OwnershipChangeResult.Changed
+        case Left(failure) => OwnershipChangeResult.Rejected(failure)
+      }
+      val expiry = Stream.awakeEvery[F](1.second).evalMap(_ =>
+        summon[Mutex[F]].lock.surround(Clock[F].monotonic.flatMap(expire))
+      ).void
+      changes.concurrently(expiry).takeThrough {
+        case OwnershipChangeResult.Changed     => true
+        case OwnershipChangeResult.Rejected(_) => false
+      }
+
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): F[RegisterResult] =
       summon[Mutex[F]].lock.surround {
         for
@@ -282,6 +301,10 @@ object EditorSessionManager:
 
   enum ReadResult:
     case Current(session: EditorSession)
+    case Rejected(failure: Failure)
+
+  enum OwnershipChangeResult:
+    case Changed
     case Rejected(failure: Failure)
 
   enum SelectResult:

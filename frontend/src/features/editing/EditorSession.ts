@@ -31,7 +31,10 @@ export interface RegisteredSession {
 }
 
 export type SessionEvent =
-  ({ readonly kind: "bound" } & EditorConnection) | { readonly kind: "tab_blocked"; readonly alias: string } | { readonly kind: "session_lost" };
+  | ({ readonly kind: "bound" } & EditorConnection)
+  | { readonly kind: "tab_blocked"; readonly alias: string }
+  | { readonly kind: "session_lost" }
+  | { readonly kind: "ownership_changed" };
 
 export type TargetSelection = TargetState | { readonly revision: string; readonly alias: string; readonly remainingMillis: number };
 
@@ -43,6 +46,7 @@ export interface EditorSessionTransport {
   readonly select: (connection: EditorConnection, revision: string, target: EditingTarget) => Promise<TargetSelection>;
   readonly renew: (connection: EditorConnection, grantId: string) => Promise<TargetGrant>;
   readonly release: (connection: EditorConnection, revision: string, grantId: string) => Promise<{ readonly revision: string }>;
+  readonly unbind: (connection: EditorConnection) => Promise<void>;
 }
 
 export class EditorSessionError extends Error {
@@ -67,6 +71,7 @@ export function createEditorSession(
   storage: Pick<Storage, "getItem" | "setItem">,
   identity: () => string,
   editorId: string,
+  reloading: boolean,
 ) {
   const [opened, setOpened] = createSignal(false);
   const [blocked, setBlocked] = createSignal(false);
@@ -79,6 +84,10 @@ export function createEditorSession(
   const [grant, setGrant] = createSignal<TargetGrant>();
   const [targetMessage, setTargetMessage] = createSignal<string | undefined>("Choose a spread to edit.");
   const [authority, setAuthority] = createSignal(0);
+  const [ownershipRevision, setOwnershipRevision] = createSignal(0);
+  const [maybeOtherOwner, setOtherOwner] = createSignal<{ target: EditingTarget; alias: string }>();
+  const reloadDeadline = Date.now() + 30_000;
+  let maybeReloadRetry: ReturnType<typeof setTimeout> | undefined;
   let maybeRemembered: RememberedEditor | undefined;
   let tabId: string;
   let revision = "0";
@@ -146,7 +155,19 @@ export function createEditorSession(
 
   async function bind(event: SessionEvent, current: number, registered: RegisteredSession, signal: AbortSignal) {
     if (!active() || current !== attempt) return;
+    if (event.kind === "ownership_changed") {
+      setOwnershipRevision((currentRevision) => currentRevision + 1);
+      return;
+    }
     if (event.kind === "tab_blocked") {
+      if (reloading && Date.now() < reloadDeadline) {
+        interrupt("Reconnecting this tab…");
+        setConnecting(true);
+        maybeReloadRetry = setTimeout(() => {
+          void reconnect();
+        }, 750);
+        return;
+      }
       setBlocked(true);
       interrupt(`This browser profile is already open in another tab (${event.alias}). Close that tab, then retry.`);
       return;
@@ -181,6 +202,7 @@ export function createEditorSession(
   async function reconnect() {
     if (!active()) return;
     const current = ++attempt;
+    clearTimeout(maybeReloadRetry);
     maybeStream?.abort();
     maybeStream = new AbortController();
     const signal = maybeStream.signal;
@@ -246,6 +268,7 @@ export function createEditorSession(
     const maybeSaved = observed !== null && observedAt + observed.remainingMillis > Date.now() ? observed : null;
     const maybePrevious = grant()?.grantId;
     setGrant(maybeSaved ?? undefined);
+    if (maybeSaved !== null) setOtherOwner(undefined);
     targetDeadline = maybeSaved === null ? 0 : observedAt + maybeSaved.remainingMillis;
     setTargetMessage(maybeSaved === null ? "View only. Choose Edit spread to acquire ownership." : undefined);
     if (maybePrevious !== maybeSaved?.grantId) setAuthority((current) => current + 1);
@@ -285,6 +308,8 @@ export function createEditorSession(
     const maybeConnection = connection();
     if (!active() || maybeConnection === undefined) return false;
     setTargetPending(true);
+    const maybeOwner = maybeOtherOwner();
+    if (target === null || (maybeOwner !== undefined && !sameTarget(maybeOwner.target, target))) setOtherOwner(undefined);
     const maybePreviousTarget = maybeLastTarget;
     maybeLastTarget = target;
     try {
@@ -313,6 +338,7 @@ export function createEditorSession(
         if ("grant" in selected) publishGrant(selected.grant, selectedAt);
         else {
           publishGrant(null, selectedAt);
+          setOtherOwner({ target, alias: selected.alias });
           setTargetMessage(`View only. ${selected.alias} is editing this spread. Retry when they leave or their lease expires.`);
         }
       }
@@ -373,7 +399,12 @@ export function createEditorSession(
     interrupt("The backend is unreachable. Unsaved drafts are retained. Reconnect before editing.");
   };
   const pagehide = () => {
+    const maybeConnection = connection();
     interrupt("The page connection was closed. Reconnect before editing; unsaved drafts are retained.");
+    if (maybeConnection !== undefined)
+      void transport.unbind(maybeConnection).catch((failure: unknown) => {
+        if (active() && connection() === undefined) setMessage(describeSessionFailure(failure));
+      });
   };
   const timer = window.setInterval(() => {
     void heartbeat();
@@ -399,6 +430,7 @@ export function createEditorSession(
     maybeStream?.abort();
     window.clearInterval(timer);
     clearTimeout(maybeExpiry);
+    clearTimeout(maybeReloadRetry);
     window.removeEventListener("offline", offline);
     window.removeEventListener("pagehide", pagehide);
   });
@@ -426,6 +458,11 @@ export function createEditorSession(
     connecting,
     targetPending,
     authority,
+    ownershipRevision,
+    owner: (target: EditingTarget) => {
+      const maybeOwner = maybeOtherOwner();
+      return maybeOwner !== undefined && sameTarget(maybeOwner.target, target) ? maybeOwner.alias : undefined;
+    },
     headers,
     targetReason,
     identify,
@@ -437,7 +474,10 @@ export function createEditorSession(
 }
 
 export type EditorSession = ReturnType<typeof createEditorSession>;
-export type WorkspaceEditingSession = Pick<EditorSession, "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect">;
+export type WorkspaceEditingSession = Pick<
+  EditorSession,
+  "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect" | "alias" | "owner" | "ownershipRevision"
+>;
 
 export function sameTarget(left: EditingTarget, right: EditingTarget): boolean {
   return left.kind === right.kind && left.id === right.id;

@@ -55,6 +55,12 @@ The protection map concerns authored content and spread deletion, not freezing n
 
 ## Identity and transport
 
+The browser shows first-run identification as a modal and remembers the alias for its workspace toolbar. Connectivity loss makes the retained application inert beneath a reconnect surface; text and photo recovery remain owned by their existing editors.
+
+The existing session stream announces ownership changes, including release and elapsed-time expiry. Waiting viewers retry acquisition through the existing serialized session transition and workspace reconciliation; notifications never confer grants and unresolved drafts still require explicit review.
+
+The active document releases its exact binding through a header-authenticated keepalive request on departure. Reload retries binding automatically while the previous connection finishes, without replacing an actually live competing tab.
+
 The browser allocates its profile identity atomically in IndexedDB, so simultaneous first-run tabs share one identity. It remembers the alias and resumable credential separately; each loaded document creates a fresh, memory-only tab identity.
 
 Its live session SSE connection claims application access atomically before opening routes.

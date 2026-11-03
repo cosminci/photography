@@ -413,17 +413,70 @@ describe("album workspace browser boundary", () => {
     const session = {
       ...editingSession,
       targetReason: () => "View only. Mara is editing this spread.",
+      owner: () => "Mara",
       select,
     };
     const client = buildClient();
     render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
 
-    expect(await screen.findByRole("button", { name: "Edit spread" })).toHaveAccessibleDescription("View only. Mara is editing this spread.");
     expect(await screen.findByRole("button", { name: "Applied layout" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("status").some((status) => status.textContent === "Mara")).toBe(true);
     expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
     expect(select).toHaveBeenCalledWith({ kind: "spread", id: opening.id }, false);
     expect(screen.getByRole("button", { name: "Mara" })).toBeEnabled();
     expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it.each(["ready", "chapter dialog"] as const)("should acquire a released spread after a %s viewer becomes eligible", async (viewer) => {
+    const [ownershipRevision, notify] = createSignal(0);
+    const [owned, setOwned] = createSignal(false);
+    const select = vi.fn(editingSession.select).mockImplementation((_target, explicit) => {
+      if (explicit === true) setOwned(true);
+      return Promise.resolve(true);
+    });
+    const client = buildClient();
+    const session = {
+      ...editingSession,
+      ownershipRevision,
+      select,
+      owner: () => (owned() ? undefined : "Mara"),
+      targetReason: () => (owned() ? undefined : "View only. Mara is editing this spread."),
+    };
+    if (viewer === "chapter dialog") window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+    await screen.findByRole("heading", { name: album.title });
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledOnce();
+    });
+    if (viewer === "chapter dialog") {
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+      await waitFor(() => {
+        expect(within(screen.getByRole("dialog", { name: "Chapter details" })).getByRole("button", { name: "Cancel" })).toBeEnabled();
+        expect(screen.getByRole("button", { name: "Cover" })).toBeDisabled();
+      });
+    }
+    const attemptsBeforeRelease = select.mock.calls.length;
+    vi.mocked(client.open).mockResolvedValue({ ...album, synopsis: "Saved before release" });
+
+    notify(1);
+    if (viewer === "chapter dialog") {
+      await Promise.resolve();
+      expect(select).toHaveBeenCalledTimes(attemptsBeforeRelease);
+      fireEvent.click(within(screen.getByRole("dialog", { name: "Chapter details" })).getByRole("button", { name: "Cancel" }));
+    }
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Applied layout" })).toBeEnabled());
+    expect(select).toHaveBeenLastCalledWith({ kind: "spread", id: viewer === "chapter dialog" ? vacationOpening.id : opening.id }, true);
+    if (viewer === "ready") expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent("Saved before release");
+    expect(screen.queryAllByRole("status").some((status) => status.textContent === "Mara")).toBe(false);
+    expect(client.saveSynopsis).not.toHaveBeenCalled();
+    notify(2);
+    await Promise.resolve();
+    expect(select).toHaveBeenCalledTimes(attemptsBeforeRelease + 1);
   });
 
   it.each(["spread", "cover"] as const)("should publish deferred %s reconnect content after cancelling a photo preview", async (kind) => {

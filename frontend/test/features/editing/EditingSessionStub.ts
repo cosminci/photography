@@ -7,4 +7,7 @@ export const editingSession: WorkspaceEditingSession = {
   targetPending: () => false,
   select: () => Promise.resolve(true),
   reconnect: () => Promise.resolve(),
+  alias: () => "Cosmin",
+  owner: () => undefined,
+  ownershipRevision: () => 0,
 };

@@ -1,7 +1,27 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { EditorSessionGate } from "../../../src/features/editing/EditorSessionGate";
+
+const nativeMethods = {
+  showModal: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal"),
+  close: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close"),
+};
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute("open", "");
+    this.querySelector<HTMLElement>("input, button")?.focus();
+  };
+  HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute("open");
+  };
+});
+afterAll(() => {
+  for (const [name, descriptor] of Object.entries(nativeMethods)) {
+    if (descriptor === undefined) Reflect.deleteProperty(HTMLDialogElement.prototype, name);
+    else Object.defineProperty(HTMLDialogElement.prototype, name, descriptor);
+  }
+});
 
 describe("browser identification and tab gate", () => {
   it("should identify the profile before exposing any application content and retain the application through connection loss", () => {
@@ -12,7 +32,8 @@ describe("browser identification and tab gate", () => {
     const [connecting, setConnecting] = createSignal(false);
     const identify = vi.fn().mockResolvedValue(undefined);
     const reconnect = vi.fn().mockResolvedValue(undefined);
-    const session = { opened, blocked, message, identifying, connecting, identify, reconnect };
+    const available = () => opened() && !blocked() && message() === undefined;
+    const session = { opened, blocked, available, message, identifying, connecting, identify, reconnect };
     render(() => (
       <EditorSessionGate session={session}>
         <main>
@@ -24,7 +45,10 @@ describe("browser identification and tab gate", () => {
     expect(screen.queryByRole("main")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Identify this browser.");
     const input = screen.getByRole("textbox", { name: "Identification alias" });
-    expect(input).toHaveAccessibleDescription(/not a login/);
+    expect(screen.getByRole("dialog", { name: "Your browser name" })).toBeVisible();
+    expect(input).toHaveFocus();
+    expect(fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }))).toBe(false);
+    expect(input).toHaveAccessibleDescription(/Remembered on this browser/);
     fireEvent.input(input, { target: { value: "Mara" } });
     fireEvent.submit(screen.getByRole("form", { name: "Browser identification" }));
     expect(identify).toHaveBeenCalledExactlyOnceWith("Mara");
@@ -45,5 +69,8 @@ describe("browser identification and tab gate", () => {
     expect(screen.queryByRole("main")).not.toBeInTheDocument();
     setBlocked(false);
     expect(screen.getByRole("textbox", { name: "Retained draft" })).toHaveValue("Unsaved");
+    setMessage(undefined);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(draft).toHaveValue("Unsaved");
   });
 });

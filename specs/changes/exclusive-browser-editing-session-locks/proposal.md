@@ -63,6 +63,11 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 - Restart rejects old session/grant credentials; the browser remembers its alias, retains drafts and obtains new ownership before editing.
 - Pending, locked, lost, reconnecting and retry states have accessible explanations and preserve keyboard/focus continuity at narrow widths.
 - A continuously held grant can support a later history feature; released or lost ownership invalidates that later history permanently.
+- First opening requests an alias in a normal modal; subsequent openings remember it and the workspace shows it beside Reader.
+- Another browser's ownership appears as a thin red canvas outline and corner alias, without a prominent warning banner.
+- Release and expiry notify waiting viewers; a viewer without unresolved local work automatically attempts acquisition and becomes editable only after authoritative acquisition and saved-content reconciliation.
+- Backend loss dims and blocks the entire application with a reachable reconnect surface, retaining unsaved work underneath.
+- Refreshing the same tab releases its obsolete binding and automatically reconciles a replacement connection without a false duplicate-tab warning; genuinely additional tabs remain blocked.
 
 ## Doc Sync
 

@@ -133,12 +133,16 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           readBody  <- read.as[Json]
           heartbeat <- app.run(connected(Method.POST, "/heartbeat", bound))
           heartbeatBody <- heartbeat.as[Json]
+          departure     <- app.run(connected(Method.DELETE, "/binding", bound))
+          departureBody <- departure.as[Json]
         yield
           val expected = Json.obj("code" -> Json.fromString(code))
           assertEquals(read.status, Status.Conflict)
           assertEquals(readBody, expected)
           assertEquals(heartbeat.status, Status.Conflict)
           assertEquals(heartbeatBody, expected)
+          assertEquals(departure.status, Status.Conflict)
+          assertEquals(departureBody, expected)
           assertEquals(events.flatMap(_.eventType), Vector("bound", "session_lost"))
           assertEquals(events.flatMap(_.data).lastOption, Some(expected.noSpaces))
       }
@@ -160,27 +164,32 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
         app =
           PublicRoutes(EditorSessionApi.make(buildService(refs, session, RegisterResult.Ready(session), BindResult.Active(connection)))).orNotFound
-        registered <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
-        response   <- app.run(bind(sessionId, tab))
-        before     <- refs.get
-        events     <- response.body.through(ServerSentEvent.decoder[IO]).take(2).compile.toVector
-        elapsed    <- IO.monotonic
-        read       <- app.run(connected(Method.GET, "", binding))
-        heartbeat  <- app.run(connected(Method.POST, "/heartbeat", binding))
-        after      <- refs.get
+        registered    <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
+        response      <- app.run(bind(sessionId, tab))
+        before        <- refs.get
+        events        <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
+        elapsed       <- IO.monotonic
+        read          <- app.run(connected(Method.GET, "", binding))
+        heartbeat     <- app.run(connected(Method.POST, "/heartbeat", binding))
+        departure     <- app.run(connected(Method.DELETE, "/binding", binding))
+        departureBody <- departure.as[Json]
+        after         <- refs.get
       yield
         val expectedBefore = Calls(Vector((session.owner, session.alias, Some(sessionId))), Vector.empty, Vector.empty, Vector.empty, Vector.empty)
         val expectedAfter  = expectedBefore.copy(
           bindings = Vector((sessionId, connection.tab)),
-          reads = Vector(connection, connection),
+          reads = Vector(connection),
           heartbeats = Vector(connection),
-          releases = Vector(connection)
+          releases = Vector(connection, connection)
         )
         assertEquals(registered.status, Status.Ok)
         assertEquals(before, expectedBefore)
         assertEquals(after, expectedAfter)
         assertEquals(read.status, Status.Ok)
         assertEquals(heartbeat.status, Status.Ok)
+        assertEquals(departure.status, Status.Ok)
+        assertEquals(departureBody, Json.obj("released" -> Json.True))
+        assertEquals(departure.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
         assertEquals(elapsed, 10.seconds)
         assertEquals(response.contentType.map(_.mediaType), Some(MediaType.`text/event-stream`))
         assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
@@ -189,6 +198,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           events,
           Vector(
             ServerSentEvent(data = Some(binding.noSpaces), eventType = Some("bound")),
+            ServerSentEvent(data = Some("{}"), eventType = Some("ownership_changed")),
             ServerSentEvent(comment = Some("heartbeat"))
           )
         )
@@ -238,10 +248,12 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] = manager.authorizeConnection(connection)
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
       manager.register(owner, alias, maybeSession)
-    override def bind(session: SessionId, tab: TabId): IO[BindResult]         = manager.bind(session, tab)
-    override def unbind(connection: EditorConnection): IO[UnbindResult]       = manager.unbind(connection)
-    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] = IO.pure(HeartbeatResult.Rejected(failure))
-    override def read(connection: EditorConnection): IO[ReadResult]           = IO.pure(ReadResult.Rejected(failure))
+    override def bind(session: SessionId, tab: TabId): IO[BindResult]                              = manager.bind(session, tab)
+    override def unbind(connection: EditorConnection): IO[UnbindResult]                            = IO.pure(UnbindResult.Rejected(failure))
+    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult]                      = IO.pure(HeartbeatResult.Rejected(failure))
+    override def read(connection: EditorConnection): IO[ReadResult]                                = IO.pure(ReadResult.Rejected(failure))
+    override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+      Stream.emit(OwnershipChangeResult.Rejected(failure))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
       manager.select(connection, revision, target)
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
@@ -270,6 +282,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         refs.update(calls => calls.copy(heartbeats = calls.heartbeats :+ connection)).as(HeartbeatResult.Alive(session))
       override def read(connection: EditorConnection): IO[ReadResult] =
         refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(ReadResult.Current(session))
+      override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+        Stream.emit(OwnershipChangeResult.Changed) ++ Stream.never[IO]
       override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
         IO.raiseError[SelectResult](new AssertionError("Unexpected target selection"))
       override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =

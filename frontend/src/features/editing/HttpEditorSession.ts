@@ -82,6 +82,10 @@ export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTrans
   }
 
   return {
+    unbind: async (connection) => {
+      const response = await fetcher("/api/editor-session/binding", { method: "DELETE", headers: connectionHeaders(connection), keepalive: true });
+      if (!response.ok) throw new Error("The previous tab connection could not be released.");
+    },
     register: async (editorId, alias, maybeSessionId, maybeSignal) =>
       readSession(
         await request("POST", "", maybeSessionId === undefined ? {} : { "X-Editor-Session": maybeSessionId }, { editorId, alias }, maybeSignal),
@@ -178,5 +182,6 @@ function readEvent(name: string | undefined, value: unknown): SessionEvent {
     return { kind: "bound", sessionId: readId(fields["sessionId"]), tabId: readId(fields["tabId"]), generation: readId(fields["generation"]) };
   if (name === "tab_blocked") return { kind: "tab_blocked", alias: readString(fields["alias"]) };
   if (name === "session_lost") return { kind: "session_lost" };
+  if (name === "ownership_changed") return { kind: "ownership_changed" };
   throw new Error("The browser tab connection sent an unknown event.");
 }

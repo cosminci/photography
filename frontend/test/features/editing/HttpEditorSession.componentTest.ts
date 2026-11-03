@@ -37,6 +37,18 @@ describe("editor session HTTP translation", () => {
     fetcher.mockResolvedValue(new Response(JSON.stringify({ revision: "2" })));
     expect(await transport.release(connection, "1", grant.grantId)).toEqual({ revision: "2" });
     expect(fetcher.mock.lastCall).toEqual(["/api/editor-session/target", expect.objectContaining({ method: "DELETE", body: '{"revision":"1"}' })]);
+    fetcher.mockResolvedValue(new Response('{"released":true}'));
+    await transport.unbind(connection);
+    expect(fetcher.mock.lastCall).toEqual([
+      "/api/editor-session/binding",
+      {
+        method: "DELETE",
+        headers: { "X-Editor-Session": sessionId, "X-Editor-Tab": tabId, "X-Editor-Generation": generation },
+        keepalive: true,
+      },
+    ]);
+    fetcher.mockResolvedValue(new Response('{"code":"obsolete_connection"}', { status: 409 }));
+    await expect(transport.unbind(connection)).rejects.toThrow("could not be released");
   });
 
   it("should preserve a contended owner's display alias and the advanced revision without treating contention as ownership", async () => {
@@ -130,12 +142,12 @@ describe("editor session HTTP translation", () => {
   });
 
   it("should decode a binding and reject unknown event data rather than enabling access", async () => {
-    const data = `event: bound\ndata: ${JSON.stringify(connection)}\n\nevent: unknown\ndata: {}\n\n`;
+    const data = `event: bound\ndata: ${JSON.stringify(connection)}\n\nevent: ownership_changed\ndata: {}\n\nevent: unknown\ndata: {}\n\n`;
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(data, { headers: { "Content-Type": "text/event-stream" } }));
     const events = vi.fn();
 
     await expect(makeHttpEditorSession(fetcher).subscribe(sessionId, tabId, events, new AbortController().signal)).rejects.toThrow();
-    expect(events).toHaveBeenCalledExactlyOnceWith({ kind: "bound", ...connection });
+    expect(events.mock.calls).toEqual([[{ kind: "bound", ...connection }], [{ kind: "ownership_changed" }]]);
   });
 
   it.each([

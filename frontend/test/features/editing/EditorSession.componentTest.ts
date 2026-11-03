@@ -28,6 +28,7 @@ function buildSession(
   overrides: Partial<EditorSessionTransport> = {},
   storage: Pick<Storage, "getItem" | "setItem"> = localStorage,
   identityFactory: () => string = () => tabId,
+  reloading = false,
 ) {
   let receive: (event: SessionEvent) => void = () => {
     throw new Error("Session stream was not started");
@@ -51,11 +52,12 @@ function buildSession(
     select: vi.fn().mockResolvedValue({ revision: "1", grant }),
     renew: vi.fn().mockResolvedValue(grant),
     release: vi.fn().mockResolvedValue({ revision: "2" }),
+    unbind: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
   const session = createRoot((dispose) => {
     disposals.push(dispose);
-    return createEditorSession(transport, storage, identityFactory, identity);
+    return createEditorSession(transport, storage, identityFactory, identity, reloading);
   });
   return {
     session,
@@ -80,6 +82,70 @@ async function connect() {
 }
 
 describe("browser editing session", () => {
+  it("should retry a reload binding without declaring a duplicate and fence obsolete ownership events", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
+    const built = buildSession({}, localStorage, () => tabId, true);
+    await vi.advanceTimersByTimeAsync(0);
+    const oldReceive = vi.mocked(built.transport.subscribe).mock.calls[0]?.[2];
+    built.emit({ kind: "tab_blocked", alias: "Cosmin" });
+    expect(built.session.blocked()).toBe(false);
+    expect(built.session.connecting()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(built.transport.subscribe).toHaveBeenCalledTimes(2);
+    built.emit({ kind: "bound", sessionId, tabId, generation });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(built.session.available()).toBe(true);
+    oldReceive?.({ kind: "ownership_changed" });
+    expect(built.session.ownershipRevision()).toBe(0);
+    built.emit({ kind: "ownership_changed" });
+    expect(built.session.ownershipRevision()).toBe(1);
+  });
+
+  it("should release the exact departing binding without discarding remembered identity", async () => {
+    const { session, transport } = await connect();
+    window.dispatchEvent(new Event("pagehide"));
+    expect(session.available()).toBe(false);
+    expect(transport.unbind).toHaveBeenCalledExactlyOnceWith({ sessionId, tabId, generation });
+    expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: identity, alias: "Cosmin", sessionId });
+  });
+
+  it("should expose contention only for its target and clear it after acquisition", async () => {
+    const { session, transport } = await connect();
+    expect(session.owner(target)).toBeUndefined();
+    vi.mocked(transport.select).mockResolvedValueOnce({ revision: "1", alias: "Mara", remainingMillis: 20_000 });
+    await session.select(target);
+    expect(session.owner(target)).toBe("Mara");
+    expect(session.owner({ kind: "cover", id: identity })).toBeUndefined();
+    await session.select(target, true);
+    expect(session.owner(target)).toBeUndefined();
+  });
+
+  it.each(["departed", "reconnected", "disposed"] as const)("should report departure failure only while still %s", async (state) => {
+    const { session, transport, emit } = await connect();
+    let reject!: (failure: Error) => void;
+    vi.mocked(transport.unbind).mockReturnValue(
+      new Promise<void>((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    window.dispatchEvent(new Event("pagehide"));
+    if (state === "disposed") for (const dispose of disposals.splice(0)) dispose();
+    if (state === "reconnected") {
+      await session.reconnect();
+      emit({ kind: "bound", sessionId, tabId, generation });
+      await vi.waitFor(() => {
+        expect(session.available()).toBe(true);
+      });
+    }
+
+    reject(new Error("Departure rejected"));
+    await Promise.resolve();
+
+    expect(session.message() === "Departure rejected").toBe(state === "departed");
+  });
+
   it.each([
     { stage: "registration", outcome: "success" },
     { stage: "registration", outcome: "failure" },
