@@ -1,14 +1,15 @@
-import type { AlbumSummary } from "../model/Album";
+import type { AlbumClient, AlbumSummary } from "../model/Album";
+import { AlbumCoverPreview } from "./AlbumCoverPreview";
 
-export function AlbumCard(props: { album: AlbumSummary; onRename: () => void; onDelete: () => void }) {
+export function AlbumCard(props: {
+  album: AlbumSummary;
+  client: Pick<AlbumClient, "readPlacements" | "photo">;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
   return (
     <article class="album-card">
-      <a class="album-card-open" href={`/albums/${encodeURIComponent(props.album.id)}`}>
-        <div class="cover-preview" aria-hidden="true">
-          <span class="cover-spine" />
-        </div>
-        <h2>{props.album.title}</h2>
-      </a>
+      <AlbumCoverPreview album={props.album} client={props.client} />
       <div class="album-card-actions">
         <button
           id={`rename-${props.album.id}`}

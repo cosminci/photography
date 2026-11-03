@@ -9,6 +9,33 @@ import { createCaptionEditing } from "../../../src/features/albums/workspace/Pho
 import { RetainedCaption } from "../../../src/features/albums/workspace/RetainedCaption";
 
 describe("on-slot photo editing", () => {
+  it("should expose a failed photograph and retry media without repeating placement writes", async () => {
+    const write = vi.fn();
+    const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: write }, vi.fn()));
+    await session.load("album", { kind: "spread", id: "spread" });
+    render(() => (
+      <PhotoSlot
+        slotId="s"
+        label="Photo slot 1"
+        width={200}
+        height={200}
+        placement={session.placements()[0]}
+        photo={photo}
+        session={session}
+        choice={undefined}
+        onChoose={vi.fn()}
+        unavailable={undefined}
+        reader={false}
+      />
+    ));
+    const image = screen.getByRole("img", { name: photo.filename });
+    fireEvent.error(image);
+    expect(screen.getByRole("alert")).toHaveTextContent("Photograph could not be loaded.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry photograph" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(image.getAttribute("src")).toContain("retry=1");
+    expect(write).not.toHaveBeenCalled();
+  });
   it.each([
     { edge: "left", x: 5, y: 20 },
     { edge: "right", x: 35, y: 20 },
@@ -458,7 +485,12 @@ describe("on-slot photo editing", () => {
   const initial: SpreadSnapshot = {
     kind: "spread",
     id: "spread",
-    layout: { kind: "photos_only", templateId: "layout", slots: [{ id: "s", kind: "photo", x: 0, y: 0, width: 100, height: 100 }] },
+    layout: {
+      kind: "photos_only",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      slots: [{ id: "s", kind: "photo", x: 0, y: 0, width: 100, height: 100 }],
+    },
     placements: [
       { kind: "spread", captionCorner: "top_left", id: "p", slotId: "s", photoId: "photo", transform: { x: 0, y: 0, zoom: 2, mirrored: false } },
     ],

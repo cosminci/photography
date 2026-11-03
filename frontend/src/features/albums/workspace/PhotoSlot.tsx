@@ -2,7 +2,8 @@ import { For, Show, createMemo, createSignal, createUniqueId, onCleanup } from "
 import type { Photo } from "../model/Photo";
 import { captionCorners, type Placement, type PlacementEdit, type PhotoTransform } from "../model/Placement";
 import { PhotoCaption, type CaptionEditing } from "./PhotoCaption";
-import { boundTransform, cropImage, panTransform } from "./PlacementCrop";
+import { boundTransform, panTransform } from "./PlacementCrop";
+import { SavedPhoto } from "./SavedPhoto";
 import { photoDragFeedback, photoDragType, readPhotoChoice, startPhotoDrag, type PhotoChoice } from "./PhotoDrag";
 import type { PlacementSession } from "./PlacementSession";
 import "./placement.css";
@@ -33,6 +34,8 @@ export function PhotoSlot(props: {
   const reason = createMemo(() => props.unavailable ?? props.session.unavailable());
   const actionReason = createMemo(() => reason() ?? props.session.navigationReason());
   const [dragError, setDragError] = createSignal(false);
+  const [mediaFailed, setMediaFailed] = createSignal(false);
+  const [mediaRetry, setMediaRetry] = createSignal(0);
   const moving = createMemo(() => props.choice?.kind === "move" && props.choice.placementId === props.placement?.id);
   const caption = createMemo(() => {
     const row = props.placement;
@@ -42,11 +45,6 @@ export function PhotoSlot(props: {
   const alternativeCorners = createMemo(() => {
     const row = props.placement;
     return row?.kind === "spread" ? captionCorners.filter((corner) => corner !== row.captionCorner) : [];
-  });
-  const crop = createMemo(() => {
-    const photo = props.photo;
-    const placement = props.placement;
-    return photo === undefined || placement === undefined ? undefined : cropImage(photo, props, placement.transform);
   });
   let image: HTMLImageElement | undefined;
   let surface!: HTMLButtonElement;
@@ -184,28 +182,38 @@ export function PhotoSlot(props: {
       >
         <Show when={props.photo}>
           {(photo) => (
-            <Show when={crop()}>
-              {(box) => (
-                <img
-                  ref={(element) => {
+            <Show when={props.placement}>
+              {(placement) => (
+                <SavedPhoto
+                  photo={photo()}
+                  transform={placement().transform}
+                  width={props.width}
+                  height={props.height}
+                  retry={mediaRetry()}
+                  onImage={(element) => {
                     image = element;
                   }}
-                  src={photo().thumbnail.url}
-                  alt={photo().filename}
-                  draggable={false}
-                  style={{
-                    width: `${String((box().width / props.width) * 100)}%`,
-                    height: `${String((box().height / props.height) * 100)}%`,
-                    left: `${String((box().left / props.width) * 100)}%`,
-                    top: `${String((box().top / props.height) * 100)}%`,
-                    transform: props.placement?.transform.mirrored === true ? "scaleX(-1)" : undefined,
-                  }}
+                  onError={() => setMediaFailed(true)}
                 />
               )}
             </Show>
           )}
         </Show>
       </button>
+      <Show when={mediaFailed()}>
+        <div class="caption-feedback" role="alert">
+          Photograph could not be loaded.
+          <button
+            type="button"
+            onClick={() => {
+              setMediaFailed(false);
+              setMediaRetry((value) => value + 1);
+            }}
+          >
+            Retry photograph
+          </button>
+        </div>
+      </Show>
       <Show when={caption()}>
         {(content) => (
           <Show

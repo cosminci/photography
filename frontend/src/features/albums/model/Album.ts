@@ -1,5 +1,5 @@
 import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTemplate, SpreadMembership } from "./Workspace";
-import type { ChapterSave, PhotoInventory } from "./Photo";
+import type { ChapterSave, Photo, PhotoInventory } from "./Photo";
 import type { PlacementClient } from "./Placement";
 import type { GearClient } from "./Gear";
 
@@ -30,6 +30,7 @@ export interface AlbumPage {
 }
 
 export interface AlbumClient extends PlacementClient, GearClient {
+  readonly photo: (id: string) => Promise<Photo>;
   readonly list: (page: number) => Promise<AlbumPage>;
   readonly create: (year: number) => Promise<AlbumSummary>;
   readonly rename: (id: string, title: string) => Promise<AlbumSummary>;

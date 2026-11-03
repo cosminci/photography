@@ -21,6 +21,7 @@ import "./workspace.css";
 import { TemplateSelector } from "./TemplateSelector";
 import { SpreadConfirmation } from "./SpreadConfirmation";
 import { createPlacementSession } from "./PlacementSession";
+import { CompositionControls } from "./CompositionControls";
 import type { PhotoChoice } from "./PhotoDrag";
 import type { CanvasPhotos } from "./Canvas";
 import { describeGear, validateGear, type GearClient } from "../model/Gear";
@@ -218,10 +219,20 @@ export function AlbumWorkspace(props: {
     const spread = selectedSpread();
     const confirmed = placement.snapshot();
     if (spread === undefined || confirmed?.kind !== "spread" || confirmed.id !== spread.id) return spread;
-    const common = { ...spread, templateId: confirmed.layout.templateId, slots: confirmed.layout.slots, placements: confirmed.placements };
+    const common = {
+      ...spread,
+      bleed: confirmed.layout.bleed,
+      templateId: confirmed.layout.templateId,
+      slots: confirmed.layout.slots,
+      placements: confirmed.placements,
+    };
     return common;
   });
   const chapter = createMemo(() => props.workspace.chapters.find((candidate) => candidate.id === selectedSpread()?.chapter));
+  const navigatorSpreads = createMemo(() => {
+    const acknowledged = displayedSpread();
+    return props.workspace.spreads.map((spread) => (spread.id === acknowledged?.id ? acknowledged : spread));
+  });
   const selectedChapterId = createMemo(() => chapter()?.id);
   const [gearText, setGearText] = createSignal<string>();
   const [gearError, setGearError] = createSignal<string>();
@@ -303,7 +314,7 @@ export function AlbumWorkspace(props: {
           kind: "spread",
           id: spread.id,
           placements: spread.placements,
-          layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
+          layout: { kind: spread.kind, bleed: spread.bleed, templateId: spread.templateId, slots: spread.slots },
         } as const;
         const current = placement.snapshot();
         if (current?.kind === "spread" && current.id === spread.id) placement.reconcile(savedSpread);
@@ -631,7 +642,7 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={placement.error()}>
         {(message) => (
-          <p role="alert">
+          <p id="photo-save-feedback" role="alert">
             {message()}{" "}
             <Show when={photoRecoveryReason()}>
               {(reason) => (
@@ -779,6 +790,7 @@ export function AlbumWorkspace(props: {
         }}
       >
         <div class="workspace-editor">
+          <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
           <Show when={displayedSpread()}>
             {(spread) => (
               <TemplateSelector
@@ -901,7 +913,11 @@ export function AlbumWorkspace(props: {
             <ChapterOutline
               albumId={props.album.id}
               chapters={props.workspace.chapters}
-              spreads={props.workspace.spreads}
+              spreads={navigatorSpreads()}
+              photos={editing().photos}
+              onRetry={() => {
+                void refresh();
+              }}
               part={part()}
               creationReason={creationReason()}
               unavailable={refreshReason() ?? navigationReason()}

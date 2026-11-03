@@ -107,12 +107,21 @@ describe("same-origin album HTTP client", () => {
     async (captionCorner) => {
       const transform = { x: 3, y: 4, zoom: 2, mirrored: true };
       const slot = { id: "slot", kind: "photo", x: 0, y: 0, width: 100, height: 100 };
+      const presentation = { bleed: [], contentBox: { x: 1, y: 1, width: 98, height: 98 }, visibleBox: { x: 1, y: 1, width: 98, height: 98 } };
       const placement = { id: "placement", slotId: slot.id, photoId: "photo", captionCorner, transform };
-      const wire = { id: "spread/id", kind: "photos_only", templateId: "template", slots: [slot], placements: [placement] };
+      const wire = {
+        id: "spread/id",
+        kind: "photos_only",
+        templateId: "template",
+        bleedState: "disabled",
+        bleedAvailable: true,
+        slots: [{ ...slot, ...presentation }],
+        placements: [placement],
+      };
       const saved = {
         kind: "spread",
         id: wire.id,
-        layout: { kind: wire.kind, templateId: wire.templateId, slots: wire.slots },
+        layout: { kind: wire.kind, templateId: wire.templateId, bleed: { state: "disabled", available: true }, slots: [{ ...slot, presentation }] },
         placements: [{ kind: "spread", ...placement }],
       };
       const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(wire)));
@@ -175,7 +184,15 @@ describe("same-origin album HTTP client", () => {
       sourceFolder: "/photos/Home",
       description: "",
     };
-    const spread = { id: "spread", kind: "chapter_start", templateId: "layout", slots: [], placements: [] };
+    const spread = {
+      id: "spread",
+      kind: "chapter_start",
+      templateId: "layout",
+      bleedState: "disabled",
+      bleedAvailable: false,
+      slots: [],
+      placements: [],
+    };
     const composition = [
       { id: "opening", chapter: null },
       { id: "spread", chapter: "chapter" },
@@ -192,7 +209,15 @@ describe("same-origin album HTTP client", () => {
 
     expect(await client.chapters("album", signal)).toEqual([chapter]);
     expect(await client.composition("album", signal)).toEqual(composition);
-    expect(await client.spread("album", "spread", "chapter", signal)).toEqual({ ...spread, chapter: "chapter" });
+    expect(await client.spread("album", "spread", "chapter", signal)).toEqual({
+      id: spread.id,
+      kind: spread.kind,
+      templateId: spread.templateId,
+      bleed: { state: "disabled", available: false },
+      chapter: "chapter",
+      slots: [],
+      placements: [],
+    });
     expect(await client.countries(signal)).toEqual([country]);
     expect(fetcher.mock.calls.every(([, init]) => init?.signal === signal)).toBe(true);
   });
@@ -202,7 +227,7 @@ describe("same-origin album HTTP client", () => {
     const snapshot =
       kind === "cover"
         ? { frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] }
-        : { id: "spread", kind: "photos_only", templateId: "layout", slots: [], placements: [] };
+        : { id: "spread", kind: "photos_only", templateId: "layout", bleedState: "disabled", bleedAvailable: false, slots: [], placements: [] };
     const transform = { x: 0, y: 0, zoom: 1, mirrored: false };
     const edits: PlacementEdit[] = [
       { operation: "place", slotId: "slot", photoId: "photo" },
@@ -255,8 +280,24 @@ describe("same-origin album HTTP client", () => {
   ] as const)("should reject invalid displayed composition movement", (spreads, target, direction, message) => {
     const displayed = spreads.map<Spread>((member) =>
       member.chapter === null
-        ? { ...member, kind: "album_start", chapter: null, templateId: "layout", slots: [], placements: [] }
-        : { ...member, kind: "photos_only", chapter: member.chapter, templateId: "layout", slots: [], placements: [] },
+        ? {
+            ...member,
+            bleed: { state: "disabled", available: false },
+            kind: "album_start",
+            chapter: null,
+            templateId: "layout",
+            slots: [],
+            placements: [],
+          }
+        : {
+            ...member,
+            bleed: { state: "disabled", available: false },
+            kind: "photos_only",
+            chapter: member.chapter,
+            templateId: "layout",
+            slots: [],
+            placements: [],
+          },
     );
     expect(() => buildChapterReorder(displayed, target, direction)).toThrow(message);
   });
@@ -264,6 +305,7 @@ describe("same-origin album HTTP client", () => {
   it("should replace complete chapter membership when moving later while retaining unrelated chapter members", async () => {
     const displayed: Spread[] = ["opening", "first", "second"].map((id) => ({
       id,
+      bleed: { state: "disabled", available: false },
       kind: "photos_only",
       chapter: "c",
       templateId: "layout",

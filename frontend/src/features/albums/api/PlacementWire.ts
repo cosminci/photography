@@ -13,14 +13,14 @@ import type {
 import { readArray, readNumber, readRecord, readText } from "./Wire";
 import { readSlot } from "./WorkspaceWire";
 import type { Spread } from "../model/Workspace";
-import type { SpreadLayout } from "../model/Layout";
+import type { Slot, SlotBox, SpreadEdge, SpreadLayout } from "../model/Layout";
 
 export function readSpread(value: unknown): Spread {
   const fields = readRecord(value);
   const id = readText(fields["id"]);
   const saved = readPlacementSnapshot(value, { kind: "spread", id });
   const kind = saved.layout.kind;
-  const geometry = { id, templateId: saved.layout.templateId, slots: saved.layout.slots, placements: saved.placements };
+  const geometry = { id, ...saved.layout, placements: saved.placements };
   if (kind !== "album_start") return { ...geometry, kind, chapter: readText(fields["chapter"]) };
   if (fields["chapter"] !== null) throw new Error("An album opening cannot belong to a chapter");
   return { ...geometry, kind, chapter: null };
@@ -38,10 +38,15 @@ export function readPlacementSnapshot(value: unknown, context: PlacementContext)
     requireUniquePlacements(placements);
     const kind = fields["kind"];
     if (kind !== "album_start" && kind !== "chapter_start" && kind !== "photos_only") throw new Error("Unknown spread kind");
+    const state = fields["bleedState"];
+    const available = fields["bleedAvailable"];
+    if ((state !== "disabled" && state !== "enabled" && state !== "mixed") || typeof available !== "boolean")
+      throw new Error("Invalid spread bleed state");
     const layout: SpreadLayout = {
       kind,
       templateId: readText(fields["templateId"]),
-      slots: readArray(fields["slots"]).map(readSlot),
+      slots: readArray(fields["slots"]).map(readSavedSlot),
+      bleed: { state, available },
     };
     const photoSlots = new Set(layout.slots.filter((slot) => slot.kind === "photo").map((slot) => slot.id));
     if (new Set(layout.slots.map((slot) => slot.id)).size !== layout.slots.length || placements.some((row) => !photoSlots.has(row.slotId)))
@@ -60,6 +65,30 @@ export function readPlacementSnapshot(value: unknown, context: PlacementContext)
   )
     throw new Error("Invalid cover composition");
   return { kind: "cover", placements, frontSlotId, backSlotId, spineOwner };
+}
+
+function readSavedSlot(value: unknown): Slot {
+  const slot = readSlot(value);
+  if (slot.kind === "text") return slot;
+  const fields = readRecord(value);
+  const bleed = readArray(fields["bleed"]).map(readEdge);
+  if (new Set(bleed).size !== bleed.length) throw new Error("Duplicate saved bleed direction");
+  return {
+    ...slot,
+    presentation: { bleed, contentBox: readBox(fields["contentBox"]), visibleBox: readBox(fields["visibleBox"]) },
+  };
+}
+
+function readBox(value: unknown): SlotBox {
+  const fields = readRecord(value);
+  const box = { x: readNumber(fields["x"]), y: readNumber(fields["y"]), width: readNumber(fields["width"]), height: readNumber(fields["height"]) };
+  if (box.x < 0 || box.y < 0 || box.width <= 0 || box.height <= 0) throw new Error("Invalid saved photo box");
+  return box;
+}
+
+function readEdge(value: unknown): SpreadEdge {
+  if (value !== "top" && value !== "bottom" && value !== "left" && value !== "right") throw new Error("Invalid saved bleed direction");
+  return value;
 }
 
 export function readTransform(value: unknown): PhotoTransform {

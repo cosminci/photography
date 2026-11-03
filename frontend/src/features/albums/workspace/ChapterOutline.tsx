@@ -1,12 +1,18 @@
-import { For, Show, createEffect, createMemo, on, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import type { Chapter, Slot, Spread } from "../model/Workspace";
 import { findSelection, findSpreadNavigation } from "./WorkspaceSelection";
-import { spreadAspectRatio } from "./Canvas";
+import { spreadAspectRatio, spreadWidth, spreadHeight } from "./Canvas";
+import type { Photo } from "../model/Photo";
+import type { SpreadPlacement } from "../model/Placement";
+import { SavedPhoto } from "./SavedPhoto";
+import { visibleBox } from "../model/Layout";
 
 export function ChapterOutline(props: {
   albumId: string;
   chapters: readonly Pick<Chapter, "id" | "name">[];
   spreads: readonly Spread[];
+  photos?: readonly Photo[];
+  onRetry?: () => void;
   part: string | null;
   creationReason: string | undefined;
   unavailable: string | undefined;
@@ -17,6 +23,13 @@ export function ChapterOutline(props: {
   onSelect: (part: string | null) => void;
   onCreate: (opener: HTMLButtonElement) => void;
 }) {
+  const [mediaFailed, setMediaFailed] = createSignal(false);
+  const [mediaRetry, setMediaRetry] = createSignal(0);
+  const missingPhotos = createMemo(
+    () =>
+      props.photos !== undefined &&
+      props.spreads.some((spread) => spread.placements.some((placement) => props.photos?.some((photo) => photo.id === placement.photoId) !== true)),
+  );
   const selection = createMemo(() => findSelection(props.spreads, props.part));
   const selectedSpread = createMemo(() => {
     const selected = selection();
@@ -74,7 +87,17 @@ export function ChapterOutline(props: {
             props.onSelect(null);
           }}
         >
-          <Show when={props.spreads.find((spread) => spread.kind === "album_start")}>{(spread) => <SpreadThumbnail slots={spread().slots} />}</Show>
+          <Show when={props.spreads.find((spread) => spread.kind === "album_start")}>
+            {(spread) => (
+              <SpreadThumbnail
+                slots={spread().slots}
+                placements={spread().placements}
+                photos={props.photos}
+                retry={mediaRetry()}
+                onMediaError={() => setMediaFailed(true)}
+              />
+            )}
+          </Show>
         </a>
         <For each={props.chapters.map((chapter) => chapter.id)}>
           {(chapterId) => (
@@ -99,7 +122,13 @@ export function ChapterOutline(props: {
                                 props.onSelect(destination());
                               }}
                             >
-                              <SpreadThumbnail slots={spread().slots} />
+                              <SpreadThumbnail
+                                slots={spread().slots}
+                                placements={spread().placements}
+                                photos={props.photos}
+                                retry={mediaRetry()}
+                                onMediaError={() => setMediaFailed(true)}
+                              />
                             </a>
                           );
                         }}
@@ -112,6 +141,28 @@ export function ChapterOutline(props: {
           )}
         </For>
       </nav>
+      <Show when={mediaFailed()}>
+        <p role="alert" class="preview-feedback">
+          Some navigator photographs could not be loaded.
+          <button
+            type="button"
+            onClick={() => {
+              setMediaFailed(false);
+              setMediaRetry((value) => value + 1);
+            }}
+          >
+            Retry navigator photographs
+          </button>
+        </p>
+      </Show>
+      <Show when={missingPhotos()}>
+        <p role="alert" class="preview-feedback">
+          Saved navigator photo data is unavailable.
+          <button type="button" onClick={() => props.onRetry?.()}>
+            Reload navigator data
+          </button>
+        </p>
+      </Show>
       <div class="spread-navigation-toolbar">
         <div role="group" aria-label="Spread navigation">
           <SpreadNavigationButton name="First spread" symbol="⇤" destination={navigation().first} onSelect={props.onSelect} />
@@ -280,7 +331,13 @@ function SpreadNavigationButton(props: {
   );
 }
 
-export function SpreadThumbnail(props: { slots: readonly Omit<Slot, "id">[] }) {
+export function SpreadThumbnail(props: {
+  slots: readonly (Omit<Slot, "id"> & { readonly id?: string })[];
+  placements?: readonly SpreadPlacement[];
+  photos?: readonly Photo[] | undefined;
+  retry?: number;
+  onMediaError?: () => void;
+}) {
   return (
     <svg
       aria-hidden="true"
@@ -291,8 +348,33 @@ export function SpreadThumbnail(props: { slots: readonly Omit<Slot, "id">[] }) {
       <rect width="100%" height="100%" fill="white" />
       <For each={props.slots}>
         {(slot) => (
-          <svg x={`${String(slot.x)}%`} y={`${String(slot.y)}%`} width={`${String(slot.width)}%`} height={`${String(slot.height)}%`}>
+          <svg
+            x={`${String(visibleBox(slot).x)}%`}
+            y={`${String(visibleBox(slot).y)}%`}
+            width={`${String(visibleBox(slot).width)}%`}
+            height={`${String(visibleBox(slot).height)}%`}
+          >
             <rect width="100%" height="100%" fill={slot.kind === "text" ? "#bed9d9" : "#dfebec"} />
+            <Show when={props.placements?.find((row) => row.slotId === slot.id)}>
+              {(placement) => (
+                <Show when={props.photos?.find((photo) => photo.id === placement().photoId)}>
+                  {(photo) => (
+                    <foreignObject width="100%" height="100%">
+                      <div class="saved-photo-frame">
+                        <SavedPhoto
+                          photo={photo()}
+                          transform={placement().transform}
+                          width={(spreadWidth * visibleBox(slot).width) / 100}
+                          height={(spreadHeight * visibleBox(slot).height) / 100}
+                          retry={props.retry}
+                          onError={() => props.onMediaError?.()}
+                        />
+                      </div>
+                    </foreignObject>
+                  )}
+                </Show>
+              )}
+            </Show>
           </svg>
         )}
       </For>

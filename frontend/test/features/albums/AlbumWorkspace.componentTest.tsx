@@ -65,6 +65,7 @@ const photoSlot = { id: "photo-slot", kind: "photo" as const, x: 2, y: 4, width:
 const textSlot = { id: "text-slot", kind: "text" as const, x: 50, y: 4, width: 48, height: 92 };
 const opening = {
   id: "album-opening",
+  bleed: { state: "disabled" as const, available: true },
   templateId: "layout",
   chapter: null,
   kind: "album_start" as const,
@@ -73,6 +74,7 @@ const opening = {
 };
 const vacationOpening = {
   id: "vacation-opening",
+  bleed: { state: "disabled" as const, available: true },
   templateId: "layout",
   chapter: vacation.id,
   kind: "chapter_start" as const,
@@ -81,6 +83,7 @@ const vacationOpening = {
 };
 const vacationPhoto = {
   id: "vacation-photo",
+  bleed: { state: "disabled" as const, available: true },
   templateId: "layout",
   chapter: vacation.id,
   kind: "photos_only" as const,
@@ -96,7 +99,15 @@ const workspace: Workspace = {
     opening,
     vacationOpening,
     vacationPhoto,
-    { id: "home-opening", templateId: "layout", chapter: home.id, kind: "chapter_start", slots: [textSlot], placements: [] },
+    {
+      id: "home-opening",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      chapter: home.id,
+      kind: "chapter_start",
+      slots: [textSlot],
+      placements: [],
+    },
   ],
   countries: [
     { id: "ro", name: "Romania", code: "RO" },
@@ -216,7 +227,12 @@ describe("album workspace browser boundary", () => {
         kind: "spread" as const,
         id: interior.id,
         placements: [placed],
-        layout: { kind: interior.kind, templateId: interior.templateId, slots: interior.slots },
+        layout: {
+          kind: interior.kind,
+          bleed: { state: "disabled" as const, available: true },
+          templateId: interior.templateId,
+          slots: interior.slots,
+        },
       };
       const client = buildClient(
         {
@@ -612,7 +628,7 @@ describe("album workspace browser boundary", () => {
       kind: "spread",
       id: spread.id,
       placements: spread.placements,
-      layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots },
+      layout: { kind: spread.kind, bleed: { state: "disabled" as const, available: true }, templateId: spread.templateId, slots: spread.slots },
     });
     await waitFor(() => {
       expect(client.chapters).toHaveBeenCalledTimes(2);
@@ -1393,7 +1409,7 @@ describe("album workspace browser boundary", () => {
         kind: "spread",
         id: opening.id,
         placements: [placement],
-        layout: { kind: opening.kind, templateId: opening.templateId, slots: opening.slots },
+        layout: { kind: opening.kind, bleed: { state: "disabled" as const, available: true }, templateId: opening.templateId, slots: opening.slots },
       } satisfies SpreadSnapshot),
       templates: vi.fn().mockResolvedValue([
         { id: "layout", name: "Applied", slots: [photoSlot, textSlot] },
@@ -1537,6 +1553,43 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent("Newly saved description");
     expect(client.spread).toHaveBeenCalledTimes(workspace.spreads.length * 2);
     expect(client.readPlacements).not.toHaveBeenCalled();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it.each(["front", "back"] as const)("should show the saved %s spine owner without acquiring new editing authority", async (owner) => {
+    window.history.replaceState(null, "", "?part=cover");
+    const client = buildClient({
+      readPlacements: vi.fn().mockResolvedValue({
+        kind: "cover",
+        placements: [],
+        frontSlotId: "front",
+        backSlotId: "back",
+        spineOwner: owner,
+      }),
+    });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    expect(await screen.findByText(`Spine/gutter: ${owner} cover`)).toBeInTheDocument();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it("should refresh missing navigator photo data through the existing workspace read without writing", async () => {
+    const placed = {
+      kind: "spread" as const,
+      id: "placement",
+      slotId: photoSlot.id,
+      photoId: "missing",
+      captionCorner: "bottom_left" as const,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+    };
+    const saved = { ...workspace, spreads: [{ ...opening, placements: [placed] }, ...workspace.spreads.slice(1)] };
+    const client = buildClient({}, saved);
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const retry = await screen.findByRole("button", { name: "Reload navigator data" });
+    const reads = vi.mocked(client.chapters).mock.calls.length;
+    fireEvent.click(retry);
+    await waitFor(() => {
+      expect(client.chapters).toHaveBeenCalledTimes(reads + 1);
+    });
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
@@ -2746,6 +2799,7 @@ describe("album workspace browser boundary", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = workspace): AlbumClient {
   return {
+    photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
     gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
     chapterGear: vi.fn().mockResolvedValue([]),
     saveChapterGear: vi.fn().mockResolvedValue(undefined),
@@ -2755,24 +2809,30 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
     createLens: vi.fn(),
     updateLens: vi.fn(),
     deleteLens: vi.fn(),
-    readPlacements: vi
-      .fn()
-      .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-        Promise.resolve(
-          context.kind === "cover"
-            ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [], layout: { kind: "photos_only", templateId: "layout", slots: [photoSlot] } },
-        ),
+    readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
+      Promise.resolve(
+        context.kind === "cover"
+          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          : {
+              kind: "spread",
+              id: context.id,
+              placements: [],
+              layout: { kind: "photos_only", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [photoSlot] },
+            },
       ),
-    editPlacements: vi
-      .fn()
-      .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-        Promise.resolve(
-          context.kind === "cover"
-            ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [], layout: { kind: "photos_only", templateId: "layout", slots: [photoSlot] } },
-        ),
+    ),
+    editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
+      Promise.resolve(
+        context.kind === "cover"
+          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          : {
+              kind: "spread",
+              id: context.id,
+              placements: [],
+              layout: { kind: "photos_only", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [photoSlot] },
+            },
       ),
+    ),
     list: vi.fn(),
     create: vi.fn(),
     rename: vi.fn(),
