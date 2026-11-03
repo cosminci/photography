@@ -209,7 +209,7 @@ object EditorSessionApi:
         case OwnershipChangeResult.Changed          => (event("ownership_changed", Json.obj()), false)
         case OwnershipChangeResult.Rejected(reason) => (event("session_lost", code(encodeFailure(reason))), true)
       }
-      val heartbeat = Stream.awakeEvery[F](10.seconds).as((ServerSentEvent(comment = Some("heartbeat")), false))
+      val heartbeat = Stream.awakeEvery[F](1.second).as((ServerSentEvent(comment = Some("heartbeat")), false))
       updates.merge(heartbeat).takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
 
     private val aliasChange = Decoder.forProduct1("alias")((alias: String) => alias)

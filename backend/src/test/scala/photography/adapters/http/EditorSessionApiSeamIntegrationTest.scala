@@ -205,7 +205,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(departure.status, Status.Ok)
         assertEquals(departureBody, Json.obj("released" -> Json.True))
         assertEquals(departure.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
-        assertEquals(elapsed, 10.seconds)
+        assertEquals(elapsed, 1.second)
         assertEquals(response.contentType.map(_.mediaType), Some(MediaType.`text/event-stream`))
         assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
         assertEquals(response.headers.get(CIString("X-Accel-Buffering")).map(_.head.value), Some("no"))

@@ -65,6 +65,8 @@ The active document releases its exact binding through a header-authenticated ke
 
 Blocked tabs keep retrying authoritative binding without renewing the active owner's lease. Departure retains the exact stream binding independently of confirmed editing access, so interrupted or still-establishing documents can release it.
 
+Session SSE sends transport-only comments every second to detect closed connections promptly when a browser drops its departure request. These comments renew neither lease; accepted session heartbeats and target renewals retain their ten-second cadence.
+
 The browser allocates its profile identity atomically in IndexedDB, so simultaneous first-run tabs share one identity. It remembers the alias and resumable credential separately; each loaded document creates a fresh, memory-only tab identity.
 
 Its live session SSE connection claims application access atomically before opening routes.
