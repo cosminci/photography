@@ -43,7 +43,19 @@ Run under a NAS process supervisor that captures output and restarts failed proc
 
 [Application configuration](../backend/src/main/resources/application.conf) owns environment settings and defaults. Set `PHOTOGRAPHY_HOST`/`PHOTOGRAPHY_PORT` for the listener and `PHOTOGRAPHY_THUMBNAIL_QUALITY` for preview quality; invalid configuration stops startup.
 
-Preserve long-lived Server-Sent Events through the proxy: disable buffering and allow idle connections to survive heartbeats. Keep API and event responses uncached and preserve immutable thumbnail caching; [OpenAPI](http-api.openapi.json) owns the transport details.
+Trusted-network HTTP supports browser editing coordination. Preserve private headers and unbuffered, uncached Server-Sent Events through proxies; transport keepalives detect disconnected tabs without renewing editing leases.
+
+Preserve immutable thumbnail caching independently of API and event responses. [OpenAPI](http-api.openapi.json) owns credential, lease and transport details.
+
+## Editing access and recovery
+
+The single backend keeps session and target authority in memory; existing SQLite session/lock tables remain dormant. Restart invalidates old credentials and grants while preserving saved albums and remembered browser identity and alias.
+
+Accepted session heartbeats and target renewals extend separate leases. Expiry releases abandoned access after a crash or network loss; a failed heartbeat attempt extends nothing.
+
+For a blocked extra tab, close the active tab and allow automatic binding retry; an unresponsive browser releases access on expiry. Remembered browser identity is separate from the temporary connection and should be retained.
+
+When access becomes unconfirmed, reconnect and reconcile saved state before resubmitting retained drafts. Backend loss blocks the application; after restart or grant loss, review drafts explicitly because reacquisition never replays them.
 
 ## Readiness, logs and metrics
 
