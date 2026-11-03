@@ -82,6 +82,7 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
                         {(album) => (
                           <AlbumCard
                             album={album()}
+                            client={props.client}
                             onRename={() => {
                               setAction({ kind: "rename", album: album() });
                             }}

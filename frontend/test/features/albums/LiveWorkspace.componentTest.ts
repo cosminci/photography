@@ -35,9 +35,33 @@ const workspace: Workspace = {
     description: "",
   })),
   spreads: [
-    { id: "opening", chapter: null, kind: "album_start", templateId: "layout", slots: [], placements: [] },
-    { id: "a-opening", chapter: "a", kind: "chapter_start", templateId: "layout", slots: [], placements: [] },
-    { id: "b-opening", chapter: "b", kind: "chapter_start", templateId: "layout", slots: [], placements: [] },
+    {
+      id: "opening",
+      chapter: null,
+      kind: "album_start",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      slots: [],
+      placements: [],
+    },
+    {
+      id: "a-opening",
+      chapter: "a",
+      kind: "chapter_start",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      slots: [],
+      placements: [],
+    },
+    {
+      id: "b-opening",
+      chapter: "b",
+      kind: "chapter_start",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      slots: [],
+      placements: [],
+    },
   ],
   photoInventories: { a: inventory, b: inventory },
 };
@@ -350,15 +374,21 @@ describe("live workspace application coordination", () => {
             { id: "opening", chapter: null },
             { id: "photo", chapter: "a" },
           ]),
-          spread: vi
-            .fn()
-            .mockImplementation((_album: string, id: string) =>
-              Promise.resolve(
-                id === "opening"
-                  ? workspace.spreads[0]
-                  : { id: "photo", chapter: "a", kind: "photos_only", templateId: "layout", slots: [], placements: [] },
-              ),
+          spread: vi.fn().mockImplementation((_album: string, id: string) =>
+            Promise.resolve(
+              id === "opening"
+                ? workspace.spreads[0]
+                : {
+                    id: "photo",
+                    chapter: "a",
+                    kind: "photos_only",
+                    bleed: { state: "disabled" as const, available: true },
+                    templateId: "layout",
+                    slots: [],
+                    placements: [],
+                  },
             ),
+          ),
         },
         message: "Invalid chapter spread block",
       },
@@ -379,11 +409,17 @@ describe("live workspace application coordination", () => {
             { id: "opening", chapter: null },
             { id: "another-opening", chapter: null },
           ]),
-          spread: vi
-            .fn()
-            .mockImplementation((_album: string, id: string) =>
-              Promise.resolve({ id, chapter: null, kind: "album_start", templateId: "layout", slots: [], placements: [] }),
-            ),
+          spread: vi.fn().mockImplementation((_album: string, id: string) =>
+            Promise.resolve({
+              id,
+              chapter: null,
+              kind: "album_start",
+              bleed: { state: "disabled" as const, available: true },
+              templateId: "layout",
+              slots: [],
+              placements: [],
+            }),
+          ),
         },
         message: "Invalid chapter spread block",
       },

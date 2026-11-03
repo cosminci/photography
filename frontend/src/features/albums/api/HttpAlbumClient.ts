@@ -2,7 +2,7 @@ import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type Al
 import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readText, readNumber } from "./Wire";
 import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
 import { readArray } from "./Wire";
-import { readPhotoInventory, readScheduling } from "./PhotoWire";
+import { readPhoto, readPhotoInventory, readScheduling } from "./PhotoWire";
 import { readPlacementSnapshot, readSpread } from "./PlacementWire";
 import { readCamera, readChapterGear, readGearCatalog, readLens } from "./GearWire";
 import type {
@@ -75,6 +75,14 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   function editPlacements(id: string, context: SpreadContext, edit: PlacementEdit): Promise<SpreadSnapshot>;
   function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot>;
   async function editPlacements(id: string, context: PlacementContext, edit: PlacementEdit): Promise<PlacementSnapshot> {
+    if (edit.operation === "bleed") {
+      if (context.kind !== "spread") throw new Error("Bleed selection belongs to interior spreads");
+      return request(`${resourcePath(id, context)}/bleed`, "PUT", { enabled: edit.enabled }, 200, (value) => readPlacementSnapshot(value, context));
+    }
+    if (edit.operation === "spineOwner") {
+      if (context.kind !== "cover") throw new Error("Spine ownership belongs to the cover");
+      return request(`${resourcePath(id, context)}/spine-owner`, "PUT", { owner: edit.owner }, 200, (value) => readPlacementSnapshot(value, context));
+    }
     const base = `${resourcePath(id, context)}/placements`;
     if (edit.operation === "place")
       return request(base, "POST", { slotId: edit.slotId, photoId: edit.photoId }, 200, (value) => readPlacementSnapshot(value, context));
@@ -92,6 +100,7 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   }
 
   return {
+    photo: (id) => request(`/api/photos/${encodeURIComponent(id)}`, "GET", undefined, 200, readPhoto),
     gearCatalog: (signal) => request("/api/gear", "GET", undefined, 200, readGearCatalog, signal),
     chapterGear: (id, chapterId, signal) =>
       request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/gear`, "GET", undefined, 200, readChapterGear, signal),

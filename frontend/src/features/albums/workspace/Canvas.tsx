@@ -7,6 +7,7 @@ import type { PhotoChoice } from "./PhotoDrag";
 import { albumAuthors, type Author } from "../model/Album";
 import type { CaptionEditing } from "./PhotoCaption";
 import { EditorialText } from "./EditorialText";
+import { visibleBox } from "../model/Layout";
 
 export interface CanvasPhotos {
   readonly session: PlacementSession;
@@ -21,8 +22,9 @@ export interface CanvasPhotos {
   readonly textUnavailable?: string | undefined;
 }
 
-const spreadWidth = 2381.102;
-const spreadHeight = 765.354;
+export const spreadWidth = 2381.102;
+export const spreadHeight = 765.354;
+export const coverPhotoWidth = 1148;
 export const spreadAspectRatio = spreadWidth / spreadHeight;
 export const coverAspectRatio = 3;
 
@@ -76,7 +78,12 @@ export function SpreadCanvas(props: {
             {(slotId) => (
               <Show when={props.slots.find((slot) => slot.id === slotId)}>
                 {(slot) => (
-                  <svg x={`${String(slot().x)}%`} y={`${String(slot().y)}%`} width={`${String(slot().width)}%`} height={`${String(slot().height)}%`}>
+                  <svg
+                    x={`${String(visibleBox(slot()).x)}%`}
+                    y={`${String(visibleBox(slot()).y)}%`}
+                    width={`${String(visibleBox(slot()).width)}%`}
+                    height={`${String(visibleBox(slot()).height)}%`}
+                  >
                     <Show
                       when={slot().kind === "photo"}
                       fallback={
@@ -162,25 +169,33 @@ export function SpreadCanvas(props: {
             <For each={props.slots.filter((slot) => slot.kind === "photo").map((slot) => slot.id)}>
               {(slotId, index) => (
                 <Show when={props.slots.find((slot) => slot.id === slotId)}>
-                  {(slot) => (
-                    <div
-                      class="spread-photo-frame"
-                      style={{
-                        left: `${String(slot().x)}%`,
-                        top: `${String(slot().y)}%`,
-                        width: `${String(slot().width)}%`,
-                        height: `${String(slot().height)}%`,
-                      }}
-                    >
-                      <SlotPhoto
-                        slotId={slotId}
-                        label={`Photo slot ${String(index() + 1)}`}
-                        width={(spreadWidth * slot().width) / 100}
-                        height={(spreadHeight * slot().height) / 100}
-                        editing={editing()}
-                      />
-                    </div>
-                  )}
+                  {(slot) => {
+                    const frame = () => visibleBox(slot());
+                    const content = () => slot().presentation?.contentBox ?? slot();
+                    return (
+                      <div
+                        class="spread-photo-frame"
+                        style={{
+                          left: `${String(frame().x)}%`,
+                          top: `${String(frame().y)}%`,
+                          width: `${String(frame().width)}%`,
+                          height: `${String(frame().height)}%`,
+                          "--caption-left": `${String((100 * (content().x - frame().x)) / frame().width)}%`,
+                          "--caption-right": `${String((100 * (frame().x + frame().width - content().x - content().width)) / frame().width)}%`,
+                          "--caption-top": `${String((100 * (content().y - frame().y)) / frame().height)}%`,
+                          "--caption-bottom": `${String((100 * (frame().y + frame().height - content().y - content().height)) / frame().height)}%`,
+                        }}
+                      >
+                        <SlotPhoto
+                          slotId={slotId}
+                          label={`Photo slot ${String(index() + 1)}`}
+                          width={(spreadWidth * frame().width) / 100}
+                          height={(spreadHeight * frame().height) / 100}
+                          editing={editing()}
+                        />
+                      </div>
+                    );
+                  }}
                 </Show>
               )}
             </For>
@@ -236,6 +251,9 @@ export function CoverCanvas(props: { title: string; year: number; authors: reado
           </p>
         </div>
       </div>
+      <Show when={composition()}>
+        {(saved) => <span class="cover-owner-indication">Spine/gutter: {saved().spineOwner === "front" ? "front cover" : "back cover"}</span>}
+      </Show>
     </div>
   );
 }

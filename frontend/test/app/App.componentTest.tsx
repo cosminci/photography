@@ -53,6 +53,7 @@ describe("album dashboard and open", () => {
     const client = buildClient({
       spread: vi.fn().mockResolvedValue({
         id: "opening",
+        bleed: { state: "disabled" as const, available: true },
         templateId: "layout",
         chapter: null,
         kind: "album_start",
@@ -449,6 +450,7 @@ describe("album dashboard and open", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
   return {
+    photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
     gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
     chapterGear: vi.fn().mockResolvedValue([]),
     saveChapterGear: vi.fn(),
@@ -458,24 +460,30 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     createLens: vi.fn(),
     updateLens: vi.fn(),
     deleteLens: vi.fn(),
-    readPlacements: vi
-      .fn()
-      .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-        Promise.resolve(
-          context.kind === "cover"
-            ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [], layout: { kind: "album_start", templateId: "layout", slots: [] } },
-        ),
+    readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
+      Promise.resolve(
+        context.kind === "cover"
+          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          : {
+              kind: "spread",
+              id: context.id,
+              placements: [],
+              layout: { kind: "album_start", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [] },
+            },
       ),
-    editPlacements: vi
-      .fn()
-      .mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-        Promise.resolve(
-          context.kind === "cover"
-            ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
-            : { kind: "spread", id: context.id, placements: [], layout: { kind: "album_start", templateId: "layout", slots: [] } },
-        ),
+    ),
+    editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
+      Promise.resolve(
+        context.kind === "cover"
+          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          : {
+              kind: "spread",
+              id: context.id,
+              placements: [],
+              layout: { kind: "album_start", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [] },
+            },
       ),
+    ),
     list: vi.fn().mockResolvedValue(firstPage),
     create: vi.fn().mockResolvedValue(firstAlbum),
     rename: vi.fn().mockResolvedValue(firstAlbum),
@@ -487,7 +495,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     remove: vi.fn().mockResolvedValue(undefined),
     chapters: vi.fn().mockResolvedValue([]),
     composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),
-    spread: vi.fn().mockResolvedValue({ id: "opening", templateId: "layout", chapter: null, kind: "album_start", slots: [], placements: [] }),
+    spread: vi.fn().mockResolvedValue({
+      id: "opening",
+      bleed: { state: "disabled" as const, available: true },
+      templateId: "layout",
+      chapter: null,
+      kind: "album_start",
+      slots: [],
+      placements: [],
+    }),
     countries: vi.fn().mockResolvedValue([]),
     photoSource: vi.fn().mockResolvedValue("/photos"),
     createChapter: vi.fn(),

@@ -485,6 +485,7 @@
   display: none;
 }
 .cover-canvas {
+  position: relative;
   container-type: inline-size;
   display: grid;
   grid-template-columns: 1fr 1fr;

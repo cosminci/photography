@@ -46,6 +46,8 @@ export interface CoverSnapshot {
 }
 export type PlacementSnapshot = SpreadSnapshot | CoverSnapshot;
 export type PlacementEdit =
+  | { readonly operation: "bleed"; readonly enabled: boolean }
+  | { readonly operation: "spineOwner"; readonly owner: CoverSnapshot["spineOwner"] }
   | { readonly operation: "place"; readonly slotId: string; readonly photoId: string }
   | { readonly operation: "remove"; readonly placementId: string }
   | { readonly operation: "move"; readonly placementId: string; readonly slotId: string }

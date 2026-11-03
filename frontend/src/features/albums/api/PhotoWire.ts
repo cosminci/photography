@@ -42,7 +42,7 @@ export function readScheduling(value: unknown): Scheduling {
   return readChoice(readRecord(value)["scheduling"], schedulingStates);
 }
 
-function readPhoto(value: unknown): Photo {
+export function readPhoto(value: unknown): Photo {
   const fields = readRecord(value);
   const thumbnail = readRecord(fields["thumbnail"]);
   const capturedLocal = readNullableText(fields["capturedLocal"]);

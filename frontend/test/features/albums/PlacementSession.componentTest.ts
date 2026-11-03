@@ -7,7 +7,12 @@ import { AlbumRequestError } from "../../../src/features/albums/model/Album";
 const initial: SpreadSnapshot = {
   kind: "spread",
   id: "spread",
-  layout: { kind: "photos_only", templateId: "layout", slots: [{ id: "s", kind: "photo", x: 0, y: 0, width: 100, height: 100 }] },
+  layout: {
+    kind: "photos_only",
+    bleed: { state: "disabled" as const, available: true },
+    templateId: "layout",
+    slots: [{ id: "s", kind: "photo", x: 0, y: 0, width: 100, height: 100 }],
+  },
   placements: [
     { kind: "spread", captionCorner: "top_left", id: "p", slotId: "s", photoId: "photo", transform: { x: 0, y: 0, zoom: 1, mirrored: false } },
   ],

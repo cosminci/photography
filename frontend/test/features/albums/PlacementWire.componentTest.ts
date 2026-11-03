@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { readPlacementSnapshot, readTransform } from "../../../src/features/albums/api/PlacementWire";
+import { readPlacementSnapshot, readSpread, readTransform } from "../../../src/features/albums/api/PlacementWire";
 import { readPhotoChoice } from "../../../src/features/albums/workspace/PhotoDrag";
 import { makeHttpAlbumClient } from "../../../src/features/albums/api/HttpAlbumClient";
 import { readPhotoInventory } from "../../../src/features/albums/api/PhotoWire";
@@ -11,12 +11,144 @@ describe("placement representation", () => {
   const layout = {
     kind: "photos_only" as const,
     templateId: "layout",
-    slots: [{ id: "front", kind: "photo" as const, x: 0, y: 0, width: 100, height: 100 }],
+    bleed: { state: "disabled" as const, available: true },
+    slots: [
+      {
+        id: "front",
+        kind: "photo" as const,
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        presentation: { bleed: [], contentBox: { x: 1, y: 1, width: 98, height: 98 }, visibleBox: { x: 1, y: 1, width: 98, height: 98 } },
+      },
+    ],
   };
+  const wireLayout = {
+    ...layout,
+    bleedState: layout.bleed.state,
+    bleedAvailable: layout.bleed.available,
+    slots: layout.slots.map(({ presentation, ...slot }) => ({ ...slot, ...presentation })),
+  };
+  const box = { x: 1, y: 1, width: 98, height: 98 };
+  const projectedSlot = { id: "front", kind: "photo", x: 0, y: 0, width: 100, height: 100, bleed: [], contentBox: box, visibleBox: box };
+
+  it("should reject a chapter-owned album opening instead of silently publishing it in navigation", () => {
+    expect(() => readSpread({ ...wireLayout, id: "opening", kind: "album_start", chapter: "foreign", placements: [] })).toThrow(
+      "An album opening cannot belong to a chapter",
+    );
+  });
+
+  it.each(["top", "bottom", "left", "right"])("should preserve the saved %s direction without inferring another bleed selection", (edge) => {
+    const saved = { id: "spread", ...wireLayout, placements: [], slots: [{ ...projectedSlot, bleed: [edge] }] };
+    const result = readPlacementSnapshot(saved, { kind: "spread", id: "spread" });
+
+    expect(result.layout.slots).toEqual([
+      { id: "front", kind: "photo", x: 0, y: 0, width: 100, height: 100, presentation: { bleed: [edge], contentBox: box, visibleBox: box } },
+    ]);
+  });
+
+  it.each([
+    { fields: { bleedState: "unknown" }, message: "Invalid spread bleed state" },
+    { fields: { bleedAvailable: "yes" }, message: "Invalid spread bleed state" },
+    { fields: { slots: [{ ...projectedSlot, bleed: ["inner"] }] }, message: "Invalid saved bleed direction" },
+    { fields: { slots: [{ ...projectedSlot, bleed: ["left", "left"] }] }, message: "Duplicate saved bleed direction" },
+    ...[
+      { ...box, x: -1 },
+      { ...box, y: -1 },
+      { ...box, width: 0 },
+      { ...box, height: 0 },
+    ].map((contentBox) => ({ fields: { slots: [{ ...projectedSlot, contentBox }] }, message: "Invalid saved photo box" })),
+  ])("should reject incomplete or malformed authoritative projection $fields", ({ fields, message }) => {
+    const saved = { id: "spread", ...wireLayout, placements: [], ...fields };
+    expect(() => readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toThrow(message);
+  });
+
+  it("should reject bleed or spine commands sent to the wrong composition without issuing a write", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = makeHttpAlbumClient(fetcher);
+
+    await expect(client.editPlacements("album", { kind: "cover" }, { operation: "bleed", enabled: true })).rejects.toThrow(
+      "Bleed selection belongs to interior spreads",
+    );
+    await expect(client.editPlacements("album", { kind: "spread", id: "spread" }, { operation: "spineOwner", owner: "back" })).rejects.toThrow(
+      "Spine ownership belongs to the cover",
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("should read an individual referenced photograph through its encoded public photo resource", async () => {
+    const photo = {
+      id: "photo/id",
+      filename: "Mountains.jpg",
+      capturedLocal: null,
+      width: 4000,
+      height: 2000,
+      caption: "Saved caption",
+      thumbnail: { url: "/thumbnail.jpg", width: 400, height: 200 },
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(photo)));
+
+    expect(await makeHttpAlbumClient(fetcher).photo(photo.id)).toEqual(photo);
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/photos/photo%2Fid", { method: "GET", headers: { Accept: "application/json" } });
+  });
+
+  it("should preserve saved directions and authoritative visible and caption boxes without changing template geometry", () => {
+    const raw = { id: "front", kind: "photo", x: 0, y: 0, width: 100, height: 100 };
+    const contentBox = { x: 0.3, y: 0.9, width: 99.4, height: 98.2 };
+    const visibleBox = { x: 0, y: 0.9, width: 99.7, height: 98.2 };
+    const saved = {
+      id: "spread",
+      kind: "photos_only",
+      templateId: "layout",
+      bleedState: "mixed",
+      bleedAvailable: true,
+      slots: [{ ...raw, bleed: ["left"], contentBox, visibleBox }],
+      placements: [],
+    };
+
+    expect(readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toEqual({
+      kind: "spread",
+      id: "spread",
+      layout: {
+        kind: "photos_only",
+        templateId: "layout",
+        bleed: { state: "mixed", available: true },
+        slots: [{ ...raw, presentation: { bleed: ["left"], contentBox, visibleBox } }],
+      },
+      placements: [],
+    });
+  });
+
+  it("should route bleed and spine ownership through the existing acknowledged composition saves", async () => {
+    const spread = {
+      id: "spread",
+      kind: "photos_only",
+      templateId: "layout",
+      bleedState: "disabled",
+      bleedAvailable: false,
+      slots: [],
+      placements: [],
+    };
+    const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [] };
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(spread)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(cover)));
+    const client = makeHttpAlbumClient(fetcher);
+
+    await client.editPlacements("album", { kind: "spread", id: "spread" }, { operation: "bleed", enabled: true });
+    await client.editPlacements("album", { kind: "cover" }, { operation: "spineOwner", owner: "back" });
+
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["/api/albums/album/spreads/spread/bleed", "PUT", '{"enabled":true}'],
+      ["/api/albums/album/cover/spine-owner", "PUT", '{"owner":"back"}'],
+    ]);
+  });
 
   it("decodes cover ownership and interior caption corners", () => {
     const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [placement] };
-    const spread = { id: "spread", ...layout, placements: [{ ...placement, captionCorner: "top_left" }] };
+    const spread = { id: "spread", ...wireLayout, placements: [{ ...placement, captionCorner: "top_left" }] };
     const expectedCover: CoverSnapshot = { ...cover, kind: "cover", spineOwner: "back", placements: [{ ...placement, kind: "cover" }] };
     const expectedSpread: SpreadSnapshot = {
       kind: "spread",
@@ -87,13 +219,13 @@ describe("placement representation", () => {
   });
 
   it("should reject a placement whose slot is absent from the saved spread geometry", () => {
-    const saved = { id: "spread", ...layout, placements: [{ ...placement, slotId: "missing", captionCorner: "top_left" }] };
+    const saved = { id: "spread", ...wireLayout, placements: [{ ...placement, slotId: "missing", captionCorner: "top_left" }] };
 
     expect(() => readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toThrow("Invalid spread placement slot");
   });
 
   it("should reject duplicate slot identities even when no photos are placed", () => {
-    const saved = { id: "spread", ...layout, slots: [...layout.slots, ...layout.slots], placements: [] };
+    const saved = { id: "spread", ...wireLayout, slots: [...wireLayout.slots, ...wireLayout.slots], placements: [] };
 
     expect(() => readPlacementSnapshot(saved, { kind: "spread", id: "spread" })).toThrow("Invalid spread placement slot");
   });
@@ -103,7 +235,7 @@ describe("placement representation", () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(cover)))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spread", ...layout, placements: [] })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "spread", ...wireLayout, placements: [] })));
     const client = makeHttpAlbumClient(fetcher);
     const expectedRequests = [
       ["/api/albums/album/cover", "GET", undefined],
