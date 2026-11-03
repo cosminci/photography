@@ -97,6 +97,7 @@ export function createEditorSession(
   const [active, setActive] = createSignal(true);
   let attempt = 0;
   let maybeStream: AbortController | undefined;
+  let maybeBinding: EditorConnection | undefined;
   let maybeHeartbeatConnection: EditorConnection | undefined;
   let transition = Promise.resolve(true);
   let maybeLastTarget: EditingTarget | null | undefined;
@@ -161,16 +162,15 @@ export function createEditorSession(
       return;
     }
     if (event.kind === "tab_blocked") {
+      interrupt(`This browser profile is already open in another tab (${event.alias}). Close that tab to continue here.`);
       if (reloading && Date.now() < reloadDeadline) {
-        interrupt("Reconnecting this tab…");
         setConnecting(true);
-        maybeReloadRetry = setTimeout(() => {
-          void reconnect();
-        }, 750);
-        return;
+      } else {
+        setBlocked(true);
       }
-      setBlocked(true);
-      interrupt(`This browser profile is already open in another tab (${event.alias}). Close that tab, then retry.`);
+      maybeReloadRetry = setTimeout(() => {
+        void reconnect();
+      }, 750);
       return;
     }
     if (event.kind === "session_lost") {
@@ -180,6 +180,7 @@ export function createEditorSession(
     try {
       if (event.sessionId !== registered.sessionId || event.tabId !== tabId) throw new Error("Unexpected tab binding.");
       const currentConnection = { sessionId: event.sessionId, tabId: event.tabId, generation: event.generation };
+      maybeBinding = currentConnection;
       const observedAt = Date.now();
       await transport.heartbeat(currentConnection, signal);
       if (!active() || current !== attempt) return;
@@ -385,6 +386,7 @@ export function createEditorSession(
   }
 
   function interrupt(reason: string) {
+    clearTimeout(maybeReloadRetry);
     attempt++;
     forgetAuthority(reason);
     maybeStream?.abort();
@@ -395,7 +397,8 @@ export function createEditorSession(
     interrupt("The backend is unreachable. Unsaved drafts are retained. Reconnect before editing.");
   };
   const pagehide = () => {
-    const maybeConnection = connection();
+    const maybeConnection = maybeBinding;
+    maybeBinding = undefined;
     interrupt("The page connection was closed. Reconnect before editing; unsaved drafts are retained.");
     if (maybeConnection !== undefined)
       void transport.unbind(maybeConnection).catch((failure: unknown) => {
@@ -420,6 +423,7 @@ export function createEditorSession(
   window.addEventListener("offline", offline);
   window.addEventListener("pagehide", pagehide);
   onCleanup(() => {
+    pagehide();
     requests.abort();
     setActive(false);
     attempt++;

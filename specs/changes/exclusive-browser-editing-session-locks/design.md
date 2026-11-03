@@ -63,6 +63,8 @@ The existing session stream announces ownership changes, including release and e
 
 The active document releases its exact binding through a header-authenticated keepalive request on departure. Reload retries binding automatically while the previous connection finishes, without replacing an actually live competing tab.
 
+Blocked tabs keep retrying authoritative binding without renewing the active owner's lease. Departure retains the exact stream binding independently of confirmed editing access, so interrupted or still-establishing documents can release it.
+
 The browser allocates its profile identity atomically in IndexedDB, so simultaneous first-run tabs share one identity. It remembers the alias and resumable credential separately; each loaded document creates a fresh, memory-only tab identity.
 
 Its live session SSE connection claims application access atomically before opening routes.

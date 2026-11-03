@@ -22,7 +22,7 @@
   font-size: 13px;
 }
 .browser-alias > span {
-  max-width: 12ch;
+  max-width: 24ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -42,6 +42,7 @@
   color: inherit;
 }
 .browser-alias .alias-action {
+  flex: none;
   display: grid;
   place-items: center;
   width: 28px;
@@ -63,7 +64,8 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.browser-alias [role="alert"] {
+.browser-alias [role="alert"],
+.browser-alias-help {
   position: absolute;
   z-index: 3;
   top: 100%;
@@ -76,6 +78,11 @@
   border-radius: 4px;
   color: #983d44;
   background: white;
+}
+.browser-alias-help {
+  right: auto;
+  left: 0;
+  color: var(--muted);
 }
 .workspace-lock-frame {
   position: relative;

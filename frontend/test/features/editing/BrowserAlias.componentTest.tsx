@@ -5,7 +5,7 @@ import { BrowserAlias } from "../../../src/features/editing/BrowserAlias";
 
 describe("browser name control", () => {
   it("should edit inline, retain failed input, persist accepted names and restore pencil focus", async () => {
-    const [alias, setAlias] = createSignal("Nasty rabbit");
+    const [alias, setAlias] = createSignal("Grumpy raccoon");
     let finish!: () => void;
     const rename = vi.fn<(value: string) => Promise<void>>().mockImplementationOnce(async () => {
       await new Promise<void>((resolve) => {
@@ -15,11 +15,19 @@ describe("browser name control", () => {
     });
     render(() => <BrowserAlias session={{ alias, rename }} />);
     const pencil = screen.getByRole("button", { name: "Edit your name" });
+    fireEvent.click(screen.getByRole("button", { name: "About browser alias" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "About browser alias" }), { key: "Tab" });
+    expect(screen.getByRole("button", { name: "About browser alias" })).toHaveAccessibleDescription(
+      "Browser alias for concurrent editing. Others see this name while you edit a spread. This is not a login.",
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: "About browser alias" }), { key: "Escape" });
+    expect(screen.getByRole("button", { name: "About browser alias" })).toHaveFocus();
+    expect(screen.queryByText(/Browser alias for concurrent editing/)).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     fireEvent.click(pencil);
     const input = screen.getByRole("textbox", { name: "Your name" });
     expect(input).toHaveFocus();
-    expect(input).toHaveValue("Nasty rabbit");
+    expect(input).toHaveValue("Grumpy raccoon");
     fireEvent.input(input, { target: { value: "  " } });
     fireEvent.submit(screen.getByRole("form"));
     expect(screen.getByRole("alert")).toHaveTextContent("Enter a name.");

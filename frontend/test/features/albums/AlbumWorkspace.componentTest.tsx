@@ -2063,6 +2063,7 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.title);
     expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
       "Edit your name",
+      "About browser alias",
       "Reader mode",
       "Spreads",
       "Cover",

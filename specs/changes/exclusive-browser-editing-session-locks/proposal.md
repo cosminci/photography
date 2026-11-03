@@ -45,7 +45,7 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 - Independent browsers competing for one interior or exterior spread obtain exactly one live owner.
 - A contender can view saved content and Reader, sees the owner's alias, and cannot edit the locked target through any protected endpoint.
 - One remembered alias identifies the browser across reloads and backend restarts without another identification prompt.
-- A second tab in the same browser profile is blocked from the entire application until the previous active-tab binding releases or expires.
+- A second tab in the same browser profile is blocked until the previous active-tab binding releases or expires, then reconnects automatically.
 - A reload resumes a still-live session and target grant without allowing a duplicated tab to share editing access.
 - Selection releases the previous target and acquires the new spread or Cover, or reports that destination as view-only.
 - Reader and album departure release target ownership after pending writes and drafts are visibly resolved.

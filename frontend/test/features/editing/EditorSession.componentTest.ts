@@ -163,12 +163,39 @@ describe("browser editing session", () => {
     expect(built.session.ownershipRevision()).toBe(1);
   });
 
-  it("should release the exact departing binding without discarding remembered identity", async () => {
-    const { session, transport } = await connect();
+  it.each(["active", "interrupted", "disposed"] as const)(
+    "should release the exact %s binding without discarding remembered identity",
+    async (state) => {
+      const { session, transport } = await connect();
+      if (state === "interrupted") session.interrupt("Stream closed before pagehide");
+      if (state === "disposed") for (const dispose of disposals.splice(0)) dispose();
+      else window.dispatchEvent(new Event("pagehide"));
+      expect(session.available()).toBe(false);
+      expect(transport.unbind).toHaveBeenCalledExactlyOnceWith({ sessionId, tabId, generation });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: identity, alias: "Cosmin", sessionId });
+    },
+  );
+
+  it("should release a tab binding even when departure precedes its confirmation", async () => {
+    let finish!: (value: typeof registered) => void;
+    const transport = {
+      heartbeat: vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      ),
+    };
+    const built = buildSession(transport);
+    await vi.waitFor(() => {
+      expect(built.transport.subscribe).toHaveBeenCalled();
+    });
+    built.emit({ kind: "bound", sessionId, tabId, generation });
+
     window.dispatchEvent(new Event("pagehide"));
-    expect(session.available()).toBe(false);
-    expect(transport.unbind).toHaveBeenCalledExactlyOnceWith({ sessionId, tabId, generation });
-    expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: identity, alias: "Cosmin", sessionId });
+    finish(registered);
+
+    expect(built.transport.unbind).toHaveBeenCalledExactlyOnceWith({ sessionId, tabId, generation });
+    expect(built.session.available()).toBe(false);
   });
 
   it("should expose contention only for its target and clear it after acquisition", async () => {
@@ -503,6 +530,7 @@ describe("browser editing session", () => {
   });
 
   it("should block the entire application in a second tab without discarding the remembered identity", async () => {
+    vi.useFakeTimers();
     localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
     const { session, transport, emit } = buildSession();
     await vi.waitFor(() => {
@@ -516,6 +544,17 @@ describe("browser editing session", () => {
     expect(session.message()).toMatch(/another tab/i);
     expect(() => session.headers()).toThrow();
     expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: identity, alias: "Cosmin", sessionId });
+
+    await vi.advanceTimersByTimeAsync(750);
+    expect(transport.subscribe).toHaveBeenCalledTimes(2);
+    emit({ kind: "tab_blocked", alias: "Cosmin" });
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(transport.subscribe).toHaveBeenCalledTimes(3);
+    expect(session.available()).toBe(false);
+    emit({ kind: "bound", sessionId, tabId, generation });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.available()).toBe(true);
+    expect(session.blocked()).toBe(false);
   });
 
   it("should acquire one target, release it for Reader and retain the independent session", async () => {
