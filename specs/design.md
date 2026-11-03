@@ -48,17 +48,11 @@ Cameras and lenses have independent, shared catalog lifecycles; chapters select 
 
 The application decides compatibility against current catalog state, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
 
-Book presentation preserves editorial text and derives headings and supporting information from structured data. Formatting is a projection of saved state, not another source of truth for content or catalog identities.
+Book presentation preserves editorial text and derives headings and supporting information from structured data. Editing, navigation and Reader share presentation policy over saved composition, keeping content and catalog identities with their existing owners.
 
 Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
 
 Photos belong to chapter collections independently of their use in layouts. Chapter spreads use their chapter's photos; Synopsis and Cover can use the album collection. Removing a spread releases its placements rather than deleting its photographs.
-
-Cover has editable spine/gutter ownership shared by editing and Reader. Changing ownership preserves both sides' photographs and framing; covers bleed intrinsically.
-
-Spread bleed coordinates all eligible outer photo slots, including unoccupied slots: full-height outer slots extend vertically and outward, while outer stacks extend outward together. Explicit per-slot directions remain saved authority; mixed selections remain readable, and enabling selects the complete eligible set.
-
-Visible photo frames extend enabled edges to the spread boundary and retract disabled edges to the seven-point content margin. Template geometry, placement identities and transforms remain unchanged; imported and newly created spreads follow the same rules.
 
 ## Editing journey
 
@@ -75,10 +69,6 @@ stateDiagram-v2
 The workspace keeps the selected part addressable and restores it across navigation and reloads. Structural editing operates within chapter boundaries; template choices follow the selected spread's context.
 
 Photo editing persists placements and transforms for interior layouts and Cover; collection availability is derived from saved placements. Reader presents the same saved book content and composition without editing chrome.
-
-Navigation previews reuse acquired spreads and photos to show saved crop, zoom and mirroring. Catalog cards resolve the saved cover and its referenced front photograph, refreshing on catalog re-entry without acquiring editing authority.
-
-Captions align against content frames across photo orientations and bleed states, with top corners anchoring first baselines and bottom corners anchoring last baselines, including wrapped text. Adjacent captions at shared content edges align within one CSS pixel while preserving authored text and corner selection.
 
 ```mermaid
 sequenceDiagram
@@ -174,7 +164,7 @@ The browser treats inventory and ownership events as invalidations, not a second
 
 Workspace acquisition assembles authoritative content, structure, composition and photo inventories. Resources must agree on identities, chapter blocks and opening order; incoherent acquisition is retried at most twice, then reports failure while retaining the last usable view.
 
-Each saved spread supplies template geometry, explicit bleed directions, derived content/visible frames and placements together for editing, navigation and Reader. Selecting an interior spread or Cover reconciles current saved state without discarding pending adjustments or uncertain-write feedback.
+Each saved spread supplies geometry and placements together for editing and Reader. Selecting an interior spread or Cover reconciles current saved state without discarding pending adjustments or uncertain-write feedback.
 
 Acknowledged saved state takes precedence over older in-flight reads. Workspace views reconcile authoritative state before publication so background acquisition cannot undo a successful edit.
 
