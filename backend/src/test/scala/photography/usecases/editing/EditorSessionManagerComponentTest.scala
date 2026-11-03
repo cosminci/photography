@@ -22,7 +22,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
   private val duplicate          = TabId(new UUID(0L, 3L))
   private val alias: EditorAlias = "Cosmin"
 
-  Vector("release", "switch", "expiry").foreach { transition =>
+  Vector("release", "switch", "expiry", "rename").foreach { transition =>
     test(s"should notify waiting browsers of acquisition and $transition through the ownership stream"):
       TestControl.executeEmbed {
         val target = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
@@ -38,6 +38,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
               acquired <- events.take
               _        <- transition match
                 case "release" => manager.release(writer, TargetRevision.initial.next, lock.grant).void
+                case "rename"  => manager.rename(writer, alias = "Nasty rabbit").void
                 case "switch"  =>
                   manager.select(writer, TargetRevision.initial.next, EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))).void
                 case _ =>
@@ -70,6 +71,33 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
   test("should require a nonblank identification alias"):
     assert(" \t\n".refineEither[EditorAliasConstraint].isLeft)
     assertEquals("Cosmin".refineEither[EditorAliasConstraint], alias.asRight[String])
+
+  test("should rename only the live exact connection without renewing leases or replacing its grant"):
+    TestControl.executeEmbed {
+      val target = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+      for
+        manager    <- buildManager()
+        connection <- registerConnection(manager, owner, tab)
+        before     <- manager.read(connection)
+        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _          <- IO.sleep(10.seconds)
+        renamed    <- manager.rename(connection, alias = "Nasty rabbit")
+        current    <- manager.read(connection)
+        grant      <- manager.readTarget(connection)
+        successor  <- manager.bind(connection.session, tab).flatMap(requireConnection)
+        obsolete   <- manager.rename(connection, alias = "Old name")
+        _          <- IO.sleep(20.seconds)
+        expired    <- manager.rename(successor, alias = "Too late")
+      yield
+        val expectedSession = before match
+          case ReadResult.Current(session) => session.copy(alias = "Nasty rabbit", targetRevision = TargetRevision.initial.next)
+          case _                           => fail("Missing session")
+        assertEquals(renamed, RenameResult.Renamed(expectedSession))
+        assertEquals(current, ReadResult.Current(expectedSession))
+        assertEquals(grant, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(obsolete, RenameResult.Rejected(Failure.ObsoleteConnection))
+        assertEquals(expired, RenameResult.Rejected(Failure.StaleSession))
+    }
 
   test("should resume only with the live private credential without extending its deadline"):
     TestControl.executeEmbed {

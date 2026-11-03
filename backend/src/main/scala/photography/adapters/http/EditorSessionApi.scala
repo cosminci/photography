@@ -42,6 +42,16 @@ object EditorSessionApi:
             }
           )
         }
+      case request @ PATCH -> Root / "api" / "editor-session" => Route.public {
+          withConnection(request)(connection =>
+            withBody(request, aliasChange)(alias =>
+              sessions.rename(connection, alias).flatMap {
+                case RenameResult.Renamed(session) => Ok(encodeSession(session))
+                case RenameResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+              }
+            )
+          )
+        }
       case request @ DELETE -> Root / "api" / "editor-session" / "binding" => Route.public {
           withConnection(request)(connection =>
             sessions.unbind(connection).flatMap {
@@ -201,6 +211,9 @@ object EditorSessionApi:
       }
       val heartbeat = Stream.awakeEvery[F](10.seconds).as((ServerSentEvent(comment = Some("heartbeat")), false))
       updates.merge(heartbeat).takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
+
+    private val aliasChange = Decoder.forProduct1("alias")((alias: String) => alias)
+      .emap(_.refineEither[EditorAliasConstraint]).validate(_.keys.exists(_.toSet === Set("alias")), "Invalid alias")
 
     private val registration = Decoder.forProduct2("editorId", "alias")((owner: String, alias: String) => (owner, alias))
       .emap { case (owner, alias) =>

@@ -1,4 +1,4 @@
-import { Show, createSignal, createUniqueId, onCleanup, onMount, type JSX } from "solid-js";
+import { Show, createUniqueId, onCleanup, onMount, type JSX } from "solid-js";
 import type { EditorSession } from "./EditorSession";
 
 function SessionDialog(props: { title: string; children: JSX.Element }) {
@@ -30,10 +30,9 @@ function SessionDialog(props: { title: string; children: JSX.Element }) {
 }
 
 export function EditorSessionGate(props: {
-  session: Pick<EditorSession, "opened" | "blocked" | "available" | "message" | "identifying" | "connecting" | "identify" | "reconnect">;
+  session: Pick<EditorSession, "opened" | "blocked" | "available" | "message" | "connecting" | "reconnect">;
   children: JSX.Element;
 }) {
-  const [alias, setAlias] = createSignal("");
   return (
     <>
       <Show
@@ -48,36 +47,7 @@ export function EditorSessionGate(props: {
           {props.children}
         </div>
       </Show>
-      <Show when={props.session.identifying()}>
-        <SessionDialog title="Your browser name">
-          <form
-            aria-label="Browser identification"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void props.session.identify(alias());
-            }}
-          >
-            <label for="editor-alias">Identification alias</label>
-            <input
-              id="editor-alias"
-              name="alias"
-              autocomplete="nickname"
-              required
-              value={alias()}
-              aria-describedby="editor-alias-help"
-              onInput={(event) => {
-                setAlias(event.currentTarget.value);
-              }}
-            />
-            <p id="editor-alias-help">Shown to others while you edit. Remembered on this browser.</p>
-            <Show when={props.session.message()}>{(message) => <p role="status">{message()}</p>}</Show>
-            <div class="dialog-actions">
-              <button type="submit">Open application</button>
-            </div>
-          </form>
-        </SessionDialog>
-      </Show>
-      <Show when={!props.session.identifying() && !props.session.available() && props.session.message()}>
+      <Show when={!props.session.available() && props.session.message()}>
         <SessionDialog
           title={props.session.blocked() ? "Already open in another tab" : props.session.connecting() ? "Connecting…" : "Connection lost"}
         >

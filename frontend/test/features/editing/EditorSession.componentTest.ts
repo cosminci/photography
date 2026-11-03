@@ -53,6 +53,7 @@ function buildSession(
     renew: vi.fn().mockResolvedValue(grant),
     release: vi.fn().mockResolvedValue({ revision: "2" }),
     unbind: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue({ ...registered, alias: "Mara" }),
     ...overrides,
   };
   const session = createRoot((dispose) => {
@@ -82,6 +83,65 @@ async function connect() {
 }
 
 describe("browser editing session", () => {
+  it("should persist a renamed alias without replacing connection, grant or request lifetime", async () => {
+    const { session, transport } = await connect();
+    await session.select(target);
+    const headers = session.headers();
+    const lifetime = session.requestSignal();
+    await expect(session.rename(" ")).rejects.toThrow("Enter a name");
+    await session.rename(" Mara ");
+    expect(transport.rename).toHaveBeenCalledExactlyOnceWith({ sessionId, tabId, generation }, "Mara", lifetime);
+    expect(session.alias()).toBe("Mara");
+    expect(session.headers()).toEqual(headers);
+    expect(session.requestSignal()).toBe(lifetime);
+    expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: identity, alias: "Mara", sessionId });
+    session.interrupt("offline");
+    await expect(session.rename("Cosmin")).rejects.toThrow("Reconnect");
+  });
+
+  it.each(["disconnect", "dispose"] as const)("should reject late alias acknowledgement after %s", async (loss) => {
+    const { session, transport } = await connect();
+    let finish!: (value: typeof registered) => void;
+    vi.mocked(transport.rename).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const renaming = session.rename("Mara");
+    if (loss === "disconnect") session.interrupt("offline");
+    else for (const dispose of disposals.splice(0)) dispose();
+    finish({ ...registered, alias: "Mara" });
+    await expect(renaming).rejects.toThrow("connection changed");
+    expect(session.alias()).toBe("Cosmin");
+  });
+
+  it("should preserve the remembered alias and block application access on an unconfirmed name change", async () => {
+    const { session, transport } = await connect();
+    vi.mocked(transport.rename).mockRejectedValue(new Error("Backend unavailable"));
+    await expect(session.rename("Mara")).rejects.toThrow("Backend unavailable");
+    expect(session.available()).toBe(false);
+    expect(session.alias()).toBe("Cosmin");
+    expect(session.message()).toBe("Backend unavailable");
+  });
+
+  it("should retain an existing profile identity when renaming after identity-storage migration", async () => {
+    localStorage.setItem(storageKey, JSON.stringify({ editorId: generation, alias: "Cosmin", sessionId }));
+    const { session, transport, emit } = buildSession({
+      register: vi.fn().mockResolvedValue({ ...registered, ownerId: generation }),
+      rename: vi.fn().mockResolvedValue({ ...registered, ownerId: generation, alias: "Mara" }),
+    });
+    await vi.waitFor(() => {
+      expect(transport.subscribe).toHaveBeenCalled();
+    });
+    emit({ kind: "bound", sessionId, tabId, generation });
+    await vi.waitFor(() => {
+      expect(session.available()).toBe(true);
+    });
+
+    await session.rename("Mara");
+
+    expect(JSON.parse(localStorage.getItem(storageKey) ?? "")).toEqual({ editorId: generation, alias: "Mara", sessionId });
+  });
   it("should retry a reload binding without declaring a duplicate and fence obsolete ownership events", async () => {
     vi.useFakeTimers();
     localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
@@ -235,10 +295,11 @@ describe("browser editing session", () => {
   });
 
   it("should reuse identification already remembered by another first-run tab", async () => {
-    const { session, transport } = buildSession();
     localStorage.setItem(storageKey, JSON.stringify({ editorId: identity, alias: "Cosmin", sessionId }));
-
-    await session.identify("Mara");
+    const { session, transport } = buildSession();
+    await vi.waitFor(() => {
+      expect(transport.register).toHaveBeenCalled();
+    });
 
     expect(transport.register).toHaveBeenCalledExactlyOnceWith(identity, "Cosmin", sessionId, expect.any(AbortSignal));
     expect(session.alias()).toBe("Cosmin");
@@ -394,11 +455,11 @@ describe("browser editing session", () => {
     };
     const { session } = buildSession({}, storage);
     expect(session.message()).toBe("storage unavailable");
-    await session.identify("Mara");
+    await session.reconnect();
     expect(session.message()).toBe("cannot remember identification");
     await session.reconnect();
-    expect(session.identifying()).toBe(true);
-    expect(session.connecting()).toBe(false);
+    expect(session.alias()).toBe("Cosmin");
+    expect(session.connecting()).toBe(true);
     const failed = buildSession({}, localStorage, () => {
       throw new Error("random source unavailable");
     });
@@ -419,15 +480,14 @@ describe("browser editing session", () => {
     },
   );
 
-  it("should require a nonblank remembered alias and establish a tab binding before opening the application", async () => {
+  it("should automatically remember a playful alias and bind before opening the application", async () => {
     const { session, transport, emit } = buildSession();
 
     expect(session.opened()).toBe(false);
-    await session.identify("   ");
-    expect(transport.register).not.toHaveBeenCalled();
-    expect(session.message()).toMatch(/nonblank/i);
-    await session.identify("Cosmin");
-    expect(transport.register).toHaveBeenCalledWith(identity, "Cosmin", undefined, expect.any(AbortSignal));
+    await vi.waitFor(() => {
+      expect(transport.subscribe).toHaveBeenCalled();
+    });
+    expect(transport.register).toHaveBeenCalledWith(identity, "Nasty rabbit", undefined, expect.any(AbortSignal));
     expect(session.opened()).toBe(false);
     emit({ kind: "bound", sessionId, tabId, generation });
 

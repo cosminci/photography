@@ -1,3 +1,46 @@
+export function suggestBrowserAlias(identity: string): string {
+  const adjectives = [
+    "Nasty",
+    "Sleepy",
+    "Dancing",
+    "Sneaky",
+    "Fancy",
+    "Wobbly",
+    "Cosmic",
+    "Cheeky",
+    "Grumpy",
+    "Bouncy",
+    "Dizzy",
+    "Nimble",
+    "Silly",
+    "Fuzzy",
+    "Happy",
+    "Mighty",
+  ];
+  const animals = [
+    "rabbit",
+    "otter",
+    "panda",
+    "badger",
+    "penguin",
+    "fox",
+    "wombat",
+    "goose",
+    "koala",
+    "raccoon",
+    "lemur",
+    "puffin",
+    "hedgehog",
+    "llama",
+    "walrus",
+    "squirrel",
+  ];
+  const maybeAdjective = adjectives[Number.parseInt(identity.slice(0, 1), 16)];
+  const maybeAnimal = animals[Number.parseInt(identity.slice(1, 2), 16)];
+  if (maybeAdjective === undefined || maybeAnimal === undefined) throw new Error("Cannot name an invalid browser identity.");
+  return `${maybeAdjective} ${maybeAnimal}`;
+}
+
 export function createBrowserIdentity(): string {
   const bytes = crypto
     .getRandomValues(new Uint8Array(16))

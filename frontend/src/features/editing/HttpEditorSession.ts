@@ -82,6 +82,7 @@ export function makeHttpEditorSession(fetcher: typeof fetch): EditorSessionTrans
   }
 
   return {
+    rename: async (connection, alias, signal) => readSession(await request("PATCH", "", connectionHeaders(connection), { alias }, signal)),
     unbind: async (connection) => {
       const response = await fetcher("/api/editor-session/binding", { method: "DELETE", headers: connectionHeaders(connection), keepalive: true });
       if (!response.ok) throw new Error("The previous tab connection could not be released.");

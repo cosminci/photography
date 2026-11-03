@@ -19,6 +19,7 @@ trait EditorSessionManager[F[_]]:
   def unbind(connection: EditorConnection): F[EditorSessionManager.UnbindResult]
   def heartbeat(connection: EditorConnection): F[EditorSessionManager.HeartbeatResult]
   def read(connection: EditorConnection): F[EditorSessionManager.ReadResult]
+  def rename(connection: EditorConnection, alias: EditorAlias): F[EditorSessionManager.RenameResult]
   def ownershipChanges(connection: EditorConnection): Stream[F, EditorSessionManager.OwnershipChangeResult]
   def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): F[EditorSessionManager.SelectResult]
   def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): F[EditorSessionManager.ReleaseResult]
@@ -40,7 +41,11 @@ object EditorSessionManager:
       extends EditorSessionManager[F]:
     override def ownershipChanges(connection: EditorConnection): Stream[F, OwnershipChangeResult] =
       val changes = state.discrete.map { current =>
-        findConnection(current, connection).map(_ => current.locks.map(lock => (lock.target, lock.grant)))
+        findConnection(current, connection).map(_ =>
+          current.locks.map(lock =>
+            (lock.target, lock.grant, current.sessions.values.find(_.id.value === lock.session.value).map(_.alias))
+          )
+        )
       }.changes(using Eq.fromUniversalEquals).map[OwnershipChangeResult] {
         case Right(_)      => OwnershipChangeResult.Changed
         case Left(failure) => OwnershipChangeResult.Rejected(failure)
@@ -102,6 +107,16 @@ object EditorSessionManager:
         inspect(connection).map {
           case Left(failure)  => ReadResult.Rejected(failure)
           case Right(session) => ReadResult.Current(session)
+        }
+      }
+
+    override def rename(connection: EditorConnection, alias: EditorAlias): F[RenameResult] =
+      summon[Mutex[F]].lock.surround {
+        inspect(connection).flatMap {
+          case Left(failure)  => RenameResult.Rejected(failure).pure[F]
+          case Right(session) =>
+            val renamed = session.copy(alias = alias)
+            save(renamed).as(RenameResult.Renamed(renamed))
         }
       }
 
@@ -305,6 +320,10 @@ object EditorSessionManager:
 
   enum OwnershipChangeResult:
     case Changed
+    case Rejected(failure: Failure)
+
+  enum RenameResult:
+    case Renamed(session: EditorSession)
     case Rejected(failure: Failure)
 
   enum SelectResult:

@@ -95,15 +95,6 @@ p {
   border-radius: 7px;
   background: #fcfefe;
 }
-.session-dialog form {
-  display: grid;
-  gap: 12px;
-}
-.session-dialog input {
-  width: 100%;
-  min-width: 0;
-  min-height: 42px;
-}
 .session-application:not([hidden]) {
   display: contents;
 }

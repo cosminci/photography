@@ -29,6 +29,7 @@ import { TextEditor } from "./TextEditor";
 import { createCaptionEditing } from "./PhotoCaption";
 import { RetainedCaption } from "./RetainedCaption";
 import type { EditingTarget, WorkspaceEditingSession } from "../../editing/EditorSession";
+import { BrowserAlias } from "../../editing/BrowserAlias";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -574,9 +575,7 @@ export function AlbumWorkspace(props: {
           </a>
         </div>
         <div class="workspace-controls" role="group" aria-label="Workspace controls">
-          <span class="browser-alias" title="This browser">
-            {props.session.alias()}
-          </span>
+          <BrowserAlias session={props.session} />
           <Show when={!reader() && ownershipReason() !== undefined && otherOwner() === undefined && editingTarget()}>
             {(target) => (
               <button

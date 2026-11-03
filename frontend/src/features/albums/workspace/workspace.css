@@ -10,12 +10,72 @@
   border: 0;
 }
 .browser-alias {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
   color: var(--muted);
   font-size: 13px;
+}
+.browser-alias > span {
   max-width: 12ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.browser-alias form {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.browser-alias input {
+  width: 14ch;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: white;
+  color: inherit;
+}
+.browser-alias .alias-action {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 4px;
+  border-color: transparent;
+  color: var(--muted);
+  background: transparent;
+}
+.browser-alias .alias-action[hidden] {
+  display: none;
+}
+.alias-action svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.browser-alias [role="alert"] {
+  position: absolute;
+  z-index: 3;
+  top: 100%;
+  right: 0;
+  width: max-content;
+  max-width: 240px;
+  margin: 4px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: #983d44;
+  background: white;
 }
 .workspace-lock-frame {
   position: relative;

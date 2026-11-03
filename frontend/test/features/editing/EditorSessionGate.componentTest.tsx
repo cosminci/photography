@@ -27,13 +27,11 @@ describe("browser identification and tab gate", () => {
   it("should identify the profile before exposing any application content and retain the application through connection loss", () => {
     const [opened, setOpened] = createSignal(false);
     const [blocked, setBlocked] = createSignal(false);
-    const [message, setMessage] = createSignal<string | undefined>("Identify this browser.");
-    const [identifying, setIdentifying] = createSignal(true);
+    const [message, setMessage] = createSignal<string>();
     const [connecting, setConnecting] = createSignal(false);
-    const identify = vi.fn().mockResolvedValue(undefined);
     const reconnect = vi.fn().mockResolvedValue(undefined);
     const available = () => opened() && !blocked() && message() === undefined;
-    const session = { opened, blocked, available, message, identifying, connecting, identify, reconnect };
+    const session = { opened, blocked, available, message, connecting, reconnect };
     render(() => (
       <EditorSessionGate session={session}>
         <main>
@@ -43,22 +41,14 @@ describe("browser identification and tab gate", () => {
     ));
 
     expect(screen.queryByRole("main")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Identify this browser.");
-    const input = screen.getByRole("textbox", { name: "Identification alias" });
-    expect(screen.getByRole("dialog", { name: "Your browser name" })).toBeVisible();
-    expect(input).toHaveFocus();
-    expect(fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }))).toBe(false);
-    expect(input).toHaveAccessibleDescription(/Remembered on this browser/);
-    fireEvent.input(input, { target: { value: "Mara" } });
-    fireEvent.submit(screen.getByRole("form", { name: "Browser identification" }));
-    expect(identify).toHaveBeenCalledExactlyOnceWith("Mara");
-    setIdentifying(false);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     setOpened(true);
     setMessage(undefined);
     const draft = screen.getByRole("textbox", { name: "Retained draft" });
     fireEvent.input(draft, { target: { value: "Unsaved" } });
     setMessage("Connection lost.");
     setConnecting(true);
+    expect(fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }))).toBe(false);
     expect(screen.getByRole("button", { name: "Reconnect browser" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
     expect(screen.getByRole("textbox", { name: "Retained draft" })).toHaveValue("Unsaved");

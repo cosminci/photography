@@ -1,6 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it, vi } from "vitest";
-import { createBrowserIdentity, readBrowserIdentity } from "../../../src/features/editing/BrowserIdentity";
+import { createBrowserIdentity, readBrowserIdentity, suggestBrowserAlias } from "../../../src/features/editing/BrowserIdentity";
 
 const identity = "00000000-0000-4000-8000-000000000001";
 
@@ -26,6 +26,13 @@ async function seed(factory: IDBFactory, value: unknown, version = 1, store = "i
 }
 
 describe("remembered browser identity", () => {
+  it("should suggest a stable playful name independently of browser sessions", () => {
+    expect(suggestBrowserAlias(identity)).toBe("Nasty rabbit");
+    expect(suggestBrowserAlias("ff" + identity.slice(2))).toBe("Mighty squirrel");
+  });
+  it.each(["g0", "0g"])("should reject invalid name identity %s", (value) => {
+    expect(() => suggestBrowserAlias(value)).toThrow("invalid browser identity");
+  });
   it("should allocate one durable identity for simultaneous first-run tabs", async () => {
     const factory = new IDBFactory();
     const generate = vi.fn(createBrowserIdentity);

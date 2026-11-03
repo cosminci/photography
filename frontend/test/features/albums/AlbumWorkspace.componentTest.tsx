@@ -2061,7 +2061,12 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("img", { name: "Synopsis template geometry" })).toHaveAttribute("viewBox", "0 0 2381.102 765.354");
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.synopsis);
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.title);
-    expect(controls.getAllByRole("button").map((button) => button.textContent)).toEqual(["", "Spreads", "Cover"]);
+    expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
+      "Edit your name",
+      "Reader mode",
+      "Spreads",
+      "Cover",
+    ]);
     expect(screen.queryByText("Photo")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
     expect(links.map((link) => link.getAttribute("aria-label"))).toEqual(expectedLinks);

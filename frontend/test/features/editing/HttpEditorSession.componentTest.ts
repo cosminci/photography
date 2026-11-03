@@ -18,6 +18,24 @@ describe("editor session HTTP translation", () => {
     expect(await transport.register(tabId, "Mara", undefined, lifetime.signal)).toEqual(registered);
     expect(fetcher.mock.lastCall?.[1]?.signal).toBe(lifetime.signal);
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
+    fetcher.mockResolvedValue(new Response(JSON.stringify({ ...registered, alias: "Mara" })));
+    expect(await transport.rename(connection, "Mara", lifetime.signal)).toEqual({ ...registered, alias: "Mara" });
+    expect(fetcher.mock.lastCall).toEqual([
+      "/api/editor-session",
+      expect.objectContaining({
+        method: "PATCH",
+        body: '{"alias":"Mara"}',
+        signal: lifetime.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Editor-Session": sessionId,
+          "X-Editor-Tab": tabId,
+          "X-Editor-Generation": generation,
+        },
+      }),
+    ]);
+    fetcher.mockResolvedValue(new Response(JSON.stringify(registered)));
     fetcher.mockResolvedValue(new Response(JSON.stringify(registered)));
     expect(await transport.register(tabId, "Mara", sessionId)).toEqual(registered);
     expect(fetcher.mock.lastCall?.[1]?.headers).toEqual({

@@ -1,4 +1,5 @@
 import { createSignal, onCleanup, untrack } from "solid-js";
+import { suggestBrowserAlias } from "./BrowserIdentity";
 
 export interface EditingTarget {
   readonly kind: "spread" | "cover";
@@ -47,6 +48,7 @@ export interface EditorSessionTransport {
   readonly renew: (connection: EditorConnection, grantId: string) => Promise<TargetGrant>;
   readonly release: (connection: EditorConnection, revision: string, grantId: string) => Promise<{ readonly revision: string }>;
   readonly unbind: (connection: EditorConnection) => Promise<void>;
+  readonly rename: (connection: EditorConnection, alias: string, signal: AbortSignal) => Promise<RegisteredSession>;
 }
 
 export class EditorSessionError extends Error {
@@ -78,7 +80,6 @@ export function createEditorSession(
   const [connection, setConnection] = createSignal<EditorConnection>();
   const [alias, setAlias] = createSignal("");
   const [message, setMessage] = createSignal<string>();
-  const [identifying, setIdentifying] = createSignal(false);
   const [connecting, setConnecting] = createSignal(false);
   const [targetPending, setTargetPending] = createSignal(false);
   const [grant, setGrant] = createSignal<TargetGrant>();
@@ -210,15 +211,11 @@ export function createEditorSession(
     setConnecting(true);
     try {
       restore();
-      if (maybeRemembered === undefined) {
-        setIdentifying(true);
-        setMessage("Identify this browser before opening the application.");
-        setConnecting(false);
-        return;
-      }
-      const registered = await transport.register(maybeRemembered.editorId, maybeRemembered.alias, maybeRemembered.sessionId, signal);
+      const remembered = maybeRemembered ?? { editorId, alias: suggestBrowserAlias(editorId) };
+      if (maybeRemembered === undefined) remember(remembered);
+      const registered = await transport.register(remembered.editorId, remembered.alias, remembered.sessionId, signal);
       if (!active() || current !== attempt) return;
-      remember({ editorId: maybeRemembered.editorId, alias: registered.alias, sessionId: registered.sessionId });
+      remember({ editorId: remembered.editorId, alias: registered.alias, sessionId: registered.sessionId });
       void transport
         .subscribe(
           registered.sessionId,
@@ -249,18 +246,17 @@ export function createEditorSession(
     }
   }
 
-  async function identify(label: string) {
-    if (label.trim() === "") {
-      setMessage("Enter a nonblank identification alias.");
-      return;
-    }
+  async function rename(label: string) {
+    const maybeConnection = connection();
+    if (label.trim() === "") throw new Error("Enter a name.");
+    if (maybeConnection === undefined) throw new Error("Reconnect before changing your name.");
     try {
-      restore();
-      if (maybeRemembered === undefined) remember({ editorId, alias: label.trim() });
-      setIdentifying(false);
-      await reconnect();
+      const renamed = await transport.rename(maybeConnection, label.trim(), requests.signal);
+      if (!active() || connection() !== maybeConnection) throw new Error("The connection changed. Try again.");
+      remember({ editorId: renamed.ownerId, alias: renamed.alias, sessionId: renamed.sessionId });
     } catch (failure) {
-      setMessage(describeSessionFailure(failure));
+      if (active() && connection() === maybeConnection) interrupt(describeSessionFailure(failure));
+      throw failure;
     }
   }
 
@@ -436,14 +432,9 @@ export function createEditorSession(
   });
   try {
     tabId = identity();
-    restore();
-    if (maybeRemembered === undefined) {
-      setIdentifying(true);
-      setMessage("Identify this browser before opening the application.");
-    } else
-      untrack(() => {
-        void reconnect();
-      });
+    untrack(() => {
+      void reconnect();
+    });
   } catch (failure) {
     setMessage(describeSessionFailure(failure));
   }
@@ -454,7 +445,6 @@ export function createEditorSession(
     available,
     alias,
     message,
-    identifying,
     connecting,
     targetPending,
     authority,
@@ -465,7 +455,7 @@ export function createEditorSession(
     },
     headers,
     targetReason,
-    identify,
+    rename,
     reconnect,
     select,
     interrupt,
@@ -476,7 +466,7 @@ export function createEditorSession(
 export type EditorSession = ReturnType<typeof createEditorSession>;
 export type WorkspaceEditingSession = Pick<
   EditorSession,
-  "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect" | "alias" | "owner" | "ownershipRevision"
+  "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect" | "alias" | "owner" | "ownershipRevision" | "rename"
 >;
 
 export function sameTarget(left: EditingTarget, right: EditingTarget): boolean {

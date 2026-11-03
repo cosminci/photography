@@ -28,6 +28,25 @@
           "409": { "$ref": "#/components/responses/EditorSessionConflict" }
         }
       },
+      "patch": {
+        "operationId": "renameEditorSession",
+        "summary": "Change the current browser's display name",
+        "description": "Requires the exact live tab connection. Changes only the alias without renewing session/target leases, releasing the grant or replacing the connection. Ownership invalidations refresh other viewers' owner labels. Cache-Control: no-store.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" },
+          { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["alias"], "additionalProperties": false,
+          "properties": { "alias": { "type": "string", "pattern": "\\S" } }
+        } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EditorSession" },
+          "400": { "$ref": "#/components/responses/EditorTargetInvalid" },
+          "409": { "$ref": "#/components/responses/EditorSessionConflict" }
+        }
+      },
       "get": {
         "operationId": "readEditorSession",
         "summary": "Reconcile the current session and exact tab binding",
@@ -85,7 +104,7 @@
       "get": {
         "operationId": "bindEditorTab",
         "summary": "Bind application access to one document through header-authenticated SSE",
-        "description": "The response body acquires the binding when consumed. HTTP 200 alone does not grant application access: wait for bound with private {sessionId,tabId,generation}. A different live document receives tab_blocked with public {ownerId,alias}, then the stream closes. A stale credential receives session_lost with {code:stale_session}. Reconnecting the same document advances generation; cancellation releases only that exact generation and retains session/target leases. Ownership observation emits ownership_changed with {} initially and after target acquisition, release, switch or expiry; lease renewal alone emits nothing. Notifications confer no authority: waiting viewers must reconcile and acquire before editing. Expiry is observed within one second; obsolete connections receive terminal session_lost with {code}. Every 10 seconds send a heartbeat comment without renewing either lease. No saved-edit content is streamed.",
+        "description": "The response body acquires the binding when consumed. HTTP 200 alone does not grant application access: wait for bound with private {sessionId,tabId,generation}. A different live document receives tab_blocked with public {ownerId,alias}, then the stream closes. A stale credential receives session_lost with {code:stale_session}. Reconnecting the same document advances generation; cancellation releases only that exact generation and retains session/target leases.         Ownership observation emits ownership_changed with {} initially and after target acquisition, release, switch, expiry or a locked owner's name change; lease renewal alone emits nothing. Notifications confer no authority: waiting viewers must reconcile and acquire before editing. Expiry is observed within one second; obsolete connections receive terminal session_lost with {code}. Every 10 seconds send a heartbeat comment without renewing either lease. No saved-edit content is streamed.",
         "parameters": [
           { "$ref": "#/components/parameters/EditorSession" },
           { "$ref": "#/components/parameters/EditorTab" }

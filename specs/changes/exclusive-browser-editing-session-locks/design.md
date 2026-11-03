@@ -55,7 +55,9 @@ The protection map concerns authored content and spread deletion, not freezing n
 
 ## Identity and transport
 
-The browser shows first-run identification as a modal and remembers the alias for its workspace toolbar. Connectivity loss makes the retained application inert beneath a reconnect surface; text and photo recovery remain owned by their existing editors.
+The browser assigns a playful default alias from its stable profile identity and remembers the selected name without an identification prompt. The workspace name box supports inline renaming; `EditorSessionManager.rename` validates the exact live tab connection and changes only the alias, preserving session/target deadlines and grants.
+
+Ownership notifications include changes to a locked owner's alias so viewers reconcile the corner label. Connectivity loss makes the retained application inert beneath a reconnect surface; text and photo recovery remain owned by their existing editors.
 
 The existing session stream announces ownership changes, including release and elapsed-time expiry. Waiting viewers retry acquisition through the existing serialized session transition and workspace reconciliation; notifications never confer grants and unresolved drafts still require explicit review.
 
