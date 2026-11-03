@@ -20,6 +20,12 @@ Recovery confidence requires evidence for both the persisted commit and the clie
 
 Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
 
+Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.
+
+HTTP seams prove credential translation and exact-generation stream finalization; SQLite seams prove persistence and rollback rather than recreating lock policy. Browser components establish retained drafts and fail-closed editing across ownership loss.
+
+Actual socket cancellation and multiple browser engines establish close/reload recovery when departure requests are dropped. Native journeys isolate profiles and tabs, include the local proxy, and check authoritative refresh without replaying retained drafts.
+
 ## Nomenclature
 
 Name domain and application suites `<Boundary>ComponentTest` and adapter suites `<Adapter>SeamIntegrationTest`; TypeScript uses the corresponding `.componentTest` and `.seamIntegrationTest` suffixes. A seam test crosses the adapter's real external boundary; substituting a network call establishes component behavior instead.

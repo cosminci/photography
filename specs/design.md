@@ -13,7 +13,7 @@ flowchart LR
   Backend --> Database[("Albums and composition")]
   Originals["Original photographs"] -->|Read only| Backend
   Backend --> Thumbnails[("Managed thumbnails")]
-  Backend -->|Live inventory invalidations| Browser
+  Backend -->|Inventory and ownership invalidations| Browser
 ```
 
 Original photographs remain independently owned. The application stores editorial decisions and derived previews, rather than becoming the authoritative photo archive.
@@ -107,6 +107,26 @@ Editing keeps book content primary and preserves the user's spatial context thro
 
 Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
 
+## Browser editing ownership
+
+A browser profile remembers its identity and automatically chosen, editable alias. Aliases identify editors, not authenticated users.
+
+Each document establishes a backend-bound tab connection before opening the application. Only one application tab per profile is admitted; additional tabs remain blocked until the previous binding is released.
+
+One session may own one interior spread or the full exterior Cover. Other profiles retain saved-state viewing and Reader, see the owner's alias, and acquire only after release or expiry without forced takeover.
+
+Target ownership protects composition, placed-photo captions, synopsis, template changes and spread deletion. Chapter content, gear/catalog edits, author selection and nondestructive insertion/reordering remain independent of target locks.
+
+Album title/deletion and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
+
+Tab binding, session liveness and target grants have separate lifetimes. Stream closure releases only the exact tab connection; a still-live session and grant can resume after reload, while releasing a target keeps its session.
+
+Selecting another spread or Cover releases the previous grant, then acquires the destination or presents it view-only. Entering Reader or leaving the album releases target ownership.
+
+Ownership invalidations let waiting viewers attempt acquisition once local work is resolved. A successful acquisition reconciles saved content before editing; a notification alone never grants access.
+
+Connection or ownership uncertainty blocks editing and retains drafts, with backend loss making the whole application unavailable. Reconnection or reacquisition requires authoritative reconciliation and explicit draft review, never automatic replay.
+
 ## Photo processing and live views
 
 Chapter saves commit independently of background photo processing. Creation, a changed source folder or an explicit Refresh initiates reconciliation; opening an album reads saved state.
@@ -140,9 +160,11 @@ Complete photos become visible progressively, retaining existing usable data dur
 
 Durable write intents bridge database and filesystem updates so restart recovery can finish interrupted publication and cleanup.
 
-The browser treats live events as invalidations, not a second database. Initial loads and reconnects assemble fresh album metadata, ordered chapters, composition membership, individual spreads and chapter photo inventories from authoritative resource reads. Independently acquired resources must agree on identities, chapter blocks and opening order before becoming the displayed workspace; incoherent acquisition is retried at most twice, with explicit failure and the last usable view retained if reconciliation fails. Country and template catalogs are independent resources. Ordinary composition changes become visible to other workspaces on reload.
+The browser treats inventory and ownership events as invalidations, not a second database. Ordinary saved edits are read on navigation, editing acquisition and reconnect rather than streamed into an already-open view.
 
-Each saved spread supplies its geometry and placements together for editing and Reader. Navigation reuses the acquired resource; authoritative refreshes reconcile saved state without discarding pending adjustments or uncertain-write feedback. Cover is acquired when selected and refreshed on reconnect, while in-flight reads and unresolved saves retain their owning recovery lifecycle.
+Workspace acquisition assembles authoritative content, structure, composition and photo inventories. Resources must agree on identities, chapter blocks and opening order; incoherent acquisition is retried at most twice, then reports failure while retaining the last usable view.
+
+Each saved spread supplies geometry and placements together for editing and Reader. Selecting an interior spread or Cover reconciles current saved state without discarding pending adjustments or uncertain-write feedback.
 
 Acknowledged saved state takes precedence over older in-flight reads. Workspace views reconcile authoritative state before publication so background acquisition cannot undo a successful edit.
 
@@ -150,6 +172,12 @@ Acknowledged saved state takes precedence over older in-flight reads. Workspace 
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
 
-The supported topology is one backend instance. Shared mutation coordination protects read/decision/write decisions; database transactions make supplied changes atomic. Slow source and image work runs outside that critical section.
+One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
+
+A write admitted while ownership is live may finish atomically across expiry; competing acquisition waits and observes that result. Expired or superseded credentials cannot authorize a later admission.
+
+Shared protected writes prove caller-owned grants and reject atomically when any affected target belongs to another session. Failed relationship reads remain errors rather than an empty affected set.
+
+Routes declare access requirements; application operations decide ownership while content managers retain business validation. HTTP adapters translate credentials, and SQLite commits supplied decisions atomically; slow source and image work stays outside the critical section.
 
 Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Lightweight album, chapter and membership reads use their existing persistence authorities and representation validation, while atomic business workflows retain aggregate acquisition. Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving. [Contracts](contracts.md) identify authoritative representations; [operations](operational.md) owns deployment and recovery.
