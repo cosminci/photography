@@ -24,9 +24,10 @@ The V1 SQLite representation already has session and spread/Cover lock tables. N
 | `EditingLock` | Add unique acquisition identity and independently renewable deadline. | Every new acquisition gets a different grant; SessionId alone never authorizes a protected target write. | Mutation credentials, heartbeat/release requests and browser ownership state. |
 | `EditorSessionState`, `EditorTabState` | Evolve into authoritative live transitions and explicit active, blocked, stale and failed results; remove takeover semantics. | At most one target per live session and one owner per target; each target transition has a session-scoped fencing revision. | New `EditorSessionManager` operations and the runtime's single state instance. |
 | `EditorSessionManager` | New behavior for the existing state owner: register/resume, read ownership, heartbeat, switch/acquire and release; expose checked mutation authorization. | Lifecycle transitions and the shared editing executor use the same Mutex; authorization and admitted mutation completion occupy one interval. | HTTP session boundary, `EditingAccess` and ownership-event publication. |
-| `AlbumCompositionRepository`, `PhotoPlacementRepository`, chapter/gear repositories | Evolve reads to retain affected target identities rather than only membership/used booleans. | Derive protection from current authoritative relationships; missing or failed acquisition is explicit and cannot become an empty affected set. | Content and structural mutation owners; SQLite adapters. |
+| `AlbumCompositionRepository`, `PhotoPlacementRepository` | Evolve reads to retain affected target identities rather than only membership/used booleans. | Derive protection from current authoritative relationships; missing or failed acquisition is explicit and cannot become an empty affected set. | Content and structural mutation owners; SQLite adapters. |
 | Spread/Cover placement and lifecycle operations | Declare required ownership at their routes; centralized enforcement validates live connection and exact grant evidence before calling existing content owners. | Preserve collection checks and atomic writes; confirmation never overrides ownership. | PhotoPlacementApi, AlbumSpreadApi, shared executor, HTTP clients and placement/structural browser consumers. |
-| Album synopsis, chapter, photo-caption and gear operations | Declare their actual content dependencies for centralized protection in the same interval as writing. | Keep each resource's domain owner; authors and nondestructive order/insertion remain independently writable. | Policy-declaring routes, shared enforcement, repository adapters and content editors. |
+| Album synopsis and photo-caption operations | Declare their actual content dependencies for centralized protection in the same interval as writing. | Keep each resource's domain owner; authors and nondestructive order/insertion remain independently writable. | Policy-declaring routes, shared enforcement, repository adapters and content editors. |
+| Chapter metadata, description, gear selection and shared gear catalogs | Retain existing operations without target-lock protection. | A spread grant does not freeze these independently editable resources. | Existing chapter and gear consumers. |
 | `ChapterPhotoImport`, `PhotoManager` source/import behavior | Unchanged; source-folder changes and background import/refresh are outside target-lock protection. | Retain existing source-generation checks, transactions and inventory events. | Existing source and import consumers. |
 | `AlbumPhotoEvents`, session ownership transport | Keep existing photo-inventory SSE; session SSE carries tab/ownership transitions without ordinary saved-edit streaming. | Ownership notifications never grant access; reconnect reconciles authoritative saved content and ownership. | Existing inventory consumers and session SSE lifecycle. |
 | `LiveWorkspace`, workspace navigation | Reuse the full saved-workspace reload for spread/Cover navigation, acquisition and reconnect; read selected Cover placements and chapter gear through their existing owners. | Pending writes, drafts and uncertain recovery block departure; failed acquisition blocks editing and remains retryable; obsolete reads cannot replace newer acknowledged content. | Editor and Reader selection, browser history and future ownership acquisition. |
@@ -44,9 +45,7 @@ The V1 SQLite representation already has session and spread/Cover lock tables. N
 | Photo caption | The spread containing the photo, including writes through the chapter/photo endpoint; an unplaced photo has no spread to protect. |
 | Album synopsis | Album opening. |
 | Author selection | Independently writable by explicit maintainer exception. |
-| Chapter description and gear selection | The chapter opening whose content changes. |
-| Referenced camera/lens catalog edits | Chapter openings whose rendered gear changes; preserve existing compatibility and used-entry checks. |
-| Chapter metadata | Targets whose owner text changes; source-folder replacement is outside target-lock protection. |
+| Chapter metadata, description, gear selection and shared gear catalogs | Independently writable without target-lock protection; preserve existing validation and compatibility checks. |
 | Spread deletion | The deleted spread; other-session ownership rejects deletion even with placement confirmation. |
 | Nondestructive chapter/spread insertion or order changes | Remain independent of locks while preserving target identity/content; use existing capacity, membership and stale-order checks. |
 
@@ -56,7 +55,21 @@ The protection map concerns authored content and spread deletion, not freezing n
 
 ## Identity and transport
 
-The browser stores its identity, alias and resumable credential per origin/profile; each loaded document creates a fresh, memory-only tab identity. Its live session SSE connection claims application access atomically before opening routes.
+The browser assigns a playful default alias from its stable profile identity and remembers the selected name without an identification prompt. The workspace name box supports inline renaming; `EditorSessionManager.rename` validates the exact live tab connection and changes only the alias, preserving session/target deadlines and grants.
+
+Ownership notifications include changes to a locked owner's alias so viewers reconcile the corner label. Connectivity loss makes the retained application inert beneath a reconnect surface; text and photo recovery remain owned by their existing editors.
+
+The existing session stream announces ownership changes, including release and elapsed-time expiry. Waiting viewers retry acquisition through the existing serialized session transition and workspace reconciliation; notifications never confer grants and unresolved drafts still require explicit review.
+
+The active document releases its exact binding through a header-authenticated keepalive request on departure. Reload retries binding automatically while the previous connection finishes, without replacing an actually live competing tab.
+
+Blocked tabs keep retrying authoritative binding without renewing the active owner's lease. Departure retains the exact stream binding independently of confirmed editing access, so interrupted or still-establishing documents can release it.
+
+Session SSE sends transport-only comments every second to detect closed connections promptly when a browser drops its departure request. These comments renew neither lease; accepted session heartbeats and target renewals retain their ten-second cadence.
+
+The browser allocates its profile identity atomically in IndexedDB, so simultaneous first-run tabs share one identity. It remembers the alias and resumable credential separately; each loaded document creates a fresh, memory-only tab identity.
+
+Its live session SSE connection claims application access atomically before opening routes.
 
 The backend blocks a different tab while the existing binding is live, even if both know the remembered session credential. Closing the first permits retry; reload resumes only after the previous binding is released or expires, without forced takeover.
 
@@ -101,7 +114,7 @@ Source-folder changes and background photo publication/removal are excluded from
 
 Application component tests own admission, current relationship resolution, fencing, expiry, cancellation and serialization with competing acquisition, using substituted repository ports. HTTP seams prove credential decoding, declared-policy forwarding, response encoding and stream acquisition/finalization through substituted application services. Database seams prove persisted representation, transaction atomicity, rollback and acknowledgement uncertainty through real storage, without recreating application locking scenarios.
 
-The refactoring delivery migrates all previously protected operations together and requires explicit declarations for every API route; public declarations preserve the behavior of routes whose protection has not yet been implemented. Remaining owner-text, gear and browser ownership work stays with the approved feature rather than being represented as delivered protection.
+The refactoring delivery migrates all protected operations together and requires explicit declarations for every API route. Chapter and gear operations retain their existing public declarations under the approved scope exclusion; browser ownership integration completes the remaining implementation.
 
 Album title editing and album deletion are outside this feature's scope; their existing behavior is unchanged.
 

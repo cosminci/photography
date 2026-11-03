@@ -1,10 +1,14 @@
-import { createMemo, createSignal } from "solid-js";
+import { createEffect, createMemo, createSignal } from "solid-js";
 import type { PlacementClient, PlacementContext, PlacementEdit, PlacementSnapshot, PhotoTransform, SpreadSnapshot } from "../model/Placement";
 import { AlbumRequestError } from "../model/Album";
 
-type Recovery = "read" | "uncertain" | "refresh";
+type Recovery = "read" | "uncertain" | "refresh" | "ownership";
 
-export function createPlacementSession(client: PlacementClient, refreshInventory: () => Promise<void>) {
+export function createPlacementSession(
+  client: PlacementClient,
+  refreshInventory: () => Promise<void>,
+  access?: { available: () => boolean; authority: () => number },
+) {
   const [snapshot, setSnapshot] = createSignal<PlacementSnapshot>();
   const [previews, setPreviews] = createSignal<Readonly<Record<string, PhotoTransform>>>({});
   const [saving, setSaving] = createSignal(false);
@@ -12,9 +16,27 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string>();
   const [recovery, setRecovery] = createSignal<Recovery>();
+  const [retained, setRetained] = createSignal(false);
   const queue = new Map<string, PhotoTransform>();
   const [target, setTarget] = createSignal<{ album: string; context: PlacementContext }>();
   let generation = 0;
+  let authority = access?.authority();
+  function ownsDrafts() {
+    return access === undefined || (access.available() && authority === access.authority());
+  }
+  function canWrite() {
+    if (ownsDrafts()) return true;
+    setRetained(queue.size > 0 || Object.keys(previews()).length > 0);
+    setRecovery("ownership");
+    setError("Editing ownership changed. Read saved photos, review retained adjustments, then explicitly apply or discard them.");
+    return false;
+  }
+  createEffect(() => {
+    const current = access?.authority();
+    if (current === authority) return;
+    if (queue.size > 0 || Object.keys(previews()).length > 0) canWrite();
+    else authority = current;
+  });
   const placements = createMemo(() => snapshot()?.placements.map((row) => ({ ...row, transform: previews()[row.id] ?? row.transform })) ?? []);
   const navigationReason = createMemo(() =>
     saving()
@@ -43,6 +65,7 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     setSnapshot(undefined);
     setError(undefined);
     setRecovery(undefined);
+    authority = access?.authority();
     return request;
   }
 
@@ -79,6 +102,7 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     setSnapshot(undefined);
     setPreviews({});
     setRecovery(undefined);
+    setRetained(false);
     setError(undefined);
     setLoading(false);
   }
@@ -102,12 +126,17 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
 
   async function drain() {
     const selected = target();
-    if (saving() || recovery() !== undefined || selected === undefined || queue.size === 0) return;
+    if (saving() || recovery() !== undefined || selected === undefined || queue.size === 0 || !canWrite()) return;
     setSaving(true);
     setAdjusting(true);
     try {
       while (queue.size > 0) {
         for (const [id, transform] of new Map(queue)) {
+          if (!canWrite()) {
+            setSaving(false);
+            setAdjusting(false);
+            return;
+          }
           const saved = await client.editPlacements(selected.album, selected.context, { operation: "adjust", placementId: id, transform });
           setSnapshot(saved);
           if (queue.get(id) === transform) queue.delete(id);
@@ -138,7 +167,7 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
 
   async function edit(command: PlacementEdit) {
     const selected = target();
-    if (selected === undefined || unavailable() !== undefined || navigationReason() !== undefined) return;
+    if (selected === undefined || unavailable() !== undefined || navigationReason() !== undefined || !canWrite()) return;
     setSaving(true);
     try {
       const saved = await client.editPlacements(selected.album, selected.context, command);
@@ -161,14 +190,15 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
 
   async function retry() {
     const selected = target();
-    if (selected === undefined || saving()) return;
+    if (selected === undefined || saving() || loading()) return false;
     setLoading(true);
     try {
       const saved = await client.readPlacements(selected.album, selected.context);
       setSnapshot(saved);
+      const ownershipChanged = !ownsDrafts();
       for (const [id, transform] of queue) {
         const confirmed = saved.placements.find((row) => row.id === id);
-        if (confirmed === undefined || sameTransform(confirmed.transform, transform)) {
+        if ((confirmed === undefined && !ownershipChanged) || (confirmed !== undefined && sameTransform(confirmed.transform, transform))) {
           queue.delete(id);
           setPreviews((current) => {
             return withoutPreview(current, id);
@@ -176,8 +206,17 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
         }
       }
       await refreshInventory();
-      setError(undefined);
-      setRecovery(undefined);
+      const hasDrafts = queue.size > 0 || Object.keys(previews()).length > 0;
+      if (hasDrafts && !ownsDrafts()) {
+        setRetained(true);
+        setRecovery("ownership");
+        setError("Editing ownership changed. Review retained photo adjustments before applying or discarding them.");
+      } else {
+        authority = access?.authority();
+        setRetained(false);
+        setError(undefined);
+        setRecovery(undefined);
+      }
     } catch (failure) {
       let message = "Saved photo recovery failed. Unsaved adjustments are retained. Retry reads saved state first.";
       if (failure instanceof AlbumRequestError && failure.status === 404) {
@@ -188,10 +227,34 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
         }
       }
       if (target() !== undefined) setError(message);
+      return false;
     } finally {
       setLoading(false);
     }
     if (recovery() === undefined) await drain();
+    return true;
+  }
+
+  async function applyRetained() {
+    if (saving() || loading() || (access !== undefined && !access.available())) return;
+    const reviewedAuthority = access?.authority();
+    if (!(await retry()) || recovery() !== "ownership" || (access !== undefined && (!access.available() || reviewedAuthority !== access.authority())))
+      return;
+    authority = access?.authority();
+    setRecovery(undefined);
+    setError(undefined);
+    setRetained(false);
+    for (const [id, transform] of Object.entries(previews())) queue.set(id, transform);
+    await drain();
+  }
+
+  async function discardRetained() {
+    if (saving() || loading()) return;
+    queue.clear();
+    setPreviews({});
+    setRetained(false);
+    authority = access?.authority();
+    await retry();
   }
 
   return {
@@ -211,6 +274,9 @@ export function createPlacementSession(client: PlacementClient, refreshInventory
     complete,
     edit,
     retry,
+    retained,
+    applyRetained,
+    discardRetained,
   };
 }
 

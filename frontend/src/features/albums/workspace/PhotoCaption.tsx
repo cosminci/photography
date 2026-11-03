@@ -12,6 +12,7 @@ export function createCaptionEditing(operations: {
   save: (photoId: string, text: string) => Promise<void>;
   read: (photoId: string) => Promise<string>;
   onBlock: (photoId: string, reason: string | undefined) => void;
+  maybeAuthority?: () => number | undefined;
 }) {
   const [sessions, setSessions] = createSignal<readonly CaptionState[]>([]);
   const [requestedFocus, setRequestedFocus] = createSignal<string>();
@@ -33,6 +34,7 @@ export function createCaptionEditing(operations: {
     if (existing !== undefined) return existing.save;
     const state = createRoot((dispose) => {
       const save = createContentSave<string>({
+        maybeAuthority: operations.maybeAuthority,
         save: async (text) => {
           await operations.save(photoId, text);
           return undefined;
@@ -59,6 +61,7 @@ export function PhotoCaption(props: {
   corner: CaptionCorner;
   reader: boolean;
   unavailable: string | undefined;
+  ownershipUnavailable?: string | undefined;
   editing: CaptionEditing;
 }) {
   const feedback = createUniqueId();
@@ -74,6 +77,7 @@ export function PhotoCaption(props: {
   const editable = createMemo(() => !props.reader);
   const reason = createMemo(
     () =>
+      props.ownershipUnavailable ??
       save.unavailable() ??
       (editable() && selection === null ? "Caption editing is not supported by this browser." : editing() ? undefined : props.unavailable),
   );
@@ -207,7 +211,7 @@ export function PhotoCaption(props: {
               aria-describedby={feedback}
               onClick={() => {
                 label.focus();
-                void save.commit();
+                void save.commit(true);
               }}
             >
               {save.recovery() === undefined ? "Retry caption" : "Read saved caption"}

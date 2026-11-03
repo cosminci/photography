@@ -5,6 +5,7 @@ import type { AlbumPhotoEvents } from "../model/Photo";
 import { isMissingAlbum } from "../model/Presentation";
 import { AlbumWorkspace } from "../workspace/AlbumWorkspace";
 import { createLiveWorkspace } from "./LiveWorkspace";
+import type { WorkspaceEditingSession } from "../../editing/EditorSession";
 
 export function AlbumOpen(props: {
   client: Pick<
@@ -34,6 +35,7 @@ export function AlbumOpen(props: {
   >;
   events: AlbumPhotoEvents;
   id: string;
+  session: WorkspaceEditingSession;
 }) {
   const client = untrack(() => props.client);
   const events = untrack(() => props.events);
@@ -85,6 +87,7 @@ export function AlbumOpen(props: {
             {(album) => (
               <AlbumWorkspace
                 album={album()}
+                session={props.session}
                 workspace={workspace()}
                 client={props.client}
                 onRefresh={live.reload}

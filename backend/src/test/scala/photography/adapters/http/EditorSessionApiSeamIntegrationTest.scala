@@ -133,12 +133,20 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           readBody  <- read.as[Json]
           heartbeat <- app.run(connected(Method.POST, "/heartbeat", bound))
           heartbeatBody <- heartbeat.as[Json]
+          rename        <- app.run(connected(Method.PATCH, "", bound).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
+          renameBody    <- rename.as[Json]
+          departure     <- app.run(connected(Method.DELETE, "/binding", bound))
+          departureBody <- departure.as[Json]
         yield
           val expected = Json.obj("code" -> Json.fromString(code))
           assertEquals(read.status, Status.Conflict)
           assertEquals(readBody, expected)
           assertEquals(heartbeat.status, Status.Conflict)
           assertEquals(heartbeatBody, expected)
+          assertEquals(rename.status, Status.Conflict)
+          assertEquals(renameBody, expected)
+          assertEquals(departure.status, Status.Conflict)
+          assertEquals(departureBody, expected)
           assertEquals(events.flatMap(_.eventType), Vector("bound", "session_lost"))
           assertEquals(events.flatMap(_.data).lastOption, Some(expected.noSpaces))
       }
@@ -160,28 +168,44 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         refs <- Ref.of[IO, Calls](Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty))
         app =
           PublicRoutes(EditorSessionApi.make(buildService(refs, session, RegisterResult.Ready(session), BindResult.Active(connection)))).orNotFound
-        registered <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
-        response   <- app.run(bind(sessionId, tab))
-        before     <- refs.get
-        events     <- response.body.through(ServerSentEvent.decoder[IO]).take(2).compile.toVector
-        elapsed    <- IO.monotonic
-        read       <- app.run(connected(Method.GET, "", binding))
-        heartbeat  <- app.run(connected(Method.POST, "/heartbeat", binding))
-        after      <- refs.get
+        registered     <- app.run(register("Cosmin").putHeaders("X-Editor-Session" -> sessionId.value.toString))
+        registeredBody <- registered.as[Json]
+        response       <- app.run(bind(sessionId, tab))
+        before         <- refs.get
+        events         <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
+        elapsed        <- IO.monotonic
+        read           <- app.run(connected(Method.GET, "", binding))
+        heartbeat      <- app.run(connected(Method.POST, "/heartbeat", binding))
+        renamed        <- app.run(connected(Method.PATCH, "", binding).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
+        renamedBody    <- renamed.as[Json]
+        invalidNames   <-
+          Vector(Json.obj("alias" -> Json.fromString(" ")), Json.obj("alias" -> Json.fromInt(1)), Json.obj("extra" -> Json.True)).traverse(body =>
+            app.run(connected(Method.PATCH, "", binding).withEntity(body)).map(_.status)
+          )
+        departure     <- app.run(connected(Method.DELETE, "/binding", binding))
+        departureBody <- departure.as[Json]
+        after         <- refs.get
       yield
         val expectedBefore = Calls(Vector((session.owner, session.alias, Some(sessionId))), Vector.empty, Vector.empty, Vector.empty, Vector.empty)
         val expectedAfter  = expectedBefore.copy(
           bindings = Vector((sessionId, connection.tab)),
           reads = Vector(connection, connection),
           heartbeats = Vector(connection),
-          releases = Vector(connection)
+          releases = Vector(connection, connection)
         )
         assertEquals(registered.status, Status.Ok)
         assertEquals(before, expectedBefore)
         assertEquals(after, expectedAfter)
         assertEquals(read.status, Status.Ok)
         assertEquals(heartbeat.status, Status.Ok)
-        assertEquals(elapsed, 10.seconds)
+        assertEquals(renamed.status, Status.Ok)
+        assertEquals(renamedBody, registeredBody.deepMerge(Json.obj("alias" -> Json.fromString("Mara"))))
+        assertEquals(renamed.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+        assertEquals(invalidNames, Vector.fill(3)(Status.BadRequest))
+        assertEquals(departure.status, Status.Ok)
+        assertEquals(departureBody, Json.obj("released" -> Json.True))
+        assertEquals(departure.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+        assertEquals(elapsed, 1.second)
         assertEquals(response.contentType.map(_.mediaType), Some(MediaType.`text/event-stream`))
         assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
         assertEquals(response.headers.get(CIString("X-Accel-Buffering")).map(_.head.value), Some("no"))
@@ -189,6 +213,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           events,
           Vector(
             ServerSentEvent(data = Some(binding.noSpaces), eventType = Some("bound")),
+            ServerSentEvent(data = Some("{}"), eventType = Some("ownership_changed")),
             ServerSentEvent(comment = Some("heartbeat"))
           )
         )
@@ -235,13 +260,16 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       .map(refs => buildService(refs, registeredSession, RegisterResult.Ready(registeredSession), BindResult.Active(activeConnection)))
 
   private def rejectRequests(manager: EditorSessionManager[IO], failure: Failure) = new EditorSessionManager[IO]:
+    override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult]           = IO.pure(RenameResult.Rejected(failure))
     override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] = manager.authorizeConnection(connection)
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
       manager.register(owner, alias, maybeSession)
-    override def bind(session: SessionId, tab: TabId): IO[BindResult]         = manager.bind(session, tab)
-    override def unbind(connection: EditorConnection): IO[UnbindResult]       = manager.unbind(connection)
-    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] = IO.pure(HeartbeatResult.Rejected(failure))
-    override def read(connection: EditorConnection): IO[ReadResult]           = IO.pure(ReadResult.Rejected(failure))
+    override def bind(session: SessionId, tab: TabId): IO[BindResult]                              = manager.bind(session, tab)
+    override def unbind(connection: EditorConnection): IO[UnbindResult]                            = IO.pure(UnbindResult.Rejected(failure))
+    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult]                      = IO.pure(HeartbeatResult.Rejected(failure))
+    override def read(connection: EditorConnection): IO[ReadResult]                                = IO.pure(ReadResult.Rejected(failure))
+    override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+      Stream.emit(OwnershipChangeResult.Rejected(failure))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
       manager.select(connection, revision, target)
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
@@ -258,6 +286,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def buildService(refs: Ref[IO, Calls], session: EditorSession, registration: RegisterResult, binding: BindResult) =
     new EditorSessionManager[IO]:
+      override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
+        refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(RenameResult.Renamed(session.copy(alias = alias)))
       override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
         IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
       override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
@@ -270,6 +300,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         refs.update(calls => calls.copy(heartbeats = calls.heartbeats :+ connection)).as(HeartbeatResult.Alive(session))
       override def read(connection: EditorConnection): IO[ReadResult] =
         refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(ReadResult.Current(session))
+      override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+        Stream.emit(OwnershipChangeResult.Changed) ++ Stream.never[IO]
       override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
         IO.raiseError[SelectResult](new AssertionError("Unexpected target selection"))
       override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =

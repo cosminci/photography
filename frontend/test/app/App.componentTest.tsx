@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app/App";
+import { editingSession } from "../features/editing/EditingSessionStub";
 import { AlbumRequestError, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
 import type { PlacementContext, PlacementSnapshot } from "../../src/features/albums/model/Placement";
 import type { AlbumPhotoEvents, PhotoEvent } from "../../src/features/albums/model/Photo";
@@ -46,6 +47,43 @@ const dialogAnimationFinished = vi.fn<() => Promise<void>>().mockResolvedValue(u
 const browserYear = vi.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
 
 describe("album dashboard and open", () => {
+  it("should preserve the loaded document across catalog navigation and keep draft resolution ahead of history departure", async () => {
+    const select = vi.fn().mockResolvedValue(true);
+    const documentBefore = document;
+    const client = buildClient({
+      spread: vi.fn().mockResolvedValue({
+        id: "opening",
+        templateId: "layout",
+        chapter: null,
+        kind: "album_start",
+        placements: [],
+        slots: [{ id: "text-slot", kind: "text", x: 50, y: 4, width: 48, height: 92 }],
+      }),
+    });
+    render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
+    await screen.findByRole("heading", { level: 1, name: firstAlbum.title });
+    expect(document).toBe(documentBefore);
+    fireEvent.click(screen.getByRole("button", { name: "Edit synopsis" }));
+    const editor = screen.getByRole("textbox", { name: "Synopsis" });
+    fireEvent.input(editor, { target: { value: "Retained text" } });
+    window.history.pushState(null, "", "/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(`/albums/${firstAlbum.id}`);
+    });
+    expect(editor).toHaveValue("Retained text");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("link", { name: "Album Layout Studio" }));
+    await screen.findByRole("heading", { name: "Album dashboard" });
+    expect(select).toHaveBeenLastCalledWith(null);
+    expect(window.location.pathname).toBe("/");
+    expect(document).toBe(documentBefore);
+  });
+
   beforeAll(() => {
     vi.stubGlobal(
       "ResizeObserver",
@@ -82,7 +120,7 @@ describe("album dashboard and open", () => {
     });
     const client = buildClient({ list: vi.fn().mockResolvedValueOnce(firstPage).mockReturnValueOnce(nextPage) });
 
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
 
     expect(await screen.findByRole("link", { name: firstAlbum.title })).toHaveAttribute("href", `/albums/${firstAlbum.id}`);
     expect(screen.queryByRole("region", { name: "Album start layouts" })).not.toBeInTheDocument();
@@ -105,7 +143,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce(firstPage)
         .mockResolvedValueOnce({ ...firstPage, albums: [createdAlbum, ...firstPage.albums.slice(0, 5)], totalAlbums: 8 }),
     });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     const add = screen.getByRole("button", { name: "Add album" });
     add.focus();
 
@@ -129,7 +167,7 @@ describe("album dashboard and open", () => {
 
   it("should retain a duplicate year with readable feedback and delete only after explicit confirmation", async () => {
     const client = buildClient({ create: vi.fn().mockRejectedValue(new AlbumRequestError(400, "An album already exists for that year")) });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     await screen.findByRole("link", { name: firstAlbum.title });
 
     fireEvent.click(screen.getByRole("button", { name: "Add album" }));
@@ -160,7 +198,7 @@ describe("album dashboard and open", () => {
     window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
     const client = buildClient();
 
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
 
     expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toBeInTheDocument();
@@ -179,7 +217,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce({ albums: [], page: 1, pageSize: 6, totalAlbums: 0, totalPages: 0 }),
     });
 
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
 
     expect(screen.getByRole("status", { name: "Loading albums" })).toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent("Albums could not be loaded");
@@ -199,7 +237,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce({ albums: [], page: 1, pageSize: 6, totalAlbums: 0, totalPages: 0 })
         .mockResolvedValueOnce({ albums: [firstAlbum], page: 1, pageSize: 6, totalAlbums: 1, totalPages: 1 }),
     });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     await waitFor(() => {
       expect(screen.queryByRole("status", { name: "Loading albums" })).not.toBeInTheDocument();
     });
@@ -234,7 +272,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce(firstPage)
         .mockResolvedValueOnce({ ...firstPage, albums: [createdAlbum, ...firstPage.albums.slice(0, 5)] }),
     });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     const add = screen.getByRole("button", { name: "Add album" });
     add.focus();
 
@@ -268,7 +306,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce(firstPage)
         .mockResolvedValueOnce({ ...firstPage, albums: [renamedAlbum, ...firstPage.albums.slice(1)] }),
     });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     const rename = await screen.findByRole("button", { name: `Rename ${firstAlbum.title}` });
 
     fireEvent.click(rename);
@@ -309,7 +347,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce({ ...firstPage, totalAlbums: 6, totalPages: 1 }),
       remove: vi.fn().mockReturnValueOnce(pendingDelete).mockResolvedValueOnce(undefined),
     });
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     await screen.findByRole("link", { name: firstAlbum.title });
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -335,7 +373,7 @@ describe("album dashboard and open", () => {
   it.each(["finished", "cancelled"])("should return to a previous page and dismiss a popup after its animation is %s", async (animationOutcome) => {
     const client = buildClient({ list: vi.fn().mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage).mockResolvedValueOnce(firstPage) });
     if (animationOutcome === "cancelled") dialogAnimationFinished.mockRejectedValueOnce(new DOMException("Animation cancelled", "AbortError"));
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
     await screen.findByRole("link", { name: firstAlbum.title });
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -365,7 +403,7 @@ describe("album dashboard and open", () => {
         .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry.", authors: ["Cosmin", "Mara", "Iacob"] } : []),
     });
 
-    render(() => <App client={client} events={events} />);
+    render(() => <App session={editingSession} client={client} events={events} />);
 
     expect(screen.getByRole("status", { name: "Loading album" })).toBeInTheDocument();
     expect(await screen.findByRole("alert")).toHaveTextContent(status === 404 ? "could not be found" : "could not be loaded");
@@ -389,7 +427,7 @@ describe("album dashboard and open", () => {
       },
     };
     const client = buildClient();
-    render(() => <App client={client} events={liveEvents} />);
+    render(() => <App session={editingSession} client={client} events={liveEvents} />);
 
     receive({ kind });
     expect(screen.getByRole("alert")).toHaveTextContent(

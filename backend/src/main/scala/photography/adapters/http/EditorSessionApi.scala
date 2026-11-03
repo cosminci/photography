@@ -42,6 +42,24 @@ object EditorSessionApi:
             }
           )
         }
+      case request @ PATCH -> Root / "api" / "editor-session" => Route.public {
+          withConnection(request)(connection =>
+            withBody(request, aliasChange)(alias =>
+              sessions.rename(connection, alias).flatMap {
+                case RenameResult.Renamed(session) => Ok(encodeSession(session))
+                case RenameResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+              }
+            )
+          )
+        }
+      case request @ DELETE -> Root / "api" / "editor-session" / "binding" => Route.public {
+          withConnection(request)(connection =>
+            sessions.unbind(connection).flatMap {
+              case UnbindResult.Released         => Ok(Json.obj("released" -> Json.True))
+              case UnbindResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
+            }
+          )
+        }
       case request @ POST -> Root / "api" / "editor-session" / "heartbeat" => Route.public {
           withConnection(request)(connection =>
             sessions.heartbeat(connection).flatMap {
@@ -187,10 +205,15 @@ object EditorSessionApi:
       }
 
     private def monitor(connection: EditorConnection) =
-      Stream.awakeEvery[F](10.seconds).evalMap(_ => sessions.read(connection)).map {
-        case ReadResult.Current(_)       => (ServerSentEvent(comment = Some("heartbeat")), false)
-        case ReadResult.Rejected(reason) => (event("session_lost", code(encodeFailure(reason))), true)
-      }.takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
+      val updates = sessions.ownershipChanges(connection).map {
+        case OwnershipChangeResult.Changed          => (event("ownership_changed", Json.obj()), false)
+        case OwnershipChangeResult.Rejected(reason) => (event("session_lost", code(encodeFailure(reason))), true)
+      }
+      val heartbeat = Stream.awakeEvery[F](1.second).as((ServerSentEvent(comment = Some("heartbeat")), false))
+      updates.merge(heartbeat).takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
+
+    private val aliasChange = Decoder.forProduct1("alias")((alias: String) => alias)
+      .emap(_.refineEither[EditorAliasConstraint]).validate(_.keys.exists(_.toSet === Set("alias")), "Invalid alias")
 
     private val registration = Decoder.forProduct2("editorId", "alias")((owner: String, alias: String) => (owner, alias))
       .emap { case (owner, alias) =>

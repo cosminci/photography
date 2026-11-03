@@ -5,6 +5,7 @@ import cats.effect.{Deferred, IO, Outcome, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
+import fs2.Stream
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import photography.capabilities.IdGenerator
@@ -364,6 +365,10 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
       IO.raiseError[HeartbeatResult](new AssertionError("Unexpected heartbeat"))
     override def read(connection: EditorConnection): IO[ReadResult] =
       IO.raiseError[ReadResult](new AssertionError("Unexpected session read"))
+    override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
+      IO.raiseError[RenameResult](new AssertionError("Unexpected alias change"))
+    override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+      Stream.raiseError[IO](new AssertionError("Unexpected ownership subscription"))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
       IO.raiseError[SelectResult](new AssertionError("Unexpected acquisition"))
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =

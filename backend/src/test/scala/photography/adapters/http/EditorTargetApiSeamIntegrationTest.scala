@@ -281,6 +281,10 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       IO.raiseError[UnbindResult](new AssertionError("Unexpected unbind"))
     override def read(connection: EditorConnection): IO[ReadResult] =
       IO.raiseError[ReadResult](new AssertionError("Unexpected session read"))
+    override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
+      IO.raiseError[RenameResult](new AssertionError("Unexpected alias change"))
+    override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
+      Stream.raiseError[IO](new AssertionError("Unexpected ownership subscription"))
     override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] =
       IO.raiseError[HeartbeatResult](new AssertionError("Unexpected heartbeat"))
     override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): IO[AuthorizationResult] =

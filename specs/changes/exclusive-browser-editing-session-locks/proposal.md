@@ -34,7 +34,7 @@ Locking is access coordination, not a saved-book snapshot or an undo implementat
 
 Album title editing and album deletion retain their existing behavior outside this feature's scope.
 
-Source-folder changes and background photo import/refresh retain their existing behavior without target-lock protection. Already-open views and Reader need not immediately display another browser's ordinary saved edits.
+Chapter metadata, description and gear selection, shared gear catalogs, source-folder changes and background photo import/refresh retain their existing behavior without target-lock protection. Already-open views and Reader need not immediately display another browser's ordinary saved edits.
 
 ## Model evolution
 
@@ -45,7 +45,7 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 - Independent browsers competing for one interior or exterior spread obtain exactly one live owner.
 - A contender can view saved content and Reader, sees the owner's alias, and cannot edit the locked target through any protected endpoint.
 - One remembered alias identifies the browser across reloads and backend restarts without another identification prompt.
-- A second tab in the same browser profile is blocked from the entire application until the previous active-tab binding releases or expires.
+- A second tab in the same browser profile is blocked until the previous active-tab binding releases or expires, then reconnects automatically.
 - A reload resumes a still-live session and target grant without allowing a duplicated tab to share editing access.
 - Selection releases the previous target and acquires the new spread or Cover, or reports that destination as view-only.
 - Reader and album departure release target ownership after pending writes and drafts are visibly resolved.
@@ -63,6 +63,12 @@ The linked [reviewable design decision](design.md#model-evolution) owns concrete
 - Restart rejects old session/grant credentials; the browser remembers its alias, retains drafts and obtains new ownership before editing.
 - Pending, locked, lost, reconnecting and retry states have accessible explanations and preserve keyboard/focus continuity at narrow widths.
 - A continuously held grant can support a later history feature; released or lost ownership invalidates that later history permanently.
+- First opening automatically assigns a playful browser name and opens without an identification dialog; browser identity and the selected name persist across openings.
+- A compact name box beside Reader offers inline pencil editing; a saved name change reaches other viewers without releasing ownership or extending either lease.
+- Another browser's ownership appears as a thin red canvas outline and corner alias, without a prominent warning banner.
+- Release and expiry notify waiting viewers; a viewer without unresolved local work automatically attempts acquisition and becomes editable only after authoritative acquisition and saved-content reconciliation.
+- Backend loss dims and blocks the entire application with a reachable reconnect surface, retaining unsaved work underneath.
+- Refreshing the same tab releases its obsolete binding and automatically reconciles a replacement connection without a false duplicate-tab warning; genuinely additional tabs remain blocked.
 
 ## Doc Sync
 

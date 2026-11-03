@@ -14,6 +14,7 @@ export interface CanvasPhotos {
   readonly choice: PhotoChoice | undefined;
   readonly onChoose: (choice: PhotoChoice | undefined) => void;
   readonly unavailable: string | undefined;
+  readonly ownershipUnavailable?: string | undefined;
   readonly reader: boolean;
   readonly captions?: CaptionEditing;
   readonly onEditText?: (opener: HTMLButtonElement) => void;
@@ -261,6 +262,7 @@ function SlotPhoto(props: { slotId: string; label: string; width: number; height
       choice={props.editing.choice}
       onChoose={props.editing.onChoose}
       unavailable={props.editing.unavailable}
+      ownershipUnavailable={props.editing.ownershipUnavailable}
       reader={props.editing.reader}
       captions={props.editing.captions}
     />

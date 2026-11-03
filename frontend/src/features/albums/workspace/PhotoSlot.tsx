@@ -25,6 +25,7 @@ export function PhotoSlot(props: {
   choice: PhotoChoice | undefined;
   onChoose: (choice: PhotoChoice | undefined) => void;
   unavailable: string | undefined;
+  ownershipUnavailable?: string | undefined;
   reader: boolean;
   captions?: CaptionEditing | undefined;
 }) {
@@ -222,6 +223,7 @@ export function PhotoSlot(props: {
                   corner={content().row.captionCorner}
                   reader={props.reader}
                   unavailable={actionReason()}
+                  ownershipUnavailable={props.ownershipUnavailable}
                   editing={captions()}
                 />
               </Show>
