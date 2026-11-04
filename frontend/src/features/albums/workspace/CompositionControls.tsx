@@ -15,7 +15,13 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
     return saved?.kind === "cover" ? saved : undefined;
   });
   const reason = () => props.unavailable ?? props.session.unavailable() ?? props.session.navigationReason();
-  const bleedReason = () => reason() ?? (spread()?.layout.bleed.available === false ? "This spread has no eligible outer photo slots." : undefined);
+  const bleedReason = () =>
+    reason() ??
+    (spread()?.layout.bleed.state === "mixed"
+      ? "This spread has nonstandard bleed. The bleed toggle is unavailable."
+      : spread()?.layout.bleed.available === false
+        ? "This spread has no eligible outer photo slots."
+        : undefined);
   const sharedFeedback = () => (props.session.error() !== undefined && reason() === props.session.error() ? props.feedbackId : undefined);
 
   function edit(command: PlacementEdit, opener: HTMLButtonElement | HTMLSelectElement) {
@@ -42,8 +48,10 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
                 control = element;
               }}
               type="button"
+              class="icon-button bleed-toggle"
               role="checkbox"
               aria-label="Spread bleed"
+              title={bleedReason() ?? `Spread bleed: ${saved().layout.bleed.state}`}
               aria-checked={saved().layout.bleed.state === "mixed" ? "mixed" : saved().layout.bleed.state === "enabled"}
               disabled={bleedReason() !== undefined}
               aria-describedby={bleedReason() === undefined ? undefined : (sharedFeedback() ?? "spread-bleed-reason")}
@@ -51,13 +59,15 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
                 edit({ operation: "bleed", enabled: saved().layout.bleed.state !== "enabled" }, event.currentTarget);
               }}
             >
-              Spread bleed: {saved().layout.bleed.state}
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3C5.5 6 3 8.5 3 11a4 4 0 0 0 8 0c0-2.5-2.5-5-4-8ZM18 10c-1 2-3 4-3 6a3 3 0 0 0 6 0c0-2-2-4-3-6Z" />
+              </svg>
             </button>
           )}
         </Show>
         <Show when={spread() !== undefined && sharedFeedback() === undefined && bleedReason()}>
           {(message) => (
-            <p id="spread-bleed-reason" class="control-help">
+            <p id="spread-bleed-reason" class="visually-hidden">
               {message()}
             </p>
           )}

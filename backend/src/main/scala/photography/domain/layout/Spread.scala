@@ -22,18 +22,23 @@ sealed trait Spread:
 
   def bleedState: Spread.BleedState =
     if photos.forall(_.bleed.isEmpty) then Spread.BleedState.Disabled
-    else if photos.forall(slot => slot.bleed === slot.box.eligibleBleed) then Spread.BleedState.Enabled
+    else if photos.forall(slot => slot.bleed === eligibleBleed(slot.box)) then Spread.BleedState.Enabled
     else Spread.BleedState.Mixed
 
   def withBleed(enabled: Boolean): Either[String, Spread] =
     if enabled && photos.forall(_.box.eligibleBleed.isEmpty) then "This spread has no eligible outer photo slots.".asLeft[Spread]
     else
-      val update: SpreadSlot.Photo => SpreadSlot.Photo = slot => slot.copy(bleed = if enabled then slot.box.eligibleBleed else Set.empty)
+      val update: SpreadSlot.Photo => SpreadSlot.Photo = slot => slot.copy(bleed = if enabled then eligibleBleed(slot.box) else Set.empty)
       val changed                                      = this match
         case value: Spread.AlbumStart   => value.copy(photoSlots = value.photoSlots.map(update))
         case value: Spread.ChapterStart => value.copy(photoSlots = value.photoSlots.map(update))
         case value: Spread.PhotosOnly   => value.copy(photoSlots = value.photoSlots.map(update))
       changed.asRight[String]
+
+  private def eligibleBleed(box: SlotBox) =
+    val directions = box.eligibleBleed
+    val threeWay   = photos.exists(_.box.eligibleBleed.contains(SpreadEdge.Top))
+    if threeWay && !directions.contains(SpreadEdge.Top) then Set.empty[SpreadEdge] else directions
 
 object Spread:
   enum BleedState derives CanEqual:

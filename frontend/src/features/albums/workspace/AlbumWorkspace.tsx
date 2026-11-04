@@ -790,7 +790,9 @@ export function AlbumWorkspace(props: {
         }}
       >
         <div class="workspace-editor">
-          <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+          <Show when={part() === "cover"}>
+            <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+          </Show>
           <Show when={displayedSpread()}>
             {(spread) => (
               <TemplateSelector
@@ -895,6 +897,14 @@ export function AlbumWorkspace(props: {
                   <Show when={spreadPosition()}>
                     {(position) => (
                       <ChapterMetadata
+                        leading={
+                          <CompositionControls
+                            session={placement}
+                            unavailable={editing().unavailable}
+                            reader={reader()}
+                            feedbackId="photo-save-feedback"
+                          />
+                        }
                         chapter={owner()}
                         position={position()}
                         countries={props.workspace.countries}
@@ -906,6 +916,13 @@ export function AlbumWorkspace(props: {
                     )}
                   </Show>
                 )}
+              </Show>
+              <Show when={chapter() === undefined && part() !== "cover" && !reader()}>
+                <div class="chapter-metadata-row">
+                  <div class="spread-commands" role="group" aria-label="Spread commands">
+                    <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+                  </div>
+                </div>
               </Show>
             </Show>
           </article>
