@@ -547,7 +547,7 @@ export function AlbumWorkspace(props: {
         : refreshing() || props.workspaceLoading
           ? "Refreshing saved workspace. Please wait."
           : undefined),
-    reader: reader(),
+    reader: reader() || ownershipReason() !== undefined,
     ownershipUnavailable: ownershipReason(),
     captions,
     onEditText: (opener) => setTextEdit({ kind: "description", chapter: chapter(), opener }),

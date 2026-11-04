@@ -32,6 +32,8 @@ Chapter-description mutations use EditingAccess's OwnChapterOpening policy, reso
 
 Description controls and retained TextEditor drafts use the selected opening's ownership reason and authority; their history compensation acquires that opening normally before comparing and writing. Album-name editing remains independently writable through its existing session policy.
 
+The workspace derives canvas presentation from Reader selection or unavailable ownership, reusing the existing canvas Reader path for slots, text and captions. This presentation does not enter fullscreen, release grants, hide independent metadata controls or discard retained drafts.
+
 ChapterMetadataManager retains transaction cancellation/uncertainty handling without reacquiring EditingAccess's mutex. Synopsis retains OwnAlbumOpening, while chapter metadata, gear and import operations retain their independent access and coordination policies.
 
 Compensation is best effort, not an atomic server transaction: independently writable content can change between comparison and write. Visible progress and explicit failure remain necessary, while whole-album snapshots, backend history and legacy-layout repair remain outside this design.

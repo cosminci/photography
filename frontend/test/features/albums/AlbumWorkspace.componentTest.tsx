@@ -1320,7 +1320,7 @@ describe("album workspace browser boundary", () => {
       const session = { ...editingSession, available, targetReason: () => "View only. Mara is editing this spread." };
       const client = buildClient();
       render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
-      await screen.findByRole("group", { name: "Synopsis composition" });
+      await screen.findByRole("img", { name: "Synopsis composition" });
       if (view === "Reader") fireEvent.click(screen.getByRole("button", { name: "Reader mode" }));
       setAvailable(false);
       vi.mocked(client.open).mockResolvedValue({ ...album, synopsis: "Fresh after session reconnect" });
@@ -1636,11 +1636,51 @@ describe("album workspace browser boundary", () => {
     expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("status").some((status) => status.textContent === "Mara")).toBe(true);
     expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" })).not.toBeInTheDocument();
     if (kind === "chapter") expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled();
     expect(select).toHaveBeenCalledWith({ kind: "spread", id: kind === "synopsis" ? opening.id : vacationOpening.id }, false);
     expect(screen.getByRole("button", { name: "Mara" })).toBeEnabled();
     expect(client.editPlacements).not.toHaveBeenCalled();
+  });
+
+  it("should present locked photographs and captions as Reader content until ownership is confirmed", async () => {
+    const placed = {
+      kind: "spread" as const,
+      id: "history-placement",
+      photoId: "history-photo",
+      slotId: photoSlot.id,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+      captionCorner: "bottom_right" as const,
+    };
+    const built = buildHistoryBook([opening, { ...vacationOpening, placements: [placed] }, ...workspace.spreads.slice(2)], true);
+    const [owned, setOwned] = createSignal(false);
+    const session = {
+      ...editingSession,
+      targetReason: () => (owned() ? undefined : "View only. Mara is editing this spread."),
+      owner: () => (owned() ? undefined : "Mara"),
+    };
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={session} id={album.id} client={built.client} events={events} />);
+
+    const canvas = await screen.findByRole("img", { name: "Kyoto composition" });
+    expect(within(canvas).getByText("Saved caption")).toBeInTheDocument();
+    expect(within(canvas).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(canvas).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(within(canvas).queryByRole("group", { name: /Actions for/ })).not.toBeInTheDocument();
+    fireEvent.mouseOver(within(canvas).getByText("Saved caption"));
+    fireEvent.click(within(canvas).getByText("Saved caption"));
+    expect(within(canvas).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(built.client.saveCaption).not.toHaveBeenCalled();
+    expect(built.client.editPlacements).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
+
+    setOwned(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit caption for History.jpg" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeEnabled();
+    expect(screen.getByRole("group", { name: "Actions for Photo slot 1" })).toBeInTheDocument();
+    expect(built.client.saveCaption).not.toHaveBeenCalled();
+    expect(built.client.editPlacements).not.toHaveBeenCalled();
   });
 
   it.each(["ready", "chapter dialog"] as const)("should acquire a released spread after a %s viewer becomes eligible", async (viewer) => {
@@ -2758,10 +2798,9 @@ describe("album workspace browser boundary", () => {
     await screen.findByRole("button", { name: "Photo slot 1: empty" });
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
     expect(screen.getByRole("heading", { name: "Kyoto" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Edit chapter description" })).toHaveAccessibleDescription(
-      "Reading saved content and confirming editing ownership.",
-    );
+    expect(screen.queryByRole("button", { name: "Edit chapter description" })).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Kyoto composition" })).toBeInTheDocument();
+    expect(screen.getAllByText("Reading saved content and confirming editing ownership.").length).toBeGreaterThan(0);
     finish(workspace.chapters.map((owner) => (owner.id === vacation.id ? { ...owner, description: "Newly saved description" } : owner)));
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeEnabled());
 
@@ -3373,7 +3412,7 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
 
     expect(screen.getByRole("heading", { name: "Kyoto" })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent(vacation.description);
+    expect(await screen.findByRole("group", { name: "Kyoto composition" })).toHaveTextContent(vacation.description);
     expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent(vacation.name);
     expect(screen.queryByRole("button", { name: /Change chapter/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeInTheDocument();
@@ -3387,7 +3426,9 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cover" }));
 
     expect(screen.queryByRole("navigation", { name: "Album organization" })).not.toBeInTheDocument();
-    expect(screen.getByRole("group", { name: /Cover: back on the left; front on the right/ })).toHaveAccessibleName(/Saved free-form album title/);
+    expect(await screen.findByRole("group", { name: /Cover: back on the left; front on the right/ })).toHaveAccessibleName(
+      /Saved free-form album title/,
+    );
     expect(await screen.findByText("by Cosmin, Mara & Iacob · 2026")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Spreads" }));
