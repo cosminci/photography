@@ -28,7 +28,23 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-block: 0.5rem;
+  flex: 0 0 auto;
+  margin: 0;
+}
+button.bleed-toggle {
+  color: #8d7276;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+button.bleed-toggle[aria-checked="true"] {
+  color: #a54151;
+}
+button.bleed-toggle[aria-checked="true"] svg {
+  fill: currentColor;
+}
+button.bleed-toggle:disabled {
+  opacity: 0.45;
 }
 .composition-controls label {
   display: flex;

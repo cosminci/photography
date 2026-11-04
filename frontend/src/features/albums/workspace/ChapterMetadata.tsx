@@ -1,4 +1,4 @@
-import { Show, createMemo } from "solid-js";
+import { Show, createMemo, type JSX } from "solid-js";
 import type { Chapter, Country } from "../model/Workspace";
 import { describeCountryLabel, describePeriod } from "./ChapterDetails";
 
@@ -11,6 +11,7 @@ export function ChapterMetadata(props: {
   countries: readonly Pick<Country, "id" | "name">[];
   unavailable: string | undefined;
   onEdit: (opener: HTMLButtonElement) => void;
+  leading?: JSX.Element;
 }) {
   const countryNames = createMemo(() =>
     props.countries
@@ -21,6 +22,7 @@ export function ChapterMetadata(props: {
   return (
     <section class="spread-details" aria-label="Spread details">
       <div class="chapter-metadata-row">
+        {props.leading}
         <dl class="chapter-metadata">
           <div>
             <dt>Chapter spread</dt>

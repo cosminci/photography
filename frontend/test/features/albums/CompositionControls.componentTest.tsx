@@ -108,6 +108,9 @@ describe("saved composition controls", () => {
     render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);
     const toggle = screen.getByRole("checkbox", { name: "Spread bleed" });
     expect(toggle).toHaveAttribute("aria-checked", String(!enabled));
+    expect(toggle).toHaveAttribute("title", `Spread bleed: ${state}`);
+    expect(toggle).toHaveTextContent("");
+    expect(toggle.textContent).toBe("");
     expect(edit).not.toHaveBeenCalled();
 
     toggle.focus();

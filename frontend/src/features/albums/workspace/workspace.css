@@ -135,7 +135,7 @@
   color: #983d44;
   font-size: 11px;
 }
-.page:has(.workspace) {
+.page:has(.album-content:not([hidden]) .workspace) {
   width: calc(100% - var(--page-gutter) - var(--page-gutter));
   max-width: none;
   padding-top: 4px;
@@ -154,17 +154,17 @@
   min-height: 0;
 }
 @media (min-width: 681px) {
-  body:has(.workspace) {
+  body:has(.album-content:not([hidden]) .workspace) {
     height: 100dvh;
     overflow: hidden;
   }
-  #app:has(.workspace) {
+  #app:has(.album-content:not([hidden]) .workspace) {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     height: 100%;
     min-height: 0;
   }
-  .page:has(.workspace) {
+  .page:has(.album-content:not([hidden]) .workspace) {
     display: flex;
     flex-direction: column;
     min-height: 0;

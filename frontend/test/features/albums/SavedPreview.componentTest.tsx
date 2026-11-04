@@ -64,7 +64,7 @@ describe("saved composition previews", () => {
     expect(image.style.transform).toBe("");
   });
 
-  it("should read the saved cover and only its front photo, retaining distinct data and media retries", async () => {
+  it("should read the saved cover and its referenced photo, retaining distinct data and media retries", async () => {
     const client = {
       readPlacements: vi.fn().mockRejectedValueOnce(new Error("unavailable")).mockResolvedValue(cover),
       photo: vi.fn().mockResolvedValue(photo),
@@ -78,8 +78,8 @@ describe("saved composition previews", () => {
     expect(image).toHaveStyle({ transform: "scaleX(-1)" });
     fireEvent.error(image);
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Cover photograph could not be loaded");
-    fireEvent.click(screen.getByRole("button", { name: "Retry cover photograph" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Front cover photograph could not be loaded");
+    fireEvent.click(screen.getByRole("button", { name: "Retry front-cover photograph" }));
     await waitFor(() => {
       expect(image.getAttribute("src")).toContain("retry=1");
     });
@@ -87,11 +87,57 @@ describe("saved composition previews", () => {
     expect(client.photo).toHaveBeenCalledTimes(1);
   });
 
+  it("should show both cover faces with their own saved framing and independent media recovery", async () => {
+    const back = { ...photo, id: "back-photo", filename: "Forest.jpg" };
+    const client = {
+      readPlacements: vi.fn().mockResolvedValue({
+        ...cover,
+        placements: [
+          ...cover.placements,
+          {
+            ...placement,
+            kind: "cover",
+            id: "back-placement",
+            slotId: "back",
+            photoId: back.id,
+            transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+          },
+        ],
+      }),
+      photo: vi.fn().mockImplementation((id: string) => Promise.resolve(id === photo.id ? photo : back)),
+    };
+    render(() => <AlbumCoverPreview album={album} client={client} />);
+    const frontImage = await screen.findByAltText(photo.filename);
+    const backImage = await screen.findByAltText(back.filename);
+    expect(frontImage).toHaveStyle({ transform: "scaleX(-1)" });
+    expect(backImage.style.transform).toBe("");
+    expect(client.photo).toHaveBeenCalledTimes(2);
+    fireEvent.error(backImage);
+    fireEvent.click(screen.getByRole("button", { name: "Retry back-cover photograph" }));
+    await waitFor(() => {
+      expect(backImage.getAttribute("src")).toContain("retry=1");
+    });
+    expect(frontImage.getAttribute("src")).not.toContain("retry=");
+    expect(client.readPlacements).toHaveBeenCalledTimes(1);
+  });
+
+  it("should read a photograph shared by both cover faces once", async () => {
+    const client = {
+      readPlacements: vi.fn().mockResolvedValue({ ...cover, placements: [...cover.placements, { ...placement, kind: "cover", slotId: "back" }] }),
+      photo: vi.fn().mockResolvedValue(photo),
+    };
+    render(() => <AlbumCoverPreview album={album} client={client} />);
+    await waitFor(() => {
+      expect(screen.getAllByAltText(photo.filename)).toHaveLength(2);
+    });
+    expect(client.photo).toHaveBeenCalledExactlyOnceWith(photo.id);
+  });
   it("should show an empty front cover without requesting an unrelated photo", async () => {
     const client = { readPlacements: vi.fn().mockResolvedValue({ ...cover, placements: [] }), photo: vi.fn() };
     render(() => <AlbumCoverPreview album={album} client={client} />);
 
     expect(await screen.findByText("No front-cover photograph")).toBeVisible();
+    expect(screen.getByText("No back-cover photograph")).toBeVisible();
     expect(client.photo).not.toHaveBeenCalled();
   });
 

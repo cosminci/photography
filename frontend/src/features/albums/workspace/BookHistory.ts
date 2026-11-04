@@ -13,7 +13,7 @@ export interface HistoryAction {
   readonly reconcile: (direction: HistoryDirection) => Promise<HistoryOutcome>;
 }
 
-export function createBookHistory() {
+export function createBookHistory(limit = 10) {
   const [undo, setUndo] = createSignal<readonly HistoryAction[]>([]);
   const [redo, setRedo] = createSignal<readonly HistoryAction[]>([]);
   const [pending, setPending] = createSignal(false);
@@ -29,7 +29,7 @@ export function createBookHistory() {
 
   function record(action: HistoryAction): boolean {
     if (unavailable()) return false;
-    setUndo((current) => [...current, action].slice(-50));
+    setUndo((current) => [...current, action].slice(-limit));
     setRedo([]);
     setMessage("");
     return true;

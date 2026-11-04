@@ -81,8 +81,10 @@ export function AlbumWorkspace(props: {
   onPhotoRefresh: (ids: readonly string[]) => Promise<void>;
   onInventoryRetry: (id: string) => void;
   onAlbumSaved: (saved: Album) => void;
+  historyLimit?: number | undefined;
+  onReady?: (() => void) | undefined;
 }) {
-  const history = createBookHistory();
+  const history = createBookHistory(untrack(() => props.historyLimit));
   const [historyBusy, setHistoryBusy] = createSignal(false);
   const historyReason = createMemo(() =>
     historyBusy() || history.unavailable() ? history.message() || "Finish the history action before editing." : undefined,
@@ -422,6 +424,12 @@ export function AlbumWorkspace(props: {
   const [gearText, setGearText] = createSignal<string>();
   const [gearError, setGearError] = createSignal<string>();
   const [gearLoading, setGearLoading] = createSignal(false);
+  let presented = false;
+  createEffect(() => {
+    if (presented || ownershipLoading() || props.workspaceLoading || gearLoading()) return;
+    presented = true;
+    props.onReady?.();
+  });
   let gearGeneration = 0;
   async function loadGearPresentation() {
     const generation = ++gearGeneration;
@@ -1118,7 +1126,9 @@ export function AlbumWorkspace(props: {
         }}
       >
         <div class="workspace-editor">
-          <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+          <Show when={part() === "cover"}>
+            <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+          </Show>
           <Show when={displayedSpread()}>
             {(spread) => (
               <TemplateSelector
@@ -1223,6 +1233,14 @@ export function AlbumWorkspace(props: {
                   <Show when={spreadPosition()}>
                     {(position) => (
                       <ChapterMetadata
+                        leading={
+                          <CompositionControls
+                            session={placement}
+                            unavailable={editing().unavailable}
+                            reader={reader()}
+                            feedbackId="photo-save-feedback"
+                          />
+                        }
                         chapter={owner()}
                         position={position()}
                         countries={props.workspace.countries}
@@ -1234,6 +1252,11 @@ export function AlbumWorkspace(props: {
                     )}
                   </Show>
                 )}
+              </Show>
+              <Show when={chapter() === undefined && part() !== "cover"}>
+                <div class="chapter-metadata-row">
+                  <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+                </div>
               </Show>
             </Show>
           </article>

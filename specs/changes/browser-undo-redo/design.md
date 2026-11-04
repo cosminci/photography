@@ -10,7 +10,7 @@ Existing editing APIs create identities and persist the book; they do not expose
 
 | Existing owner / contract | Evolution and retained responsibility | Supplier, consumer and proof boundary |
 | --- | --- | --- |
-| `AlbumWorkspace` editing coordination | Own one `BookHistory` per mounted album, with at most 50 chronological `HistoryAction` entries; retain it across selection and Reader, reset on unexpected access loss or album exit. | Existing save owners supply completed edits; controls consume next-action labels and availability, while the workspace serializes traversal through final saved-content publication. |
+| `AlbumWorkspace` editing coordination | Own one `BookHistory` per mounted album, bounded by application configuration (default 10); retain it across selection and Reader, reset on unexpected access loss or album exit. | Composition parses `VITE_BOOK_HISTORY_LIMIT` once and supplies the limit; save owners supply completed edits and controls consume next-action labels. |
 | `ContentSave<T, Saved>` draft and recovery lifecycle | Separate exactly-once `onCompleted` from repeatable `onSaved` publication; an optional typed `rebase` retains a recovered authoritative completion baseline independently of the visible draft. | Text, shared captions and authors map their saved representation to the before-state; chapter saves keep command and authoritative book-state evidence with their existing owners. |
 | `PlacementSession` acknowledged commands and retained gestures | Publish each completed gesture or command once; retain its before-state, command and captured authority/generation through uncertain readback. | Canvas and composition controls supply edits; history receives a completion only while its captured lifetime remains valid, including loss followed by reacquisition. |
 | `ChapterDialog` metadata and gear saves | Capture the session-loss revision for both portions before Save; preserve retained recovery evidence and group only completions from the same revision. | Metadata acknowledgement after loss cannot start gear automatically; an explicit reviewed gear save uses current chapter details as its unchanged baseline. `ChapterCompensation` resumes unfinished portions, while creation/source replacement establishes a new history boundary. |
@@ -31,3 +31,13 @@ Captured operation lifetimes fence late original-save completions as well as his
 Compensation is best effort, not an atomic server transaction: independently writable content can change between comparison and write. Visible progress and explicit failure remain necessary, while whole-album snapshots, backend history and legacy-layout repair remain outside this design.
 
 The authoritative mixed-bleed state disables only the spread bleed toggle, preserving its saved framing without introducing another bleed classifier. Ordinary standard bleed and other supported editing operations retain their existing owners.
+
+## Presentation refinements
+
+The catalog preview owner orchestrates one cover read and the referenced front/back photo reads, retaining shared-photo identity and saved framing. Each face owns its media retry; cover-data retry remains with their shared acquisition.
+
+Application navigation retains the catalog while the existing workspace acquisition and initial editing-ownership reconciliation finish. The workspace reports initial readiness without changing refresh, ownership or failure policies; failed initial reads reveal their existing retry controls.
+
+CompositionControls retains bleed mutation, availability and focus ownership, rendered as a compact droplet before chapter metadata. Cover spine editing retains its existing location.
+
+`VITE_BOOK_HISTORY_LIMIT=25 npm --prefix frontend run build` configures the retained action limit for that frontend build; development reads the same setting when its server starts. An absent value defaults to 10, while nonpositive, fractional or unsafe values produce an explicit configuration error.

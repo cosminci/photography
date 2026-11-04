@@ -1,4 +1,4 @@
-import { Show, createMemo, untrack } from "solid-js";
+import { Show, createEffect, createMemo, untrack } from "solid-js";
 import type { AlbumClient } from "../model/Album";
 import type { GearClient } from "../model/Gear";
 import type { AlbumPhotoEvents } from "../model/Photo";
@@ -36,11 +36,16 @@ export function AlbumOpen(props: {
   events: AlbumPhotoEvents;
   id: string;
   session: WorkspaceEditingSession;
+  historyLimit?: number | undefined;
+  onReady?: () => void;
 }) {
   const client = untrack(() => props.client);
   const events = untrack(() => props.events);
   const live = createLiveWorkspace(() => props.id, client, events);
   const missing = createMemo(() => isMissingAlbum(live.error()));
+  createEffect(() => {
+    if (live.error() !== undefined || live.liveStatus() === "invalid" || live.liveStatus() === "interrupted") props.onReady?.();
+  });
   return (
     <>
       <Show when={live.workspace() === undefined}>
@@ -87,6 +92,8 @@ export function AlbumOpen(props: {
             {(album) => (
               <AlbumWorkspace
                 album={album()}
+                historyLimit={props.historyLimit}
+                onReady={props.onReady}
                 session={props.session}
                 workspace={workspace()}
                 client={props.client}

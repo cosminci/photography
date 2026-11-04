@@ -48,8 +48,10 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
                 control = element;
               }}
               type="button"
+              class="icon-button bleed-toggle"
               role="checkbox"
               aria-label="Spread bleed"
+              title={bleedReason() ?? `Spread bleed: ${saved().layout.bleed.state}`}
               aria-checked={saved().layout.bleed.state === "mixed" ? "mixed" : saved().layout.bleed.state === "enabled"}
               disabled={bleedReason() !== undefined}
               aria-describedby={bleedReason() === undefined ? undefined : (sharedFeedback() ?? "spread-bleed-reason")}
@@ -57,13 +59,15 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
                 edit({ operation: "bleed", enabled: saved().layout.bleed.state !== "enabled" }, event.currentTarget);
               }}
             >
-              Spread bleed: {saved().layout.bleed.state}
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3C10 7 5 11 5 15a7 7 0 0 0 14 0c0-4-5-8-7-12Z" />
+              </svg>
             </button>
           )}
         </Show>
         <Show when={spread() !== undefined && sharedFeedback() === undefined && bleedReason()}>
           {(message) => (
-            <p id="spread-bleed-reason" class="control-help">
+            <p id="spread-bleed-reason" class="visually-hidden">
               {message()}
             </p>
           )}

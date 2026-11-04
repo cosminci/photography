@@ -32,7 +32,7 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | A4 | Spread creation, deletion and reordering participate in that history; Undo selects the affected spread and restores a deleted spread into its original chapter and position. |
 | A5 | A completed gesture or text edit creates one action; no-ops, cancellations and rejected writes create none, and a new confirmed edit clears Redo. |
 | A6 | Undo/Redo names the next action and traverses completed edits in order; an unavailable or conflicting top action remains explained and never silently yields to an older action. |
-| A7 | Spread navigation and Reader retain the latest 50 completed edits within the open album; leaving the album or reloading starts a new history. |
+| A7 | Spread navigation and Reader retain the configured number of latest completed edits, defaulting to 10; leaving the album or reloading starts a new history. |
 | A8 | Unexpected ownership/session loss or expiry visibly resets history while preserving existing draft-review recovery; deliberate navigation releases do not reset it. |
 | A9 | Compensation restores the visible composition, photo assignments, transforms and caption corners; recreated spreads, slots and placements may have new generated identities, which later history actions follow. |
 | A10 | Another owner's lock blocks the affected reversal without takeover; missing references, reused photos, capacity violations and incompatible saved content/order remain explicit failures, with completed compensation steps retained for recovery. |
@@ -41,7 +41,9 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | A13 | A chapter-details Save forms one history action over the portions actually saved; partial-save recovery neither loses the saved portion nor records it again on retry. |
 | A14 | Chapter creation and source-photo replacement announce that they start a new history before confirmation; cancellation and rejected changes preserve history, and ordinary reads or refreshes do not silently erase it. |
 | A15 | Controls explain disabled states and retain keyboard/focus continuity on narrow layouts; native text Undo/Redo remains with the focused editor, and book traversal waits for drafts and dialogs to resolve. |
-| A16 | A spread with nonstandard saved bleed retains its framing and has a disabled bleed toggle with an explanation; standard spread bleed remains editable and undoable. |
+| A16 | A droplet at the start of the chapter metadata row toggles standard spread bleed, remaining undoable; nonstandard saved bleed disables it with an explanation. |
+| A17 | Catalog cards show both saved cover photographs with their framing, including empty, loading and retryable failure states. |
+| A18 | Opening an album keeps the catalog visible until the workspace is ready, without an intermediate blank page; loading failures remain visible and retryable. |
 
 ## Doc Sync
 
@@ -49,3 +51,4 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | --- | --- |
 | specs/design.md — Editing journey / Browser editing ownership | Reversible editing is browser-local intent over authoritative content; navigation preserves intent, not authority, and restoration respects current ownership and unrelated work. |
 | specs/testing.md — Confidence model | Establish chronological user intent across separately owned saves and prove reversals at their actual persistence and access boundaries. |
+| specs/operational.md — Frontend configuration | Document the build-time history limit and its default. |

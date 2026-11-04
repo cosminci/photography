@@ -83,9 +83,20 @@ p {
   color: var(--muted);
 }
 .page {
+  position: relative;
   width: min(1248px, calc(100% - 40px));
   margin: auto;
   padding: 34px 0 40px;
+}
+.catalog-content,
+.album-content:not([hidden]) {
+  display: contents;
+}
+.catalog-opening {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 12px;
 }
 .session-feedback {
   width: min(640px, calc(100% - 40px));
@@ -204,11 +215,26 @@ p {
   aspect-ratio: 42 / 28;
   background: linear-gradient(135deg, #f8fcfc, #edf6f6 55%, #f2f7fa);
 }
-.cover-spine {
+.album-cover-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 3;
+}
+.cover-face {
+  min-width: 0;
+}
+.cover-face + .cover-face {
+  border-left: 1px solid var(--line);
+}
+.cover-face-label {
   position: absolute;
-  inset: 0 auto 0 12px;
-  width: 1px;
-  background: #d8e9e9;
+  left: 4px;
+  bottom: 4px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: #ffffffd9;
+  color: var(--muted);
+  font-size: 9px;
 }
 .album-card-actions {
   position: absolute;
