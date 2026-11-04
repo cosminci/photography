@@ -847,12 +847,17 @@
       "put": {
         "operationId": "saveChapterDescription",
         "summary": "Save or clear chapter description",
-        "description": "Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears description. Changes only description within the scoped album/chapter; metadata, source, gear and photo import remain unchanged. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/albums/{id}/chapters; after acknowledgement retry only a failed read.",
+        "parameters": [
+          { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },
+          { "$ref": "#/components/parameters/EditorGeneration" }, { "$ref": "#/components/parameters/EditorGrant" }
+        ],
+        "description": "Requires a live bound connection and the exact grant for the chapter's current opening. Canonical private headers precede body decoding; current composition resolution, authorization and persistence share backend mutation coordination. Missing albums and chapters remain not found; failed relationship reads reject without writing. Every matched response is no-store. Preserves exact plain-text Unicode, whitespace and line breaks. Empty text clears description. Changes only description within the scoped album/chapter; metadata, source, gear and photo import remain unchanged. Acknowledgement returns no body and causes no retry or postwrite read. Authoritative reconciliation uses GET /api/albums/{id}/chapters; after acknowledgement retry only a failed read. Uncertain writes and lost ownership require reconciliation, never automatic replay.",
         "requestBody": { "$ref": "#/components/requestBodies/ContentText" },
         "responses": {
           "204": { "description": "Saved; no response body" },
-          "400": { "$ref": "#/components/responses/ValidationFailure" },
+          "400": { "$ref": "#/components/responses/TargetEditInvalid" },
           "404": { "$ref": "#/components/responses/ContentChapterNotFound" },
+          "409": { "$ref": "#/components/responses/TargetEditRejected" },
           "500": { "$ref": "#/components/responses/ContentMutationFailure" }
         }
       }

@@ -28,6 +28,12 @@ Read recovery preserves the user's draft while establishing the authoritative ba
 
 Captured operation lifetimes fence late original-save completions as well as history traversal. Normal selection and Reader release authority deliberately; unexpected loss resets history and neither reacquisition nor reconnect replays it.
 
+Chapter-description mutations use EditingAccess's OwnChapterOpening policy, resolving the first matching chapter member from canonical album composition under the same coordination as authorization and saving. The resolved opening requires its exact current grant; missing membership fails without writing.
+
+Description controls and retained TextEditor drafts use the selected opening's ownership reason and authority; their history compensation acquires that opening normally before comparing and writing. Album-name editing remains independently writable through its existing session policy.
+
+ChapterMetadataManager retains transaction cancellation/uncertainty handling without reacquiring EditingAccess's mutex. Synopsis retains OwnAlbumOpening, while chapter metadata, gear and import operations retain their independent access and coordination policies.
+
 Compensation is best effort, not an atomic server transaction: independently writable content can change between comparison and write. Visible progress and explicit failure remain necessary, while whole-album snapshots, backend history and legacy-layout repair remain outside this design.
 
 The authoritative mixed-bleed state disables only the spread bleed toggle, preserving its saved framing without introducing another bleed classifier. Ordinary standard bleed and other supported editing operations retain their existing owners.

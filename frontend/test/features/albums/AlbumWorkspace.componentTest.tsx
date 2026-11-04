@@ -971,8 +971,15 @@ describe("album workspace browser boundary", () => {
   });
   it.each(["synopsis", "description"] as const)("should undo and redo a saved %s while navigation retains history", async (kind) => {
     const built = buildHistoryBook();
+    const [blocked, setBlocked] = createSignal(false);
+    const select = vi.fn().mockImplementation(() => Promise.resolve(!blocked()));
+    const session = {
+      ...editingSession,
+      select,
+      targetReason: () => (blocked() ? "View only. Mara is editing this spread." : undefined),
+    };
     window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
-    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    render(() => <AlbumOpen session={session} id={album.id} client={built.client} events={events} />);
     const opener = await screen.findByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" });
     await waitFor(() => expect(opener).toBeEnabled());
     fireEvent.click(opener);
@@ -984,6 +991,13 @@ describe("album workspace browser boundary", () => {
     const label = kind === "synopsis" ? "Edit synopsis" : "Edit chapter description";
     await waitFor(() => expect(screen.getByRole("button", { name: "Cover" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    setBlocked(true);
+    await clickHistory(`Undo: ${label}`);
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Book edit history" })).getByRole("status")).toHaveTextContent("Mara"));
+    expect(kind === "synopsis" ? built.client.saveSynopsis : built.client.saveDescription).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenLastCalledWith({ kind: "spread", id: kind === "synopsis" ? opening.id : vacationOpening.id }, true);
+    setBlocked(false);
+    expect(kind === "synopsis" ? built.metadata().synopsis : built.chapters()[0]?.description).toBe("New book text");
     await clickHistory(`Undo: ${label}`);
     await waitFor(() => {
       expect(kind === "synopsis" ? built.metadata().synopsis : built.chapters()[0]?.description).toBe(
@@ -1512,72 +1526,77 @@ describe("album workspace browser boundary", () => {
     });
   });
 
-  it.each(["resumed", "expired", "contended"] as const)(
-    "should retain a synopsis draft through $0 ownership and require explicit review",
-    async (recovery) => {
-      const [available, setAvailable] = createSignal(true);
-      const [authority, setAuthority] = createSignal(1);
-      const [owned, setOwned] = createSignal(true);
-      let contended = recovery === "contended";
-      const reconnect = vi.fn().mockImplementation(() => {
-        setAvailable(true);
-        return Promise.resolve();
-      });
-      const select = vi.fn(editingSession.select).mockImplementation((_target, explicit) => {
-        if (explicit === true && !contended) setOwned(true);
-        return Promise.resolve(recovery === "resumed" || (explicit === true && !contended));
-      });
-      const session = {
-        ...editingSession,
-        available,
-        authority,
-        reconnect,
-        select,
-        targetReason: () => (owned() ? undefined : "View only. Mara is editing this spread."),
-      };
-      const text = "Retained offline text";
-      const client = buildClient({ saveSynopsis: vi.fn().mockResolvedValue({ ...album, synopsis: text }) });
-      render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Edit synopsis" }));
-      const editor = screen.getByRole("textbox", { name: "Synopsis" });
-      fireEvent.input(editor, { target: { value: text } });
-      setAvailable(false);
-      if (recovery !== "resumed") setOwned(false);
-      setAuthority(2);
-      expect(editor).toHaveValue(text);
-      expect(editor).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
-      fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
-      expect(reconnect).toHaveBeenCalledOnce();
-      if (recovery !== "resumed") {
-        await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" })).toBeEnabled());
-        if (contended) {
-          fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" }));
-          await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" })).toBeEnabled());
-          expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("Mara");
-          expect(editor).toHaveValue(text);
-          expect(editor).toBeDisabled();
-          contended = false;
-        }
+  it.each(
+    (["synopsis", "chapter"] as const).flatMap((kind) => (["resumed", "expired", "contended"] as const).map((recovery) => ({ kind, recovery }))),
+  )("should retain a $kind draft through $recovery ownership and require explicit review", async ({ kind, recovery }) => {
+    window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
+    const [available, setAvailable] = createSignal(true);
+    const [authority, setAuthority] = createSignal(1);
+    const [owned, setOwned] = createSignal(true);
+    let contended = recovery === "contended";
+    const reconnect = vi.fn().mockImplementation(() => {
+      setAvailable(true);
+      return Promise.resolve();
+    });
+    const select = vi.fn(editingSession.select).mockImplementation((_target, explicit) => {
+      if (explicit === true && !contended) setOwned(true);
+      return Promise.resolve(recovery === "resumed" || (explicit === true && !contended));
+    });
+    const session = {
+      ...editingSession,
+      available,
+      authority,
+      reconnect,
+      select,
+      targetReason: () => (owned() ? undefined : "View only. Mara is editing this spread."),
+    };
+    const text = "Retained offline text";
+    const client = buildClient({
+      saveSynopsis: vi.fn().mockResolvedValue({ ...album, synopsis: text }),
+      saveDescription: vi.fn().mockResolvedValue(undefined),
+    });
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" }));
+    const editor = screen.getByRole("textbox", { name: kind === "synopsis" ? "Synopsis" : "Chapter description" });
+    fireEvent.input(editor, { target: { value: text } });
+    setAvailable(false);
+    if (recovery !== "resumed") setOwned(false);
+    setAuthority(2);
+    expect(editor).toHaveValue(text);
+    expect(editor).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect browser" }));
+    expect(reconnect).toHaveBeenCalledOnce();
+    if (recovery !== "resumed") {
+      await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" })).toBeEnabled());
+      if (contended) {
         fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" }));
+        await waitFor(() => expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" })).toBeEnabled());
+        expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("Mara");
+        expect(editor).toHaveValue(text);
+        expect(editor).toBeDisabled();
+        contended = false;
       }
-      await waitFor(() => {
-        expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Save" }));
-      await waitFor(() => {
-        expect(screen.getByRole("alert")).toHaveTextContent("Review");
-      });
-      expect(client.saveSynopsis).not.toHaveBeenCalled();
-      expect(select).toHaveBeenCalledTimes(recovery === "resumed" ? 2 : recovery === "expired" ? 3 : 4);
-      expect(editor).toHaveValue(text);
-      fireEvent.click(screen.getByRole("button", { name: "Save" }));
-      await waitFor(() => {
-        expect(client.saveSynopsis).toHaveBeenCalledExactlyOnceWith(album.id, text);
-      });
-    },
-  );
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Edit spread" }));
+    }
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent("Review");
+    });
+    expect(client.saveSynopsis).not.toHaveBeenCalled();
+    expect(client.saveDescription).not.toHaveBeenCalled();
+    expect(select).toHaveBeenCalledTimes(recovery === "resumed" ? 2 : recovery === "expired" ? 3 : 4);
+    expect(editor).toHaveValue(text);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      if (kind === "synopsis") expect(client.saveSynopsis).toHaveBeenCalledExactlyOnceWith(album.id, text);
+      else expect(client.saveDescription).toHaveBeenCalledExactlyOnceWith(album.id, vacation.id, text);
+    });
+  });
 
   it.each(["navigate", "dispose"] as const)("should fence pending ownership publication after %s", async (destination) => {
     let finish!: () => void;
@@ -1601,7 +1620,8 @@ describe("album workspace browser boundary", () => {
     });
   });
 
-  it("should show a locked owner's alias while keeping Reader and independent edits available", async () => {
+  it.each(["synopsis", "chapter"] as const)("should protect locked %s text while keeping Reader and independent edits available", async (kind) => {
+    window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
     const select = vi.fn().mockResolvedValue(undefined);
     const session = {
       ...editingSession,
@@ -1616,7 +1636,9 @@ describe("album workspace browser boundary", () => {
     expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("status").some((status) => status.textContent === "Mara")).toBe(true);
     expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled();
-    expect(select).toHaveBeenCalledWith({ kind: "spread", id: opening.id }, false);
+    expect(screen.getByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" })).toBeDisabled();
+    if (kind === "chapter") expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled();
+    expect(select).toHaveBeenCalledWith({ kind: "spread", id: kind === "synopsis" ? opening.id : vacationOpening.id }, false);
     expect(screen.getByRole("button", { name: "Mara" })).toBeEnabled();
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
@@ -2737,7 +2759,9 @@ describe("album workspace browser boundary", () => {
     fireEvent.click(screen.getByRole("link", { name: "Kyoto" }));
     expect(screen.getByRole("heading", { name: "Kyoto" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Edit chapter description" })).toHaveAccessibleDescription("Refreshing saved workspace. Please wait.");
+    expect(screen.getByRole("button", { name: "Edit chapter description" })).toHaveAccessibleDescription(
+      "Reading saved content and confirming editing ownership.",
+    );
     finish(workspace.chapters.map((owner) => (owner.id === vacation.id ? { ...owner, description: "Newly saved description" } : owner)));
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeEnabled());
 

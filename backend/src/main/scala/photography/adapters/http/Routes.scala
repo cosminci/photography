@@ -33,8 +33,8 @@ object Routes:
         case Access.Public             => decoded
         case Access.Editor(protection) =>
           val grant = protection match
-            case Protection.ActiveTab                                    => none[GrantId].asRight[String]
-            case Protection.OwnSpread(_) | Protection.OwnAlbumOpening(_) =>
+            case Protection.ActiveTab                                                                         => none[GrantId].asRight[String]
+            case Protection.OwnSpread(_) | Protection.OwnAlbumOpening(_) | Protection.OwnChapterOpening(_, _) =>
               requiredId(request, "X-Editor-Grant").map(value => GrantId(value).some)
             case Protection.ChangeSpreads(_) | Protection.OwnPhotoSpread(_, _) => optionalId(request, "X-Editor-Grant").map(_.map(GrantId(_)))
           (readConnection(request), grant).tupled.fold(
@@ -49,6 +49,8 @@ object Routes:
                       Response[F](Status.Conflict).withEntity(Map("code" -> encodeFailure(reason)))
                     case EditingAccess.Result.AlbumNotFound() =>
                       Response[F](Status.NotFound).withEntity(Map("code" -> "album_not_found"))
+                    case EditingAccess.Result.ChapterNotFound() =>
+                      Response[F](Status.NotFound).withEntity(Map("code" -> "chapter_not_found"))
                     case EditingAccess.Result.PhotoNotFound() =>
                       Response[F](Status.NotFound).withEntity(Map("code" -> "photo_not_found"))
                     case EditingAccess.Result.Failed() =>

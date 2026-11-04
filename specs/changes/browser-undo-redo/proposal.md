@@ -46,12 +46,13 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | A18 | Opening an album keeps the catalog visible until the workspace is ready, without an intermediate blank page; loading failures remain visible and retryable. |
 | A19 | Cover dimensions follow the interior page count; the spine-owning photograph extends continuously across the spine, with identical saved pan, zoom and mirror in catalog, editor and Reader. |
 | A20 | Bleed uses one spread-wide mode: two full-height outer photos bleed top/bottom/outward; two outer stacks bleed outward; a full-height outer photo opposite a stack bleeds alone, leaving the stack inset. Saved directions matching that mode are standard, including imported openings. |
+| A21 | Chapter descriptions require ownership of their chapter-opening spread for editing, saving and Undo/Redo, matching synopsis ownership of the album opening. Ownership loss retains text drafts for explicit review; chapter metadata and gear stay independently editable. |
 
 ## Doc Sync
 
 | Owner | Enduring delta |
 | --- | --- |
-| specs/design.md — Editing journey / Browser editing ownership | Reversible editing is browser-local intent over authoritative content; navigation preserves intent, not authority, and restoration respects current ownership and unrelated work. Bleed selects one spread-wide mode before applying per-slot directions. |
+| specs/design.md — Editing journey / Browser editing ownership | Reversible editing is browser-local intent over authoritative content; navigation preserves intent, not authority, and restoration respects current ownership and unrelated work. Descriptions require their opening's grant, while chapter metadata and gear remain independent. Bleed selects one spread-wide mode before applying per-slot directions. |
 | specs/testing.md — Confidence model | Establish chronological user intent across separately owned saves and prove reversals at their actual persistence and access boundaries. |
 | specs/operational.md — Frontend configuration | Document the build-time history limit and its default. |
 | specs/design.md — Cover composition | The persisted print specification catalog and current interior spread count determine cover geometry; presentation consumers share the authoritative frames. |

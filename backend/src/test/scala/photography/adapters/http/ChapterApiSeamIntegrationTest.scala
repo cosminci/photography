@@ -20,6 +20,8 @@ import org.typelevel.ci.CIString
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.ChapterPhotoImport.Scheduling
 import photography.ports.album.AlbumRepository
+import photography.domain.editing.*
+import photography.usecases.editing.EditingAccess
 
 import java.nio.file.Path
 import java.time.{Instant, LocalDate}
@@ -64,6 +66,8 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
 
   private val albumPath   = s"/api/albums/${album.id.value}"
   private val chapterPath = s"$albumPath/chapters/${chapter.id.value}"
+  private val connection  = EditorConnection(SessionId(new UUID(0L, 20L)), TabId(new UUID(0L, 21L)), ConnectionGeneration(new UUID(0L, 22L)))
+  private val grant       = GrantId(new UUID(0L, 23L))
   private val vacation    =
     s"""{"kind":"vacation","name":"  Coast  ","countries":["${country.id.value}"],"start":"2024-02-29","end":"2024-03-01","sourceFolder":"/photos/coast"}"""
   private val home = s"""{"kind":"home","countries":["${country.id.value}"],"sourceFolder":"/photos/Home"}"""
@@ -97,7 +101,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls   <- refs.calls.get
         gearCalls    <- refs.gearCalls.get
       yield
-        assertEquals(response, (Status.NoContent, "", None, None))
+        assertEquals(response, (Status.NoContent, "", None, Some("no-store")))
         assertEquals(descriptions, Vector(DescriptionCall(album.id, chapter.id, text = text)))
         assertEquals(otherCalls, Vector.empty[String])
         assertEquals(gearCalls, Vector.empty[GearCall])
@@ -121,7 +125,10 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls   <- refs.calls.get
         gearCalls    <- refs.gearCalls.get
       yield
-        assertEquals(response, encodeErrorResponse(scenario.status, code = scenario.code))
+        assertEquals(
+          response,
+          (scenario.status, Json.obj("code" -> Json.fromString(scenario.code)).noSpaces, MediaType.application.json.some, Some("no-store"))
+        )
         assertEquals(descriptions, Vector(DescriptionCall(otherAlbum, chapter.id, text = "once")))
         assertEquals(otherCalls, Vector.empty[String])
         assertEquals(gearCalls, Vector.empty[GearCall])
@@ -132,7 +139,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     val server        = buildApi(refs)
     val malformed     = Vector("{", "[]", "null", "{}", """{"text":null}""", """{"text":1}""", """{"text":[]}""")
     val checkPayloads = malformed.traverse_ { body =>
-      val expected = (Status.BadRequest, """{"message":"Supply a text string"}""", MediaType.application.json.some, None)
+      val expected = (Status.BadRequest, """{"message":"Supply a text string"}""", MediaType.application.json.some, Some("no-store"))
       sendRaw(server, Method.PUT, path = s"$chapterPath/description", body = body).map(response => assertEquals(response, expected))
     }
     val checkTargets = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { id =>
@@ -617,7 +624,19 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         refs.gearCalls.update(_ :+ GearCall.Read(album, chapter)) >> gearReadResult
       override def replaceGear(album: AlbumId, chapter: ChapterId, selection: GearSelection): IO[GearReplaceResult] =
         refs.gearCalls.update(_ :+ GearCall.Replace(album, chapter, selection = selection)) >> gearReplaceResult
-    PublicRoutes(ChapterApi.make(chapters, metadata, gear)).orNotFound
+    val definitions = ChapterApi.make(chapters, metadata, gear)
+    val description = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$chapterPath/description"))).map(_.access)
+    assertEquals(description, Some(Routes.Access.Editor(EditingAccess.Protection.OwnChapterOpening(album.id, chapter.id))))
+    Vector(chapterPath, gearPath).foreach: path =>
+      assertEquals(definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access), Some(Routes.Access.Public))
+    val access = new EditingAccess[IO]:
+      override def run[A](editor: EditorConnection, protection: EditingAccess.Protection, maybeGrant: Option[GrantId])(write: IO[A]) =
+        assertEquals(editor, connection)
+        assertEquals(maybeGrant, Some(grant))
+        protection match
+          case EditingAccess.Protection.OwnChapterOpening(_, _) => write.map(EditingAccess.Result.Completed(_))
+          case other                                            => fail(s"Unexpected protection: $other")
+    Routes.make(access)(definitions).orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -630,7 +649,13 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
   // scalafix:on DisableSyntax.defaultArgs
 
   private def sendRaw(server: HttpApp[IO], method: Method, path: String, body: String) =
-    val request = Request[IO](method, Uri.unsafeFromString(s = path)).withEntity(b = body).putHeaders(`Content-Type`(MediaType.application.json))
+    val request = Request[IO](method, Uri.unsafeFromString(s = path)).withEntity(b = body).putHeaders(
+      `Content-Type`(MediaType.application.json),
+      "X-Editor-Session"    -> connection.session.value.toString,
+      "X-Editor-Tab"        -> connection.tab.value.toString,
+      "X-Editor-Generation" -> connection.generation.value.toString,
+      "X-Editor-Grant"      -> grant.value.toString
+    )
 
     for
       response <- server.run(request)

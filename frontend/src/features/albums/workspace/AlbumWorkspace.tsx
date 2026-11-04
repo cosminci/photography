@@ -218,7 +218,7 @@ export function AlbumWorkspace(props: {
         read: () => readText(owner),
         write: (text) => saveText(owner, text),
         equal: (left, right) => left === right,
-        prepare: () => prepareHistoryTarget(destination, owner === undefined),
+        prepare: () => prepareHistoryTarget(destination),
       }),
     );
   }
@@ -599,7 +599,7 @@ export function AlbumWorkspace(props: {
     reloadTarget() !== undefined || spreadNeedsReload() ? "Read the saved spread before continuing." : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
-  const contentEditReason = createMemo(() => (chapter() === undefined ? ownershipReason() : undefined) ?? refreshReason() ?? navigationReason());
+  const contentEditReason = createMemo(() => ownershipReason() ?? refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
   let active = true;
@@ -1446,7 +1446,7 @@ export function AlbumWorkspace(props: {
               validate={action.kind === "name" ? validateTitle : undefined}
               ownership={{
                 maybeAuthority:
-                  props.session.available() && (action.kind === "name" || owner !== undefined || ownershipReason() === undefined)
+                  props.session.available() && (action.kind === "name" || ownershipReason() === undefined)
                     ? action.kind === "name"
                       ? props.session.lossRevision()
                       : props.session.authority()
