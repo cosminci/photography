@@ -53,12 +53,32 @@ export function matchesChapterDetails(
   chapter: Pick<Chapter, "kind" | "sourceFolder" | "countries" | "name" | "start" | "end"> | undefined,
   details: ChapterDetails,
 ): boolean {
+  return chapter !== undefined && sameChapterDetails(chapterDetails(chapter), details);
+}
+
+export function chapterDetails(chapter: Pick<Chapter, "kind" | "name" | "countries" | "start" | "end" | "sourceFolder">): ChapterDetails {
+  const common = { countries: chapter.countries, sourceFolder: chapter.sourceFolder };
+  return chapter.kind === "home"
+    ? { kind: "home", ...common }
+    : {
+        kind: "vacation",
+        name: chapter.name,
+        start: chapter.start,
+        end: chapter.end,
+        ...common,
+      };
+}
+
+export function sameChapterDetails(chapter: ChapterDetails, details: ChapterDetails): boolean {
   if (
-    chapter?.kind !== details.kind ||
+    chapter.kind !== details.kind ||
     chapter.sourceFolder !== details.sourceFolder ||
     chapter.countries.length !== details.countries.length ||
     !chapter.countries.every((id) => details.countries.includes(id))
   )
     return false;
-  return details.kind === "home" || (chapter.name === details.name && chapter.start === details.start && chapter.end === details.end);
+  return (
+    details.kind === "home" ||
+    (chapter.kind === "vacation" && chapter.name === details.name && chapter.start === details.start && chapter.end === details.end)
+  );
 }

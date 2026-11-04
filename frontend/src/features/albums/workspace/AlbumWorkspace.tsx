@@ -36,6 +36,8 @@ import { createBookHistory, type HistoryDirection } from "./BookHistory";
 import { BookHistoryControls } from "./BookHistoryControls";
 import { createContentCompensation } from "./ContentCompensation";
 import { createPlacementCompensation, sameComposition } from "./PlacementCompensation";
+import { createChapterCompensation, sameChapterBook, type ChapterBookState } from "./ChapterCompensation";
+import { chapterDetails } from "./ChapterDetails";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -1236,45 +1238,84 @@ export function AlbumWorkspace(props: {
         )}
       </Show>
       <Show when={dialog()} keyed>
-        {(action) => (
-          <ChapterDialog
-            onCompleted={resetUnsupportedHistory}
-            resources={{ client: props.client, albumId: props.album.id, maybeChapterId: action.chapter?.id }}
-            save={(details) =>
-              action.chapter === undefined
-                ? props.client.createChapter(props.album.id, details)
-                : props.client.updateChapter(props.album.id, action.chapter.id, details)
-            }
-            year={props.workspace.year}
-            photoRoot={props.workspace.photoRoot}
-            countries={props.workspace.countries}
-            homeAvailable={!props.workspace.chapters.some((item) => item.kind === "home")}
-            chapter={action.chapter}
-            onSaved={(result) => {
-              saved(result, action);
-            }}
-            onReconciled={(chapterId) => {
-              setDialog(undefined);
-              if (action.chapter === undefined) showSelection(chapterId);
-              void refresh().then(() => {
+        {(action) => {
+          const editedChapter = action.chapter;
+          let grouped: { before: ChapterBookState; after: ChapterBookState; revision: number } | undefined;
+          return (
+            <ChapterDialog
+              maybeAuthority={() => (props.session.available() ? props.session.lossRevision() : undefined)}
+              resources={{ client: props.client, albumId: props.album.id, maybeChapterId: action.chapter?.id }}
+              save={(details) =>
+                action.chapter === undefined
+                  ? props.client.createChapter(props.album.id, details)
+                  : props.client.updateChapter(props.album.id, action.chapter.id, details)
+              }
+              year={props.workspace.year}
+              photoRoot={props.workspace.photoRoot}
+              countries={props.workspace.countries}
+              homeAvailable={!props.workspace.chapters.some((item) => item.kind === "home")}
+              chapter={action.chapter}
+              onHistoryBoundary={() => {
+                history.reset("The chapter or photo source was saved. A new Undo history has started.");
+              }}
+              onBookSaved={
+                editedChapter === undefined
+                  ? undefined
+                  : (before, after) => {
+                      const revision = props.session.lossRevision();
+                      if (grouped?.revision !== revision) grouped = undefined;
+                      if (grouped !== undefined) {
+                        grouped.before.details = before.details;
+                        grouped.before.gear = before.gear;
+                        grouped.after.details = after.details;
+                        grouped.after.gear = after.gear;
+                      } else if (!sameChapterBook(before, after)) {
+                        const recorded = { ...after };
+                        const entry = createChapterCompensation({
+                          before,
+                          after: recorded,
+                          prepare: () => prepareHistoryTarget(editedChapter.id, false),
+                          readDetails: async () => {
+                            const chapters = await props.client.chapters(props.album.id, new AbortController().signal);
+                            const savedChapter = chapters.find((item) => item.id === editedChapter.id);
+                            if (savedChapter === undefined) throw new AlbumRequestError(404, "The chapter is no longer available.");
+                            return chapterDetails(savedChapter);
+                          },
+                          readGear: () => props.client.chapterGear(props.album.id, editedChapter.id),
+                          saveDetails: (details) => props.client.updateChapter(props.album.id, editedChapter.id, details),
+                          saveGear: (gear) => props.client.saveChapterGear(props.album.id, editedChapter.id, gear),
+                        });
+                        history.record(entry);
+                        grouped = { before, after: recorded, revision };
+                      }
+                    }
+              }
+              onSaved={(result) => {
+                saved(result, action);
+              }}
+              onReconciled={(chapterId) => {
+                setDialog(undefined);
+                if (action.chapter === undefined) showSelection(chapterId);
+                void refresh().then(() => {
+                  if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
+                    action.opener.focus({ preventScroll: true });
+                  else workspaceElement.focus({ preventScroll: true });
+                });
+              }}
+              onBlock={(reason) => {
+                blockContent("chapter", reason);
+              }}
+              onClose={() => {
+                setDialog(undefined);
+              }}
+              returnFocus={() => {
                 if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
                   action.opener.focus({ preventScroll: true });
                 else workspaceElement.focus({ preventScroll: true });
-              });
-            }}
-            onBlock={(reason) => {
-              blockContent("chapter", reason);
-            }}
-            onClose={() => {
-              setDialog(undefined);
-            }}
-            returnFocus={() => {
-              if (action.opener.isConnected && !(action.opener instanceof HTMLButtonElement && action.opener.disabled))
-                action.opener.focus({ preventScroll: true });
-              else workspaceElement.focus({ preventScroll: true });
-            }}
-          />
-        )}
+              }}
+            />
+          );
+        }}
       </Show>
       <Show when={textEdit()} keyed>
         {(action) => {
