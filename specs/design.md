@@ -111,15 +111,11 @@ Saving and delivering the saved result are distinct outcomes: once a write is ac
 
 An editor spanning several owners does not imply an all-or-nothing transaction. Chapter metadata resolves before gear commits separately; partial-save recovery preserves the saved portion and retries only unresolved work.
 
-One browser-local chronology follows completed book edits across spread navigation and Reader. A completed gesture, text edit or chapter-details Save contributes one action over the portions actually saved; no-ops, cancellations and rejected writes contribute none.
+Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent without retaining editing authority; album exit, reload or unexpected access loss ends its lifetime.
 
-Undo/Redo compensates through ordinary authoritative commands, comparing only the affected saved content or composition and acquiring any required target normally. Recreated identities may change; earlier actions follow the restored composition, while unrelated content remains with its existing owner.
+Reversal uses ordinary authoritative commands and current ownership, preserving unrelated work rather than restoring whole-album snapshots. Visible composition can be restored with regenerated identities, which retained history follows.
 
-Compensation is best effort rather than an atomic restoration transaction. A conflicting, blocked or uncertain newest action stops traversal; interrupted work retains completed steps, and recovery reconciles reads before an explicit retry without duplicating acknowledged writes.
-
-History lasts for the mounted album page and ends on album exit, reload or unexpected ownership/session loss. Deliberate navigation retains intent, not authority; reacquisition never replays history, and retained drafts still require explicit review.
-
-Chapter creation and source-photo replacement announce a new history boundary before saving. Shared equipment catalog changes remain independent; an incompatible saved change blocks the affected action instead of silently skipping it.
+Compensation is best effort, not an atomic restoration transaction: interrupted work retains progress, and a blocked or uncertain newest action stops traversal. Chapter creation and source-photo replacement establish explicit history boundaries; shared-catalog changes remain independently owned.
 
 Editing keeps book content primary and preserves the user's spatial context through saves. Temporary guards prevent conflicting actions without hiding controls or shifting the layout; their reasons are accessible, while errors and recovery actions remain visible.
 

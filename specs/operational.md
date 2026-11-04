@@ -18,9 +18,7 @@ Stop with Ctrl+C. If a forked process survives, identify the listener and termin
 
 ## Frontend configuration
 
-`VITE_BOOK_HISTORY_LIMIT` sets the number of completed book edits retained in browser-local history, defaulting to 10. Set it before starting the development server or building frontend assets; changing it requires a restart or rebuild, not a backend configuration change.
-
-For example, `VITE_BOOK_HISTORY_LIMIT=25 npm --prefix frontend run build` retains 25 actions in that build. The [frontend configuration owner](../frontend/src/app/AppConfig.ts) rejects nonpositive, fractional or unsafe values explicitly.
+Browser-local history capacity is frontend configuration, fixed at development-server startup or asset build time. `VITE_BOOK_HISTORY_LIMIT` selects that capacity; the [frontend configuration](../frontend/src/app/AppConfig.ts) owns its default and validation, and deployment changes require rebuilding the assets.
 
 ## Run on the NAS
 
