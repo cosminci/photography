@@ -122,6 +122,19 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each(["synopsis", "chapter"] as const)("should group %s spread commands at their owning metadata row", async (kind) => {
+    window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={buildClient()} events={events} />);
+    const commands = await screen.findByRole("group", { name: "Spread commands" });
+    const bleed = within(commands).getByRole("checkbox", { name: "Spread bleed" });
+    await waitFor(() => expect(bleed).toBeEnabled());
+    if (kind === "chapter") {
+      expect(within(commands).getByRole("button", { name: "Edit chapter details" })).toBeEnabled();
+      expect(commands).toHaveTextContent("");
+    }
+    expect(screen.getAllByRole("checkbox", { name: "Spread bleed" })).toHaveLength(1);
+  });
+
   it.each(["Reader", "view-only"] as const)(
     "should refresh saved content after session reconnect in $0 without relying on inventory reconnect",
     async (view) => {

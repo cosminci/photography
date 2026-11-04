@@ -70,6 +70,10 @@ The workspace keeps the selected part addressable and restores it across navigat
 
 Photo editing persists placements and transforms for interior layouts and Cover; collection availability is derived from saved placements. Reader presents the same saved book content and composition without editing chrome.
 
+Bleed selects one spread-wide mode: full-height outer photos bleed top, bottom and outward, leaving an opposite stack inset; without a full-height outer photo, outer stacks bleed outward together. Inner slots remain inset, and imported and newly created spreads use the same rule without changing template geometry or placement identities.
+
+The command box starts the metadata row and groups bleed with chapter editing. Mixed saved directions remain readable without mutation and have an explained disabled toggle; standard directions can be enabled or cleared through the existing spread save and ownership boundary.
+
 ```mermaid
 sequenceDiagram
   actor Editor
