@@ -1,7 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js";
 import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient } from "../model/Album";
 import { describeFailure, validateTitle } from "../model/Presentation";
-import type { Chapter, Workspace } from "../model/Workspace";
+import type { Chapter, Spread, Workspace } from "../model/Workspace";
+import type { PlacementEdit, PlacementSnapshot } from "../model/Placement";
 import type { ChapterSave, Scheduling } from "../model/Photo";
 import { PhotoPane } from "./PhotoPane";
 import { ChapterDialog } from "./ChapterDialog";
@@ -34,6 +35,7 @@ import { BrowserAlias } from "../../editing/BrowserAlias";
 import { createBookHistory, type HistoryDirection } from "./BookHistory";
 import { BookHistoryControls } from "./BookHistoryControls";
 import { createContentCompensation } from "./ContentCompensation";
+import { createPlacementCompensation, sameComposition } from "./PlacementCompensation";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -111,7 +113,8 @@ export function AlbumWorkspace(props: {
   const [spreadNeedsReload, setSpreadNeedsReload] = createSignal(false);
   const [confirmation, setConfirmation] = createSignal<{ action: SpreadAction; placements: number }>();
   const [reloadTarget, setReloadTarget] = createSignal<{ destination: SpreadDestination; opener: HTMLButtonElement }>();
-  let reconcileUnsupportedEdit: (() => void) | undefined;
+  let reconcileSpreadHistory: (() => void) | undefined;
+  let pendingTemplateHistory: (() => void) | undefined;
   const [choice, setChoice] = createSignal<PhotoChoice>();
   const [reader, setReader] = createSignal(false);
   const [ownershipLoading, setOwnershipLoading] = createSignal(false);
@@ -261,6 +264,40 @@ export function AlbumWorkspace(props: {
       );
     },
   });
+  function recordPlacement(before: PlacementSnapshot, after: PlacementSnapshot, edit: PlacementEdit) {
+    const labels: Record<PlacementEdit["operation"], string> = {
+      place: "Place photo",
+      remove: "Remove photo",
+      move: "Move photo",
+      adjust: "Adjust photo",
+      captionCorner: "Change caption corner",
+      bleed: "Change spread bleed",
+      spineOwner: "Change spine owner",
+    };
+    recordComposition(before, after, labels[edit.operation]);
+  }
+  function recordComposition(before: PlacementSnapshot, after: PlacementSnapshot, label: string) {
+    if (sameComposition(before, after)) return;
+    history.record(
+      createPlacementCompensation({
+        album: props.album.id,
+        label,
+        before,
+        after,
+        context: () => (before.kind === "cover" ? { kind: "cover" } : { kind: "spread", id: before.id }),
+        authorize: () => prepareHistoryTarget(before.kind === "cover" ? "cover" : before.id),
+        client: props.client,
+      }),
+    );
+  }
+  function snapshotSpread(spread: Spread) {
+    return {
+      kind: "spread" as const,
+      id: spread.id,
+      placements: spread.placements,
+      layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots, bleed: spread.bleed },
+    };
+  }
   const placement = createPlacementSession(
     untrack(() => props.client),
     async () => {
@@ -271,9 +308,7 @@ export function AlbumWorkspace(props: {
       available: () => ownershipReason() === undefined,
       authority: () => props.session.authority(),
     },
-    (before, after) => {
-      if (JSON.stringify(before) !== JSON.stringify(after)) resetUnsupportedHistory();
-    },
+    recordPlacement,
   );
   const savedCoverAspectRatio = createMemo(() => {
     const compositionSnapshot = placement.snapshot();
@@ -629,6 +664,14 @@ export function AlbumWorkspace(props: {
     }
     const destination =
       target.destination.kind === "part" ? target.destination.part : findDeletionSelection(props.workspace.spreads, target.destination.index);
+    try {
+      pendingTemplateHistory?.();
+      pendingTemplateHistory = undefined;
+    } catch (failure) {
+      setSpreadError(describeFailure(failure));
+      workspaceElement.focus();
+      return;
+    }
     showSelection(destination);
     setSpreadError(undefined);
     setReloadTarget(undefined);
@@ -643,7 +686,7 @@ export function AlbumWorkspace(props: {
     setFailedAction(undefined);
     const before = JSON.stringify(props.workspace.spreads);
     const revision = props.session.lossRevision();
-    reconcileUnsupportedEdit = () => {
+    reconcileSpreadHistory = () => {
       untrack(() => {
         if (revision === props.session.lossRevision() && JSON.stringify(props.workspace.spreads) !== before) resetUnsupportedHistory();
       });
@@ -655,15 +698,34 @@ export function AlbumWorkspace(props: {
       else if (action.kind === "move") {
         const replacement = buildChapterReorder(props.workspace.spreads, action.spreadId, action.direction);
         await props.client.replaceChapterComposition(props.album.id, replacement.chapter, replacement.expectedSpreadIds, replacement.spreadIds);
-      } else if (action.kind === "template")
+      } else if (action.kind === "template") {
+        const previous = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
+        if (previous === undefined) throw new AlbumRequestError(404, "The spread is no longer available.");
+        reconcileSpreadHistory = () => {
+          untrack(() => {
+            if (revision !== props.session.lossRevision()) return;
+            const current = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
+            if (current?.templateId === action.templateId) recordComposition(snapshotSpread(previous), snapshotSpread(current), "Change template");
+            else if (current === undefined || !sameComposition(snapshotSpread(previous), snapshotSpread(current)))
+              history.block("The saved spread differs from both known template outcomes. Review the saved book.");
+          });
+        };
         await props.client.changeSpreadTemplate(props.album.id, action.spreadId, action.templateId, confirmPlacements);
-      else {
+        pendingTemplateHistory = () => {
+          untrack(() => {
+            if (revision !== props.session.lossRevision()) return;
+            const current = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
+            if (current === undefined) throw new AlbumRequestError(404, "The saved template composition could not be read.");
+            recordComposition(snapshotSpread(previous), snapshotSpread(current), "Change template");
+          });
+        };
+      } else {
         await props.client.deleteSpread(props.album.id, action.spreadId, confirmPlacements);
         destination = { kind: "index", index: action.index };
       }
       if (!active) return;
-      if (revision === props.session.lossRevision()) resetUnsupportedHistory();
-      reconcileUnsupportedEdit = undefined;
+      if (action.kind !== "template" && revision === props.session.lossRevision()) resetUnsupportedHistory();
+      reconcileSpreadHistory = undefined;
       setConfirmation(undefined);
       setReloadTarget({ destination, opener: action.opener });
       await reloadSpread();
@@ -923,11 +985,15 @@ export function AlbumWorkspace(props: {
           <button
             type="button"
             onClick={() => {
+              if (reloadTarget() !== undefined) {
+                void reloadSpread();
+                return;
+              }
               if (spreadNeedsReload()) {
                 void refresh().then(() => {
                   if (props.workspaceError === undefined) {
-                    reconcileUnsupportedEdit?.();
-                    reconcileUnsupportedEdit = undefined;
+                    reconcileSpreadHistory?.();
+                    reconcileSpreadHistory = undefined;
                     setSpreadNeedsReload(false);
                     setFailedAction(undefined);
                     setSpreadError(undefined);
@@ -940,7 +1006,7 @@ export function AlbumWorkspace(props: {
               if (action !== undefined) void mutateSpread(action);
             }}
           >
-            {spreadNeedsReload() ? "Reload saved workspace" : "Retry spread action"}
+            {reloadTarget() !== undefined ? "Retry workspace" : spreadNeedsReload() ? "Reload saved workspace" : "Retry spread action"}
           </button>
         </p>
       </Show>

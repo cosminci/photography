@@ -8,9 +8,9 @@ Existing editing APIs create identities and persist the book; they do not expose
 
 ## Incremental delivery
 
-The content-history delivery supports synopsis, chapter descriptions, shared photo captions, authors and album names together with the bounded history, controls and ownership-loss lifecycle. Photo-composition, chapter-details/gear and spread-structure compensation follow in separate deliveries.
+Content and photo-composition history support synopsis, chapter descriptions, shared photo captions, authors, album names, photo assignment and framing, caption corners, templates, bleed and Cover spine ownership in one bounded chronology. Chapter-details/gear and spread-structure compensation follow in separate deliveries.
 
-Until those integrations ship, a confirmed changed edit in a deferred category visibly starts a new history rather than leaving older content edits traversable. Pending or uncertain edits block traversal; read recovery keeps history for an unchanged outcome and resets it for a changed outcome, without repeating the mutation.
+Until those integrations ship, a confirmed changed edit in a deferred category visibly starts a new history rather than leaving older edits traversable. Pending or uncertain edits block traversal; read recovery keeps history for an unchanged outcome and resets it for a changed deferred edit, without repeating the mutation.
 
 Chapter dialogs announce their temporary history boundary before saving; each acknowledged portion establishes it even when a later gear save fails. Unchanged chapter details, rejected saves and cancellations preserve existing history.
 
