@@ -335,7 +335,7 @@ export function AlbumWorkspace(props: {
         : refreshing() || props.workspaceLoading
           ? "Refreshing saved workspace. Please wait."
           : undefined),
-    reader: reader(),
+    reader: reader() || ownershipReason() !== undefined,
     ownershipUnavailable: ownershipReason(),
     captions,
     onEditText: (opener) => setTextEdit({ chapter: chapter(), opener }),
@@ -381,7 +381,7 @@ export function AlbumWorkspace(props: {
             : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
-  const contentEditReason = createMemo(() => (chapter() === undefined ? ownershipReason() : undefined) ?? refreshReason() ?? navigationReason());
+  const contentEditReason = createMemo(() => ownershipReason() ?? refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
   let active = true;
@@ -1002,10 +1002,7 @@ export function AlbumWorkspace(props: {
         {(action) => (
           <TextEditor
             ownership={{
-              maybeAuthority:
-                props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined)
-                  ? props.session.authority()
-                  : undefined,
+              maybeAuthority: props.session.available() && ownershipReason() === undefined ? props.session.authority() : undefined,
               recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
               reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
               pending: props.session.targetPending() || ownershipLoading(),

@@ -35,14 +35,9 @@ object EditingAccess:
                 case ConnectionAuthorizationResult.Authorized       => write.map(Result.Completed(_))
                 case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
             case Protection.OwnAlbumOpening(album) =>
-              sessions.authorizeConnection(connection).flatMap:
-                case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
-                case ConnectionAuthorizationResult.Authorized       =>
-                  membership.composition(album).flatMap:
-                    case CompositionResult.Found(members) =>
-                      admit(connection, EditingTarget.Spread(members.head.id), maybeGrant)(write)
-                    case CompositionResult.AlbumNotFound => Result.AlbumNotFound[A]().pure[F]
-                    case CompositionResult.Failed(_)     => Result.Failed[A]().pure[F]
+              admitOpening(connection, album, maybeChapter = None, maybeGrant)(write)
+            case Protection.OwnChapterOpening(album, chapter) =>
+              admitOpening(connection, album, maybeChapter = Some(chapter), maybeGrant)(write)
             case Protection.OwnPhotoSpread(chapter, photo) =>
               sessions.authorizeConnection(connection).flatMap:
                 case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
@@ -55,6 +50,22 @@ object EditingAccess:
             case Protection.OwnSpread(spread)      => admit(connection, spread, maybeGrant)(write)
             case Protection.ChangeSpreads(spreads) =>
               complete(sessions.authorizeAffected(connection, spreads, maybeGrant))(write)
+
+    private def admitOpening[A](
+        connection: EditorConnection,
+        album: AlbumId,
+        maybeChapter: Option[ChapterId],
+        maybeGrant: Option[GrantId]
+    )(write: F[A]) =
+      sessions.authorizeConnection(connection).flatMap:
+        case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
+        case ConnectionAuthorizationResult.Authorized       =>
+          membership.composition(album).flatMap:
+            case CompositionResult.Found(members) =>
+              val maybeOpening = maybeChapter.fold(members.head.some)(chapter => members.find(_.maybeChapter.contains(chapter)))
+              maybeOpening.fold(Result.ChapterNotFound[A]().pure[F])(member => admit(connection, EditingTarget.Spread(member.id), maybeGrant)(write))
+            case CompositionResult.AlbumNotFound => Result.AlbumNotFound[A]().pure[F]
+            case CompositionResult.Failed(_)     => Result.Failed[A]().pure[F]
 
     private def admit[A](connection: EditorConnection, spread: EditingTarget, maybeGrant: Option[GrantId])(write: F[A]) =
       val authorization = maybeGrant match
@@ -72,6 +83,7 @@ object EditingAccess:
     case ActiveTab
     case OwnSpread(spread: EditingTarget)
     case OwnAlbumOpening(album: AlbumId)
+    case OwnChapterOpening(album: AlbumId, chapter: ChapterId)
     case OwnPhotoSpread(chapter: ChapterId, photo: PhotoId)
     case ChangeSpreads(spreads: Set[EditingTarget])
 
@@ -80,5 +92,6 @@ object EditingAccess:
     case Rejected(reason: EditorSessionManager.Failure)
     case Blocked(owner: EditorId, alias: EditorAlias)
     case AlbumNotFound()
+    case ChapterNotFound()
     case PhotoNotFound()
     case Failed()

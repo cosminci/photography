@@ -608,6 +608,19 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       assertEquals(result, SaveDescriptionResult.Uncertain)
       assertEquals(writes, Vector((album.id, chapter.id, "Saved?")))
 
+  test("should save descriptions within authoritative mutation coordination without reacquiring its mutex"):
+    TestControl.executeEmbed:
+      val refs = Refs()
+
+      for
+        mutex   <- Mutex[IO]
+        manager <- buildManager(refs, coordination = mutex.pure[IO])
+        result  <- mutex.lock.surround(manager.saveDescription(album.id, chapter.id, text = "Protected description"))
+        writes  <- refs.descriptions.get
+      yield
+        assertEquals(result, SaveDescriptionResult.Saved)
+        assertEquals(writes, Vector((album.id, chapter.id, "Protected description")))
+
   test("should finish the description transaction handoff before honoring cancellation"):
     TestControl.executeEmbed:
       val refs           = Refs()
@@ -668,7 +681,8 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       update: DestinationId => IO[Unit] = _ => IO.unit,
       listed: IO[PhotoRepository.ListResult] = PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo]).pure[IO],
       recording: IO[PhotoRepository.RecordWriteResult] = PhotoRepository.RecordWriteResult.Recorded.pure[IO],
-      removal: IO[PhotoRepository.WriteResult] = PhotoRepository.WriteResult.Applied.pure[IO]
+      removal: IO[PhotoRepository.WriteResult] = PhotoRepository.WriteResult.Applied.pure[IO],
+      coordination: IO[Mutex[IO]] = Mutex[IO]
   ) =
     given Logger[IO] = buildLogger(refs)
     given IdGenerator[IO] with
@@ -719,7 +733,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       override def listAlbumStartTemplates: IO[SpreadTemplateRepository.ListAlbumStartTemplatesResult] =
         IO.raiseError[SpreadTemplateRepository.ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
       override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = templates.pure[IO]
-    Mutex[IO].map: mutex =>
+    coordination.map: mutex =>
       given Mutex[IO] = mutex
       given Transaction[IO, IO] with
         override def run[A](program: IO[A]): IO[A]     = program

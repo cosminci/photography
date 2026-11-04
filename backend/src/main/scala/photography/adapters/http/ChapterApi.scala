@@ -1,7 +1,7 @@
 package photography.adapters.http
 
 import photography.adapters.http.Routes.Route
-import org.http4s.Request
+import org.http4s.{Request, Response}
 
 import cats.data.{NonEmptyList, NonEmptyVector}
 import cats.effect.Async
@@ -22,6 +22,7 @@ import photography.domain.gear.*
 import photography.usecases.chapter.ChapterManager
 import photography.usecases.chapter.ChapterManager.{GearReadResult, GearReplaceResult}
 import photography.usecases.gear.GearManager
+import photography.usecases.editing.EditingAccess.Protection
 
 import java.time.{DateTimeException, LocalDate}
 import java.time.temporal.ChronoUnit
@@ -43,9 +44,8 @@ object ChapterApi:
       gear: ChapterManager[F]
   ) extends ChapterApi[F] with Http4sDsl[F]:
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
-      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" => Route.public {
-          saveDescription(AlbumId(album), ChapterId(chapter), request)
-        }
+      case request @ PUT -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "description" =>
+        saveDescription(AlbumId(album), ChapterId(chapter), request)
       case PUT -> Root / "api" / "albums" / CanonicalId(_) / "chapters" / _ / "description"                 => Route.public(chapterNotFound)
       case PUT -> Root / "api" / "albums" / _ / "chapters" / _ / "description"                              => Route.public(albumNotFound)
       case GET -> Root / "api" / "albums" / CanonicalId(album) / "chapters" / CanonicalId(chapter) / "gear" => Route.public {
@@ -74,19 +74,24 @@ object ChapterApi:
     }
 
     private def saveDescription(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      request.as[Json].flatMap { value =>
+      val decode = request.as[Json].flatMap { value =>
         value.hcursor.get[String](k = "text").fold(
-          _ => BadRequest(body = Map("message" -> "Supply a text string")),
-          text =>
-            chapters.saveDescription(album, chapter, text = text).flatMap {
-              case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
-              case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
-              case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
-              case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
-              case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
-            }
+          _ => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]),
+          _.asRight[Response[F]].pure[F]
         )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")) }
+      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]) }
+      Route(
+        Routes.Access.Editor(Protection.OwnChapterOpening(album, chapter)),
+        decode,
+        (text: String) =>
+          chapters.saveDescription(album, chapter, text = text).flatMap {
+            case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
+            case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
+            case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
+            case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
+            case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
+          }
+      )
 
     private def readGear(album: AlbumId, chapter: ChapterId) =
       gear.readGear(album, chapter).flatMap:

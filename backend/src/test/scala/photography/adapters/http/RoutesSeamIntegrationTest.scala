@@ -75,6 +75,8 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
     (Protection.ChangeSpreads(Set.empty), none[GrantId], none[String], Status.Ok),
     (Protection.ChangeSpreads(Set.empty), none[GrantId], Some("invalid"), Status.BadRequest),
     (Protection.OwnAlbumOpening(AlbumId(new UUID(0L, 5L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.OwnChapterOpening(AlbumId(new UUID(0L, 5L)), ChapterId(new UUID(0L, 6L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.OwnChapterOpening(AlbumId(new UUID(0L, 5L)), ChapterId(new UUID(0L, 6L))), none[GrantId], none[String], Status.BadRequest),
     (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), Some(grant), Some(grant.value.toString), Status.Ok),
     (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), none[GrantId], none[String], Status.Ok)
   ).foreach { case (protection, maybeGrant, supplied, status) =>
@@ -107,6 +109,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
       body = Json.obj("code" -> Json.fromString("stale_transition"))
     ),
     (result = Result.AlbumNotFound[Unit](), status = Status.NotFound, body = Json.obj("code" -> Json.fromString("album_not_found"))),
+    (result = Result.ChapterNotFound[Unit](), status = Status.NotFound, body = Json.obj("code" -> Json.fromString("chapter_not_found"))),
     (result = Result.PhotoNotFound[Unit](), status = Status.NotFound, body = Json.obj("code" -> Json.fromString("photo_not_found"))),
     (result = Result.Failed[Unit](), status = Status.InternalServerError, body = Json.obj("code" -> Json.fromString("service_failure"))),
     (
@@ -171,5 +174,6 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
           case Result.Rejected(reason)      => Result.Rejected[A](reason).pure[IO]
           case Result.Blocked(owner, alias) => Result.Blocked[A](owner, alias).pure[IO]
           case Result.AlbumNotFound()       => Result.AlbumNotFound[A]().pure[IO]
+          case Result.ChapterNotFound()     => Result.ChapterNotFound[A]().pure[IO]
           case Result.PhotoNotFound()       => Result.PhotoNotFound[A]().pure[IO]
           case Result.Failed()              => Result.Failed[A]().pure[IO])

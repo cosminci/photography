@@ -115,7 +115,9 @@ Each document establishes a backend-bound tab connection before opening the appl
 
 One session may own one interior spread or the full exterior Cover. Other profiles retain saved-state viewing and Reader, see the owner's alias, and acquire only after release or expiry without forced takeover.
 
-Target ownership protects composition, placed-photo captions, synopsis, template changes and spread deletion. Chapter content, gear/catalog edits, author selection and nondestructive insertion/reordering remain independent of target locks.
+Target ownership protects composition, placed-photo captions, synopsis, chapter-opening descriptions, template changes and spread deletion. Chapter name, countries, dates, source, gear/catalog edits, author selection and nondestructive insertion/reordering remain independent of target locks.
+
+Description writes resolve the chapter's current opening under the same coordination as ownership admission and persistence. A view-only canvas presents photographs, captions and opening text without editing affordances; independent chapter details and Reader remain available, and existing drafts remain recoverable.
 
 Album title/deletion and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
 
