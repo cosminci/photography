@@ -4,6 +4,7 @@ import { readPhotoChoice } from "../../../src/features/albums/workspace/PhotoDra
 import { makeHttpAlbumClient } from "../../../src/features/albums/api/HttpAlbumClient";
 import { readPhotoInventory } from "../../../src/features/albums/api/PhotoWire";
 import type { CoverSnapshot, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
+import { coverGeometries } from "./CoverGeometry";
 
 describe("placement representation", () => {
   const transform = { x: 10, y: -20, zoom: 2, mirrored: true };
@@ -32,6 +33,45 @@ describe("placement representation", () => {
   };
   const box = { x: 1, y: 1, width: 98, height: 98 };
   const projectedSlot = { id: "front", kind: "photo", x: 0, y: 0, width: 100, height: 100, bleed: [], contentBox: box, visibleBox: box };
+
+  it.each(["front", "back"] as const)("should retain authoritative %s-owned print geometry without recomputing dimensions", (spineOwner) => {
+    const geometry = coverGeometries[spineOwner];
+    const saved = readPlacementSnapshot(
+      { frontSlotId: "front", backSlotId: "back", spineOwner, pageCount: 24, placements: [], geometry },
+      { kind: "cover" },
+    );
+
+    expect(saved).toHaveProperty("geometry", geometry);
+    expect(saved.pageCount).toBe(24);
+  });
+
+  it.each([
+    undefined,
+    { ...coverGeometries.front, width: 0 },
+    { ...coverGeometries.front, height: 0 },
+    { ...coverGeometries.front, spineStart: 0 },
+    { ...coverGeometries.front, spineWidth: 0 },
+    { ...coverGeometries.front, spineWidth: 2400 },
+    { ...coverGeometries.front, front: { x: -1, width: 100, height: 720 } },
+    { ...coverGeometries.front, front: { x: 0, width: 0, height: 720 } },
+    { ...coverGeometries.front, back: { x: 0, width: 100, height: 0 } },
+  ])("should reject missing or malformed authoritative cover geometry %s", (geometry) => {
+    expect(() =>
+      readPlacementSnapshot(
+        { frontSlotId: "front", backSlotId: "back", spineOwner: "front", pageCount: 30, placements: [], geometry },
+        { kind: "cover" },
+      ),
+    ).toThrow();
+  });
+
+  it.each([undefined, -2, 1, 1.5, Number.MAX_SAFE_INTEGER + 1])("should reject invalid actual cover page count %s", (pageCount) => {
+    expect(() =>
+      readPlacementSnapshot(
+        { frontSlotId: "front", backSlotId: "back", spineOwner: "front", pageCount, placements: [], geometry: coverGeometries.front },
+        { kind: "cover" },
+      ),
+    ).toThrow();
+  });
 
   it("should reject a chapter-owned album opening instead of silently publishing it in navigation", () => {
     expect(() => readSpread({ ...wireLayout, id: "opening", kind: "album_start", chapter: "foreign", placements: [] })).toThrow(
@@ -130,7 +170,7 @@ describe("placement representation", () => {
       slots: [],
       placements: [],
     };
-    const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [] };
+    const cover = { frontSlotId: "front", backSlotId: "back", pageCount: 30, geometry: coverGeometries.back, spineOwner: "back", placements: [] };
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(spread)))
@@ -147,9 +187,23 @@ describe("placement representation", () => {
   });
 
   it("decodes cover ownership and interior caption corners", () => {
-    const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [placement] };
+    const cover = {
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.back,
+      spineOwner: "back",
+      placements: [placement],
+    };
     const spread = { id: "spread", ...wireLayout, placements: [{ ...placement, captionCorner: "top_left" }] };
-    const expectedCover: CoverSnapshot = { ...cover, kind: "cover", spineOwner: "back", placements: [{ ...placement, kind: "cover" }] };
+    const expectedCover: CoverSnapshot = {
+      ...cover,
+      kind: "cover",
+      pageCount: 30,
+      geometry: coverGeometries.back,
+      spineOwner: "back",
+      placements: [{ ...placement, kind: "cover" }],
+    };
     const expectedSpread: SpreadSnapshot = {
       kind: "spread",
       id: "spread",
@@ -177,10 +231,17 @@ describe("placement representation", () => {
   });
 
   it.each([
-    { frontSlotId: "front", backSlotId: "front", spineOwner: "front", placements: [] },
+    { frontSlotId: "front", backSlotId: "front", pageCount: 30, geometry: coverGeometries.front, spineOwner: "front", placements: [] },
     { frontSlotId: "front", backSlotId: "back", spineOwner: "other", placements: [] },
-    { frontSlotId: "a", backSlotId: "b", spineOwner: "front", placements: [placement] },
-    { frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [placement, placement] },
+    { frontSlotId: "a", backSlotId: "b", pageCount: 30, geometry: coverGeometries.front, spineOwner: "front", placements: [placement] },
+    {
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [placement, placement],
+    },
   ])("rejects malformed cover %s", (value) => {
     expect(() => readPlacementSnapshot(value, { kind: "cover" })).toThrow();
   });
@@ -231,7 +292,14 @@ describe("placement representation", () => {
   });
 
   it("uses the actual placement paths and JSON commands for both contexts", async () => {
-    const cover = { frontSlotId: "front", backSlotId: "back", spineOwner: "back", placements: [placement] };
+    const cover = {
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.back,
+      spineOwner: "back",
+      placements: [placement],
+    };
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(cover)))

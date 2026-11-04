@@ -1,7 +1,7 @@
 package photography.adapters.http
 
 import cats.effect.{IO, Ref}
-import cats.data.NonEmptyList
+import cats.data.{NonEmptyList, NonEmptyVector}
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Json
@@ -28,7 +28,9 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
   private val transform     = PhotoTransform(Shift(x = 12.5, y = -7.25), mirrored = true, zoom = 3.0)
   private val placement     = CoverPlacement(CoverPlacementId(new UUID(0L, 4L)), cover.front.id, PhotoId(new UUID(0L, 5L)), transform)
   private val second        = placement.copy(id = CoverPlacementId(new UUID(0L, 8L)), slot = cover.back.id, photo = PhotoId(new UUID(0L, 9L)))
-  private val composition   = Composition(cover, placements = Vector(placement, second))
+  private val specification = CoverSpecification.from(pageLimit = 30, width = 10000, height = 3000, spine = 200).fold(fail(_), identity)
+  private val dimensions    = CoverDimensions.forSpreads(spreads = 0, NonEmptyVector.one(specification))
+  private val composition   = Composition(cover, placements = Vector(placement, second), dimensions = dimensions)
   private val coverPath     = s"/api/albums/${album.value}/cover"
   private val connection    = EditorConnection(SessionId(new UUID(0L, 20L)), TabId(new UUID(0L, 21L)), ConnectionGeneration(new UUID(0L, 22L)))
   private val grant         = GrantId(new UUID(0L, 23L))
@@ -331,12 +333,33 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
     cases.traverse_ { case (owner, encodedOwner, placements, encodedPlacements) =>
-      val saved        = Composition(cover.copy(spineOwner = owner), placements = placements)
+      val frontWidth = owner match
+        case SpineOwner.Front => 1224
+        case SpineOwner.Back  => 1176
+      val backWidth    = 2400 - frontWidth
+      val saved        = Composition(cover.copy(spineOwner = owner), placements = placements, dimensions = dimensions)
       val expectedBody = Json.obj(
         "frontSlotId" -> Json.fromString(cover.front.id.value.toString),
         "backSlotId"  -> Json.fromString(cover.back.id.value.toString),
         "spineOwner"  -> Json.fromString(encodedOwner),
-        "placements"  -> encodedPlacements
+        "pageCount"   -> Json.fromInt(0),
+        "placements"  -> encodedPlacements,
+        "geometry"    -> Json.obj(
+          "width"      -> Json.fromInt(2400),
+          "height"     -> Json.fromInt(720),
+          "spineStart" -> Json.fromInt(1176),
+          "spineWidth" -> Json.fromInt(48),
+          "front"      -> Json.obj(
+            "x"      -> Json.fromInt(backWidth),
+            "width"  -> Json.fromInt(frontWidth),
+            "height" -> Json.fromInt(720)
+          ),
+          "back" -> Json.obj(
+            "x"      -> Json.fromInt(0),
+            "width"  -> Json.fromInt(backWidth),
+            "height" -> Json.fromInt(720)
+          )
+        )
       )
       val api        = buildApi(result = CoverManager.Result.Saved(saved), coverRead = CoverManager.ReadResult.Found(saved))
       val checkEdits = editScenarios.traverse_ { scenario =>

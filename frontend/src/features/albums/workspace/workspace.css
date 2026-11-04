@@ -114,7 +114,7 @@
   color: #983d44;
   font-size: 11px;
 }
-.page:has(.workspace) {
+.page:has(.album-content:not([hidden]) .workspace) {
   width: calc(100% - var(--page-gutter) - var(--page-gutter));
   max-width: none;
   padding-top: 4px;
@@ -133,17 +133,17 @@
   min-height: 0;
 }
 @media (min-width: 681px) {
-  body:has(.workspace) {
+  body:has(.album-content:not([hidden]) .workspace) {
     height: 100dvh;
     overflow: hidden;
   }
-  #app:has(.workspace) {
+  #app:has(.album-content:not([hidden]) .workspace) {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     height: 100%;
     min-height: 0;
   }
-  .page:has(.workspace) {
+  .page:has(.album-content:not([hidden]) .workspace) {
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -200,6 +200,8 @@
 .workspace-controls {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: 4px;
   margin-left: auto;
@@ -254,7 +256,8 @@
   max-height: calc(100dvh - 24px);
   overflow: auto;
 }
-.content-dialog textarea {
+.content-dialog textarea,
+.content-dialog input {
   display: block;
   width: 100%;
   margin: 6px 0 12px;
@@ -269,7 +272,8 @@
   font-weight: 400;
   line-height: 1.6;
 }
-.content-dialog textarea:focus-visible {
+.content-dialog textarea:focus-visible,
+.content-dialog input:focus-visible {
   outline: 3px solid #70b8c1;
   outline-offset: 2px;
 }
@@ -487,29 +491,15 @@
 .cover-canvas {
   position: relative;
   container-type: inline-size;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
   border: 1px solid #c5d6d8;
   border-radius: 0;
   background: #fcfefe;
 }
-.cover-back,
-.cover-front {
-  position: relative;
-  min-width: 0;
-  display: grid;
-  place-items: center;
-  padding: 6%;
-}
-.cover-back {
-  border-right: 1px solid #dcebec;
-}
 .cover-title {
   position: absolute;
-  left: 0;
   top: 6.114179%;
   max-width: 100%;
-  padding: 10px 16px 10px calc(71 / 1148 * 50cqw);
+  padding: 10px 16px 10px calc(71 / var(--cover-width) * 100cqw);
   z-index: 1;
   pointer-events: none;
   text-align: left;
@@ -532,12 +522,13 @@
   color: rgb(255 255 255 / 80%);
   margin: 2px 0 0;
 }
-.cover-back > span,
-.cover-front > span {
+.cover-side-label {
   position: absolute;
   top: 8px;
   font-size: 10px;
   color: var(--muted);
+  left: 50%;
+  transform: translateX(-50%);
 }
 .spread-details {
   display: flex;
@@ -839,8 +830,7 @@ button.metadata-edit {
   .chapter-metadata-row {
     align-items: flex-end;
   }
-  .cover-back > span,
-  .cover-front > span {
+  .cover-side-label {
     top: 3px;
     font-size: 8px;
   }

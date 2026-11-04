@@ -2,6 +2,7 @@ package photography.usecases.cover
 
 import cats.effect.{IO, Ref}
 import cats.effect.std.Mutex
+import cats.data.NonEmptyVector
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -24,16 +25,18 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     CoverSlot(CoverSlotId(new UUID(0L, 2L))),
     CoverSlot(CoverSlotId(new UUID(0L, 3L)))
   )
-  private val photo      = PhotoId(new UUID(0L, 4L))
-  private val otherPhoto = PhotoId(new UUID(0L, 5L))
-  private val foreign    = PhotoId(new UUID(0L, 9L))
-  private val fresh      = CoverPlacementId(new UUID(0L, 6L))
-  private val otherId    = CoverPlacementId(new UUID(0L, 7L))
-  private val initial    = PhotoTransform(Shift(x = 0.0, y = 0.0), mirrored = false, zoom = 1.0)
-  private val adjusted   = PhotoTransform(Shift(x = 20.0, y = -10.0), mirrored = true, zoom = 4.0)
-  private val first      = CoverPlacement(fresh, cover.front.id, photo, adjusted)
-  private val second     = CoverPlacement(otherId, cover.back.id, otherPhoto, initial)
-  private val empty      = Composition(cover, placements = Vector.empty[CoverPlacement])
+  private val photo         = PhotoId(new UUID(0L, 4L))
+  private val otherPhoto    = PhotoId(new UUID(0L, 5L))
+  private val foreign       = PhotoId(new UUID(0L, 9L))
+  private val fresh         = CoverPlacementId(new UUID(0L, 6L))
+  private val otherId       = CoverPlacementId(new UUID(0L, 7L))
+  private val initial       = PhotoTransform(Shift(x = 0.0, y = 0.0), mirrored = false, zoom = 1.0)
+  private val adjusted      = PhotoTransform(Shift(x = 20.0, y = -10.0), mirrored = true, zoom = 4.0)
+  private val first         = CoverPlacement(fresh, cover.front.id, photo, adjusted)
+  private val second        = CoverPlacement(otherId, cover.back.id, otherPhoto, initial)
+  private val specification = CoverSpecification.from(pageLimit = 30, width = 10000, height = 3000, spine = 200).fold(fail(_), identity)
+  private val dimensions    = CoverDimensions.forSpreads(spreads = 0, NonEmptyVector.one(specification))
+  private val empty         = Composition(cover, placements = Vector.empty[CoverPlacement], dimensions = dimensions)
 
   test("should change either spine owner without changing either photograph or its framing"):
     val occupied = empty.copy(placements = Vector(first, second))
