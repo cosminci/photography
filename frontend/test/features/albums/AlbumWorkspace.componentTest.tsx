@@ -235,11 +235,366 @@ describe("album workspace browser boundary", () => {
     },
   );
 
-  it.each(["metadata", "gear", "partial", "rejected", "cancelled"] as const)(
-    "should announce and enforce the chapter history boundary after %s",
+  it("should read a missing chapter again before resuming its newest history action", async () => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit chapter details" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+    fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "Saved new name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit chapter details and gear" })).toBeEnabled());
+    vi.mocked(built.client.chapters).mockResolvedValueOnce([]);
+
+    await clickHistory("Undo: Edit chapter details and gear");
+
+    const recovery = await screen.findByRole("button", { name: "Read saved history action" });
+    expect(built.client.updateChapter).toHaveBeenCalledOnce();
+    await waitFor(() => expect(recovery).toBeEnabled());
+    fireEvent.click(recovery);
+    await clickHistory("Undo: Edit chapter details and gear");
+    await waitFor(() => {
+      expect(built.chapters()[0]?.name).toBe(vacation.name);
+    });
+    expect(built.client.updateChapter).toHaveBeenCalledTimes(2);
+  });
+
+  it("should retain a disconnected chapter draft and fence an author acknowledgement while the session is unavailable", async () => {
+    const built = buildHistoryBook();
+    const [available, setAvailable] = createSignal(true);
+    const [lossRevision, setLossRevision] = createSignal(0);
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={{ ...editingSession, available, lossRevision }} id={album.id} client={built.client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit chapter details" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+    setAvailable(false);
+    setLossRevision(1);
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await screen.findByText("Editing ownership is unavailable. The draft is retained.");
+    expect(built.client.updateChapter).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    setAvailable(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
+    const authors = screen.getByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const save = vi.mocked(built.client.saveAuthors).getMockImplementation();
+    if (save === undefined) throw new Error("Missing author writer.");
+    vi.mocked(built.client.saveAuthors).mockImplementationOnce(async (...args) => {
+      await pending;
+      return save(...args);
+    });
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await waitFor(() => {
+      expect(built.client.saveAuthors).toHaveBeenCalledOnce();
+    });
+    setAvailable(false);
+    setLossRevision(2);
+
+    finish();
+
+    await waitFor(() => expect(authors).toHaveAttribute("aria-busy", "false"));
+    await waitFor(() => {
+      expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+    });
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+  });
+
+  it("should save gear for a newly acknowledged chapter without restoring generated identities", async () => {
+    const phone = { id: "phone", code: "phone", name: "Phone", kind: "fixed_lens" as const };
+    const selection = [{ cameraId: phone.id, lensIds: [] }];
+    const client = buildClient({
+      chapters: vi.fn().mockResolvedValueOnce([vacation]).mockResolvedValue(workspace.chapters),
+      composition: vi
+        .fn()
+        .mockResolvedValueOnce(membership(workspace.spreads.slice(0, 3)))
+        .mockResolvedValue(membership(workspace.spreads)),
+      createChapter: vi.fn().mockResolvedValue({ id: home.id, scheduling: "not-requested" }),
+      gearCatalog: vi.fn().mockResolvedValue({ cameras: [phone], lenses: [] }),
+      chapterGear: vi.fn().mockResolvedValue(selection),
+      saveChapterGear: vi.fn().mockResolvedValue(undefined),
+    });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const add = await screen.findByRole("button", { name: "Add chapter" });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    fireEvent.change(screen.getByRole("combobox", { name: "Chapter type" }), { target: { value: "home" } });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Add camera" })).toBeEnabled());
+    fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: phone.id } });
+
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add chapter" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(client.saveChapterGear).toHaveBeenCalledExactlyOnceWith(album.id, home.id, selection);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+  });
+
+  it.each([
+    ...(["metadata", "gear"] as const).flatMap((portion) =>
+      [false, true].map((loseAccess) => ({ portion, loseAccess, recovery: "stable" as const })),
+    ),
+    { portion: "gear" as const, loseAccess: true, recovery: "lost-read" as const },
+    { portion: "gear" as const, loseAccess: true, recovery: "missing-chapter" as const },
+  ])(
+    "should undo reviewed chapter $portion to the independently read baseline after access loss=$loseAccess and $recovery recovery",
+    async ({ portion, loseAccess, recovery }) => {
+      const built = buildHistoryBook();
+      const [lossRevision, setLossRevision] = createSignal(0);
+      const phone = { id: "phone", code: "phone", name: "Phone", kind: "fixed_lens" as const };
+      const independentGear = [{ cameraId: phone.id, lensIds: [] }];
+      const desiredGear = [{ cameraId: "body", lensIds: ["lens"] }];
+      if (portion === "metadata") vi.mocked(built.client.updateChapter).mockRejectedValueOnce(new Error("Lost metadata response"));
+      else {
+        vi.mocked(built.client.saveChapterGear).mockRejectedValueOnce(new Error("Lost gear response"));
+        const readCatalog = vi.mocked(built.client.gearCatalog).getMockImplementation();
+        if (readCatalog === undefined) throw new Error("Missing gear catalog reader.");
+        vi.mocked(built.client.gearCatalog).mockImplementation(async (signal) => {
+          const catalog = await readCatalog(signal);
+          return { ...catalog, cameras: [...catalog.cameras, phone] };
+        });
+      }
+      window.history.replaceState(null, "", "?part=vacation");
+      render(() => <AlbumOpen session={{ ...editingSession, lossRevision }} id={album.id} client={built.client} events={events} />);
+      const edit = await screen.findByRole("button", { name: "Edit chapter details" });
+      await waitFor(() => expect(edit).toBeEnabled());
+      fireEvent.click(edit);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save chapter" })).toBeEnabled());
+      fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "My retained name" } });
+      if (portion === "gear") {
+        fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: "body" } });
+        fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+      await screen.findByRole("button", { name: "Read saved chapter" });
+      if (loseAccess) setLossRevision(1);
+      if (portion === "metadata") await built.client.updateChapter(album.id, vacation.id, { ...vacation, name: "Independent name" });
+      else await built.client.saveChapterGear(album.id, vacation.id, independentGear);
+      if (recovery === "missing-chapter") vi.mocked(built.client.chapters).mockResolvedValue([]);
+      if (recovery === "lost-read") {
+        const read = vi.mocked(built.client.chapterGear).getMockImplementation();
+        if (read === undefined) throw new Error("Missing gear reader.");
+        vi.mocked(built.client.chapterGear).mockImplementationOnce(async (...args) => {
+          const saved = await read(...args);
+          setLossRevision(2);
+          return saved;
+        });
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+      if (recovery !== "stable") {
+        await screen.findByText(
+          recovery === "missing-chapter" ? /The saved chapter could not be found/ : /Editing ownership changed while reading saved content/,
+        );
+        if (recovery === "missing-chapter") vi.mocked(built.client.chapters).mockResolvedValue(built.chapters());
+        else await built.client.updateChapter(album.id, vacation.id, { ...vacation, name: "Independent during recovery" });
+        fireEvent.click(screen.getByRole("button", { name: "Read saved chapter" }));
+      }
+      const save = await screen.findByRole("button", { name: portion === "metadata" ? "Save chapter" : "Save gear" });
+      await waitFor(() => expect(save).toBeEnabled());
+
+      fireEvent.click(save);
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await clickHistory("Undo: Edit chapter details and gear");
+
+      await waitFor(() => {
+        expect(built.chapters()[0]?.name).toBe(
+          portion === "metadata"
+            ? "Independent name"
+            : recovery === "lost-read"
+              ? "Independent during recovery"
+              : loseAccess
+                ? "My retained name"
+                : vacation.name,
+        );
+      });
+      await waitFor(() => {
+        expect(built.gear()).toEqual(portion === "gear" ? independentGear : []);
+      });
+      await clickHistory("Redo: Edit chapter details and gear");
+      await waitFor(() => {
+        expect(built.chapters()[0]?.name).toBe(recovery === "lost-read" ? "Independent during recovery" : "My retained name");
+      });
+      await waitFor(() => {
+        expect(built.gear()).toEqual(portion === "gear" ? desiredGear : []);
+      });
+    },
+  );
+
+  it.each((["details", "source"] as const).flatMap((change) => [false, true].map((lostAccess) => ({ change, lostAccess }))))(
+    "should fence $change history callbacks after loss=$lostAccess while accounting for saved gear",
+    async ({ change, lostAccess }) => {
+      const built = buildHistoryBook();
+      const [lossRevision, setLossRevision] = createSignal(0);
+      const update = vi.mocked(built.client.updateChapter).getMockImplementation();
+      if (update === undefined) throw new Error("Missing chapter command.");
+      vi.mocked(built.client.updateChapter).mockImplementationOnce(async (...args) => {
+        const saved = await update(...args);
+        if (lostAccess) setLossRevision(1);
+        return saved;
+      });
+      window.history.replaceState(null, "", "?part=vacation");
+      render(() => <AlbumOpen session={{ ...editingSession, lossRevision }} id={album.id} client={built.client} events={events} />);
+      const edit = await screen.findByRole("button", { name: "Edit chapter details" });
+      await waitFor(() => expect(edit).toBeEnabled());
+      fireEvent.click(edit);
+      const camera = await screen.findByRole("combobox", { name: "Add camera" });
+      await waitFor(() => expect(camera).toBeEnabled());
+      fireEvent.change(camera, { target: { value: "body" } });
+      fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+      fireEvent.input(screen.getByRole("textbox", { name: change === "source" ? "Photo folder" : "Location / name" }), {
+        target: { value: change === "source" ? "/mnt/photos/new-source" : "Changed Kyoto" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+
+      if (lostAccess) {
+        await screen.findByText(/Editing access changed. Review the retained chapter/);
+        expect(built.client.saveChapterGear).not.toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Save gear" }));
+        await screen.findByText(/The draft is not saved. Review it before saving again/);
+        fireEvent.click(screen.getByRole("button", { name: "Save gear" }));
+      }
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      if (lostAccess || change === "details")
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit chapter details and gear" })).toBeEnabled());
+      else {
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+        expect(screen.getByText(/A new Undo history has started/)).toBeInTheDocument();
+      }
+      expect(built.client.saveChapterGear).toHaveBeenCalledOnce();
+      if (lostAccess) {
+        await clickHistory("Undo: Edit chapter details and gear");
+        await waitFor(() => {
+          expect(built.gear()).toEqual([]);
+        });
+        expect(built.chapters()[0]).toMatchObject(change === "source" ? { sourceFolder: "/mnt/photos/new-source" } : { name: "Changed Kyoto" });
+      }
+    },
+  );
+
+  it("should undo a later lens selection before an earlier saved caption through the real workspace save owners", async () => {
+    const placed = {
+      kind: "spread" as const,
+      id: "history-placement",
+      photoId: "history-photo",
+      slotId: photoSlot.id,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+      captionCorner: "bottom_right" as const,
+    };
+    const built = buildHistoryBook([opening, { ...vacationOpening, placements: [placed] }, ...workspace.spreads.slice(2)], true);
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const caption = await screen.findByRole("button", { name: "Edit caption for History.jpg" });
+    await waitFor(() => expect(caption).toBeEnabled());
+    fireEvent.click(caption);
+    const editor = screen.getByRole("textbox", { name: "Caption for History.jpg" });
+    editor.textContent = "Changed caption";
+    fireEvent.input(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit caption" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+    const camera = await screen.findByRole("combobox", { name: "Add camera" });
+    await waitFor(() => expect(camera).toBeEnabled());
+    fireEvent.change(camera, { target: { value: "body" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await clickHistory("Undo: Edit chapter details and gear");
+    await waitFor(() => {
+      expect(built.gear()).toEqual([]);
+    });
+    expect(built.photo().caption).toBe("Changed caption");
+    await clickHistory("Undo: Edit caption");
+    await waitFor(() => {
+      expect(built.photo().caption).toBe("Saved caption");
+    });
+    await clickHistory("Redo: Edit caption");
+    await waitFor(() => {
+      expect(built.photo().caption).toBe("Changed caption");
+    });
+    expect(built.client.saveCaption).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["owned", "contended"] as const)(
+    "should record metadata and gear as one action and compensate both portions with %s placement access",
+    async (access) => {
+      const built = buildHistoryBook();
+      const select = vi.fn().mockResolvedValue(access === "owned");
+      const session = {
+        ...editingSession,
+        select,
+        targetReason: () => (access === "contended" ? "View only. Mara is editing this spread." : undefined),
+      };
+      window.history.replaceState(null, "", "?part=vacation");
+      render(() => <AlbumOpen session={session} id={album.id} client={built.client} events={events} />);
+      const edit = await screen.findByRole("button", { name: "Edit chapter details" });
+      await waitFor(() => expect(edit).toBeEnabled());
+      fireEvent.click(edit);
+      await waitFor(() => expect(screen.getByRole("textbox", { name: "Location / name" })).toBeEnabled());
+      fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "Changed Kyoto" } });
+      fireEvent.change(await screen.findByRole("combobox", { name: "Add camera" }), { target: { value: "body" } });
+      fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+      fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await clickHistory("Undo: Edit chapter details and gear");
+      await waitFor(() => {
+        expect(built.chapters()[0]?.name).toBe("Kyoto");
+        expect(built.gear()).toEqual([]);
+      });
+      await clickHistory("Redo: Edit chapter details and gear");
+      await waitFor(() => {
+        expect(built.chapters()[0]?.name).toBe("Changed Kyoto");
+        expect(built.gear()).toEqual([{ cameraId: "body", lensIds: ["lens"] }]);
+      });
+      expect(built.client.updateChapter).toHaveBeenCalledTimes(3);
+      expect(built.client.saveChapterGear).toHaveBeenCalledTimes(3);
+      expect(select.mock.calls.every((call) => call[1] !== true)).toBe(true);
+    },
+  );
+
+  it("should undo a later lens selection before an earlier author change without ending book history", async () => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter details" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+    const addCamera = await screen.findByRole("combobox", { name: "Add camera" });
+    fireEvent.change(addCamera, { target: { value: "body" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save chapter" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const undoGear = await screen.findByRole("button", { name: "Undo: Edit chapter details and gear" });
+    await waitFor(() => expect(undoGear).toBeEnabled());
+    fireEvent.click(undoGear);
+    await waitFor(() => {
+      expect(built.gear()).toEqual([]);
+    });
+    const undoAuthors = await screen.findByRole("button", { name: "Undo: Change authors" });
+    await waitFor(() => expect(undoAuthors).toBeEnabled());
+    expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+    fireEvent.click(undoAuthors);
+    await waitFor(() => {
+      expect(built.metadata().authors).toEqual(album.authors);
+    });
+    expect(built.client.saveChapterGear).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["metadata", "gear", "partial", "partial-retry", "rejected", "cancelled"] as const)(
+    "should retain chronology and account only for saved chapter portions after %s",
     async (outcome) => {
       const built = buildHistoryBook();
-      if (outcome === "partial") vi.mocked(built.client.saveChapterGear).mockRejectedValueOnce(new AlbumRequestError(400, "Gear rejected"));
+      if (outcome === "partial" || outcome === "partial-retry")
+        vi.mocked(built.client.saveChapterGear).mockRejectedValueOnce(new AlbumRequestError(400, "Gear rejected"));
       if (outcome === "rejected") vi.mocked(built.client.updateChapter).mockRejectedValueOnce(new AlbumRequestError(400, "Chapter rejected"));
       window.history.replaceState(null, "", "?part=vacation");
       render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
@@ -248,11 +603,10 @@ describe("album workspace browser boundary", () => {
       fireEvent.click(mara);
       await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
-      await screen.findByText(/Saving changed chapter details or gear starts a new Undo history/);
       const save = screen.getByRole("button", { name: "Save chapter" });
       await waitFor(() => expect(save).toBeEnabled());
       if (outcome !== "gear") fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "Changed chapter" } });
-      if (outcome === "gear" || outcome === "partial") {
+      if (outcome === "gear" || outcome === "partial" || outcome === "partial-retry") {
         fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: "body" } });
         fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
       }
@@ -263,16 +617,27 @@ describe("album workspace browser boundary", () => {
         await screen.findByText("Chapter rejected");
         fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
       }
-      if (outcome === "partial") {
+      if (outcome === "partial" || outcome === "partial-retry") {
         await screen.findByText(/Gear rejected/);
         expect(built.chapters()[0]?.name).toBe("Changed chapter");
         expect(built.gear()).toEqual([]);
+        fireEvent.click(
+          within(screen.getByRole("form", { name: "Chapter details" })).getByRole("button", {
+            name: outcome === "partial-retry" ? "Save gear" : "Close",
+          }),
+        );
       } else await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
       if (outcome === "cancelled" || outcome === "rejected")
         await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
       else {
-        await screen.findByText(/This saved edit starts a new Undo history/);
-        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+        await clickHistory("Undo: Edit chapter details and gear");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+        expect(built.chapters()[0]?.name).toBe(vacation.name);
+        expect(built.gear()).toEqual([]);
+        if (outcome === "partial-retry") {
+          expect(built.client.updateChapter).toHaveBeenCalledTimes(2);
+          expect(built.client.saveChapterGear).toHaveBeenCalledTimes(3);
+        }
       }
     },
   );
