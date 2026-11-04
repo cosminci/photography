@@ -1,3 +1,4 @@
+import { coverGeometries } from "./CoverGeometry";
 import { createRoot, createSignal } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
 import { createPlacementSession, matchesCompletedEdit } from "../../../src/features/albums/workspace/PlacementSession";
@@ -55,8 +56,16 @@ describe("placement save lifecycle", () => {
         acknowledge = resolve;
         fail = reject;
       });
-      const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
-      const saved: CoverSnapshot = { ...cover, spineOwner: "back" };
+      const cover: CoverSnapshot = {
+        kind: "cover",
+        frontSlotId: "front",
+        backSlotId: "back",
+        pageCount: 30,
+        geometry: coverGeometries.front,
+        spineOwner: "front",
+        placements: [],
+      };
+      const saved: CoverSnapshot = { ...cover, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" };
       const session = createRoot(() =>
         createPlacementSession(
           { readPlacements: vi.fn().mockResolvedValueOnce(cover).mockResolvedValue(saved), editPlacements: vi.fn().mockReturnValue(pending) },
@@ -136,7 +145,15 @@ describe("placement save lifecycle", () => {
 
   describe("saved placement acknowledgement matching", () => {
     const missing = { ...initial, placements: [] };
-    const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
+    const cover: CoverSnapshot = {
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
+    };
     const cases: readonly { command: PlacementEdit; saved: PlacementSnapshot; completed: boolean }[] = [
       { command: { operation: "place", photoId: "photo", slotId: "s" }, saved: initial, completed: true },
       { command: { operation: "place", photoId: "other", slotId: "s" }, saved: initial, completed: false },
@@ -388,7 +405,15 @@ describe("placement save lifecycle", () => {
 
     const pending = session.load("album", { kind: "cover" });
     session.selectSpread("album", initial);
-    resolve({ kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] });
+    resolve({
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
+    });
     await pending;
 
     expect(session.snapshot()).toEqual(initial);
@@ -439,7 +464,15 @@ describe("placement save lifecycle", () => {
     const old = new Promise<PlacementSnapshot>((_resolve, fail) => {
       reject = fail;
     });
-    const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
+    const cover: CoverSnapshot = {
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
+    };
     const read = vi.fn().mockReturnValueOnce(old).mockResolvedValue(cover);
     const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: vi.fn() }, vi.fn()));
 

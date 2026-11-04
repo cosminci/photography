@@ -1,3 +1,10 @@
+CREATE TABLE cover_specification (
+    page_limit INTEGER PRIMARY KEY NOT NULL CHECK (page_limit > 0),
+    width_pixels INTEGER NOT NULL CHECK (width_pixels > 0),
+    height_pixels INTEGER NOT NULL CHECK (height_pixels > 0),
+    spine_pixels INTEGER NOT NULL CHECK (spine_pixels > 0 AND spine_pixels < width_pixels)
+) STRICT;
+
 CREATE TABLE country (
     id TEXT PRIMARY KEY NOT NULL,
     code TEXT NOT NULL UNIQUE,

@@ -2145,12 +2145,37 @@
       },
       "CoverPlacements": {
         "type": "object",
-        "required": ["frontSlotId", "backSlotId", "spineOwner", "placements"],
+        "required": ["frontSlotId", "backSlotId", "spineOwner", "pageCount", "placements", "geometry"],
         "properties": {
           "frontSlotId": { "type": "string", "format": "uuid" },
           "backSlotId": { "type": "string", "format": "uuid" },
           "spineOwner": { "enum": ["front", "back"] },
-          "placements": { "type": "array", "maxItems": 2, "items": { "$ref": "#/components/schemas/PhotoPlacement" } }
+          "pageCount": { "type": "integer", "minimum": 0, "multipleOf": 2, "description": "Actual interior pages: twice the number of opening and photo spreads, excluding Cover; not the selected print specification's capacity." },
+          "placements": { "type": "array", "maxItems": 2, "items": { "$ref": "#/components/schemas/PhotoPlacement" } },
+          "geometry": { "$ref": "#/components/schemas/CoverGeometry" }
+        }
+      },
+      "CoverGeometry": {
+        "type": "object",
+        "description": "Full Saal cover artwork in points at 300 dpi, derived from twice the interior spread count and the smallest sufficient persisted cover specification (capped at the largest). The spine owner's photo frame includes the full spine; saved transforms use these frame dimensions.",
+        "required": ["width", "height", "spineStart", "spineWidth", "front", "back"],
+        "properties": {
+          "width": { "type": "number", "exclusiveMinimum": 0 },
+          "height": { "type": "number", "exclusiveMinimum": 0 },
+          "spineStart": { "type": "number", "exclusiveMinimum": 0 },
+          "spineWidth": { "type": "number", "exclusiveMinimum": 0 },
+          "front": { "$ref": "#/components/schemas/CoverPhotoFrame" },
+          "back": { "$ref": "#/components/schemas/CoverPhotoFrame" }
+        }
+      },
+      "CoverPhotoFrame": {
+        "type": "object",
+        "description": "A full-height cover photo frame, starting at y=0, in cover artwork points.",
+        "required": ["x", "width", "height"],
+        "properties": {
+          "x": { "type": "number", "minimum": 0 },
+          "width": { "type": "number", "exclusiveMinimum": 0 },
+          "height": { "type": "number", "exclusiveMinimum": 0 }
         }
       },
       "SpreadOccupied": {

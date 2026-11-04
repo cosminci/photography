@@ -2,6 +2,8 @@ import type {
   CoverContext,
   CoverPlacement,
   CoverSnapshot,
+  CoverGeometry,
+  CoverPhotoFrame,
   Placement,
   PlacementContext,
   PlacementSnapshot,
@@ -64,7 +66,26 @@ export function readPlacementSnapshot(value: unknown, context: PlacementContext)
     placements.some((row) => row.slotId !== frontSlotId && row.slotId !== backSlotId)
   )
     throw new Error("Invalid cover composition");
-  return { kind: "cover", placements, frontSlotId, backSlotId, spineOwner };
+  const pageCount = readNumber(fields["pageCount"]);
+  if (!Number.isSafeInteger(pageCount) || pageCount < 0 || pageCount % 2 !== 0) throw new Error("Invalid cover page count");
+  return { kind: "cover", placements, frontSlotId, backSlotId, spineOwner, pageCount, geometry: readCoverGeometry(fields["geometry"]) };
+}
+
+function readCoverGeometry(value: unknown): CoverGeometry {
+  const fields = readRecord(value);
+  const width = readNumber(fields["width"]);
+  const height = readNumber(fields["height"]);
+  const spineStart = readNumber(fields["spineStart"]);
+  const spineWidth = readNumber(fields["spineWidth"]);
+  if (width <= 0 || height <= 0 || spineStart <= 0 || spineWidth <= 0 || spineStart + spineWidth >= width) throw new Error("Invalid cover geometry");
+  return { width, height, spineStart, spineWidth, front: readCoverFrame(fields["front"]), back: readCoverFrame(fields["back"]) };
+}
+
+function readCoverFrame(value: unknown): CoverPhotoFrame {
+  const fields = readRecord(value);
+  const frame = { x: readNumber(fields["x"]), width: readNumber(fields["width"]), height: readNumber(fields["height"]) };
+  if (frame.x < 0 || frame.width <= 0 || frame.height <= 0) throw new Error("Invalid cover photo frame");
+  return frame;
 }
 
 function readSavedSlot(value: unknown): Slot {

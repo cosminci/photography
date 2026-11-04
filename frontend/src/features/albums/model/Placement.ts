@@ -43,6 +43,21 @@ export interface CoverSnapshot {
   readonly frontSlotId: string;
   readonly backSlotId: string;
   readonly spineOwner: "front" | "back";
+  readonly pageCount: number;
+  readonly geometry: CoverGeometry;
+}
+export interface CoverPhotoFrame {
+  readonly x: number;
+  readonly width: number;
+  readonly height: number;
+}
+export interface CoverGeometry {
+  readonly width: number;
+  readonly height: number;
+  readonly spineStart: number;
+  readonly spineWidth: number;
+  readonly front: CoverPhotoFrame;
+  readonly back: CoverPhotoFrame;
 }
 export type PlacementSnapshot = SpreadSnapshot | CoverSnapshot;
 export type PlacementEdit =

@@ -169,16 +169,7 @@ button.photo-slot-action[aria-pressed="true"] {
   line-height: 1.3;
   pointer-events: none;
 }
-.cover-canvas .cover-back,
-.cover-canvas .cover-front {
-  position: relative;
-}
-.cover-photo {
-  position: absolute;
-  inset: 0;
-}
-.cover-back > span,
-.cover-front > span {
+.cover-side-label {
   z-index: 1;
   pointer-events: none;
 }

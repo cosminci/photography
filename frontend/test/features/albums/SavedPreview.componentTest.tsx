@@ -1,3 +1,4 @@
+import { coverGeometries } from "./CoverGeometry";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -27,8 +28,10 @@ const placement: SpreadPlacement = {
 };
 const cover: CoverSnapshot = {
   kind: "cover",
+  pageCount: 24,
   frontSlotId: "front",
   backSlotId: "back",
+  geometry: coverGeometries.front,
   spineOwner: "front",
   placements: [{ ...placement, kind: "cover", slotId: "front" }],
 };
@@ -87,11 +90,13 @@ describe("saved composition previews", () => {
     expect(client.photo).toHaveBeenCalledTimes(1);
   });
 
-  it("should show both cover faces with their own saved framing and independent media recovery", async () => {
+  it.each(["front", "back"] as const)("should show both faces with %s-owned spine framing and independent media recovery", async (owner) => {
     const back = { ...photo, id: "back-photo", filename: "Forest.jpg" };
     const client = {
       readPlacements: vi.fn().mockResolvedValue({
         ...cover,
+        spineOwner: owner,
+        geometry: coverGeometries[owner],
         placements: [
           ...cover.placements,
           {
@@ -109,7 +114,16 @@ describe("saved composition previews", () => {
     render(() => <AlbumCoverPreview album={album} client={client} />);
     const frontImage = await screen.findByAltText(photo.filename);
     const backImage = await screen.findByAltText(back.filename);
+    expect(screen.queryByText("Front cover")).not.toBeInTheDocument();
+    expect(screen.queryByText("Back cover")).not.toBeInTheDocument();
+    expect(screen.getByText("(24 pages)")).toBeInTheDocument();
     expect(frontImage).toHaveStyle({ transform: "scaleX(-1)" });
+    expect(screen.getByRole("img", { name: `Spine: ${owner} cover` })).toBeInTheDocument();
+    const frame = coverGeometries[owner].front;
+    expect(Number.parseFloat(frontImage.style.width)).toBeCloseTo((2880 / frame.width) * 100);
+    expect(Number.parseFloat(frontImage.style.height)).toBeCloseTo(200);
+    expect(Number.parseFloat(frontImage.style.left)).toBeCloseTo((((frame.width - 2880) / 2 - 10) / frame.width) * 100);
+    expect(Number.parseFloat(frontImage.style.top)).toBeCloseTo((-365 / 720) * 100);
     expect(backImage.style.transform).toBe("");
     expect(client.photo).toHaveBeenCalledTimes(2);
     fireEvent.error(backImage);

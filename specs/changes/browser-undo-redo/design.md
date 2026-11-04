@@ -14,7 +14,7 @@ Existing editing APIs create identities and persist the book; they do not expose
 | `ContentSave<T, Saved>` draft and recovery lifecycle | Separate exactly-once `onCompleted` from repeatable `onSaved` publication; an optional typed `rebase` retains a recovered authoritative completion baseline independently of the visible draft. | Text, shared captions and authors map their saved representation to the before-state; chapter saves keep command and authoritative book-state evidence with their existing owners. |
 | `PlacementSession` acknowledged commands and retained gestures | Publish each completed gesture or command once; retain its before-state, command and captured authority/generation through uncertain readback. | Canvas and composition controls supply edits; history receives a completion only while its captured lifetime remains valid, including loss followed by reacquisition. |
 | `ChapterDialog` metadata and gear saves | Capture the session-loss revision for both portions before Save; preserve retained recovery evidence and group only completions from the same revision. | Metadata acknowledgement after loss cannot start gear automatically; an explicit reviewed gear save uses current chapter details as its unchanged baseline. `ChapterCompensation` resumes unfinished portions, while creation/source replacement establishes a new history boundary. |
-| Existing content and composition APIs | Reuse reads and ordinary writes through `ContentCompensation`, `PlacementCompensation` and `SpreadCompensation`; no backend, storage, OpenAPI or lock contract changes. | Resource owners compare affected saved state, acquire normal authority and issue commands; existing HTTP/SQLite boundaries remain authoritative. |
+| Existing content and composition APIs | Reuse reads and ordinary writes through `ContentCompensation`, `PlacementCompensation` and `SpreadCompensation`; history adds no backend storage or restoration contract. | Resource owners compare affected saved state, acquire normal authority and issue commands; existing HTTP/SQLite boundaries remain authoritative. |
 
 `HistoryAction.apply(direction)` returns saved, blocked, uncertain or conflict; `reconcile(direction)` only reads and can additionally report unchanged. A confirmed new edit clears Redo, while a blocked or unresolved newest action never exposes an older action.
 
@@ -36,8 +36,20 @@ The authoritative mixed-bleed state disables only the spread bleed toggle, prese
 
 The catalog preview owner orchestrates one cover read and the referenced front/back photo reads, retaining shared-photo identity and saved framing. Each face owns its media retry; cover-data retry remains with their shared acquisition.
 
+The same cover response supplies actual interior page count, independent of the selected specification's page limit; catalog captions show it after the title. Equal catalog viewports align the cards while each cover surface retains its own physical proportions and spine width.
+
+The maintainer-approved cover correction evolves `CoverRepository.Composition` with `CoverDimensions`; its existing SQLite supplier acquires current interior spread count and persisted Saal specifications in the same read transaction. `CoverSpecification` validates the reference data, and the domain derives the intrinsic print geometry: two pages per interior spread, the smallest sufficient specification, capped at the largest available specification.
+
+The specification catalog preserves the legacy Saal artwork dimensions at 300 dpi; it remains reference data alongside existing template catalogs, rather than a second frontend print policy. Missing or invalid specifications fail the cover read explicitly.
+
+`CoverManager` retains composition and mutation ownership; all cover acknowledgements expose the same geometry through the existing HTTP/OpenAPI representation. Spine ownership selects which photo frame includes the spine without changing saved transforms, slot identities or placements.
+
+Catalog, CoverCanvas and Reader consume the authoritative frames through one cover surface; crop projection receives each actual frame's dimensions, and subtle spine-edge guides overlay the owning photograph. Catalog re-entry uses its existing fresh acquisition, while spread-count changes invalidate the workspace's acquired cover dimensions through its existing refresh owner.
+
 Application navigation retains the catalog while the existing workspace acquisition and initial editing-ownership reconciliation finish. The workspace reports initial readiness without changing refresh, ownership or failure policies; failed initial reads reveal their existing retry controls.
 
 CompositionControls retains bleed mutation, availability and focus ownership, rendered as a compact droplet before chapter metadata. Cover spine editing retains its existing location.
+
+The metadata command box groups bleed and the existing chapter editor at the row's start; synopsis renaming reuses TextEditor/ContentSave recovery and ordinary album rename, publishing the acknowledged title through the existing album owner. Album-name compensation compares the authoritative title and preserves unrelated album content.
 
 `VITE_BOOK_HISTORY_LIMIT=25 npm --prefix frontend run build` configures the retained action limit for that frontend build; development reads the same setting when its server starts. An absent value defaults to 10, while nonpositive, fractional or unsafe values produce an explicit configuration error.

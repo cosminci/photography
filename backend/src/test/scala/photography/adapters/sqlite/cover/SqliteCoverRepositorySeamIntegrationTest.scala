@@ -1,6 +1,7 @@
 package photography.adapters.sqlite.cover
 
 import cats.effect.{IO, Resource}
+import cats.data.NonEmptyVector
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -37,8 +38,11 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
     CoverSlot(CoverSlotId(new UUID(0L, 9L))),
     CoverSlot(CoverSlotId(new UUID(0L, 10L)))
   )
-  private val opening     = SpreadId(new UUID(0L, 20L))
-  private val openingSlot = PhotoSpreadSlotId(new UUID(0L, 21L))
+  private val opening         = SpreadId(new UUID(0L, 20L))
+  private val openingSlot     = PhotoSpreadSlotId(new UUID(0L, 21L))
+  private val specification   = CoverSpecification.from(pageLimit = 30, width = 10382, height = 3402, spine = 142).fold(fail(_), identity)
+  private val dimensions      = CoverDimensions.forSpreads(spreads = 1, NonEmptyVector.one(specification))
+  private val emptyDimensions = CoverDimensions.forSpreads(spreads = 0, NonEmptyVector.one(specification))
 
   test("should atomically save, swap and release cover placements while retaining cover structure"):
     val absent   = AlbumId(new UUID(0L, 99L))
@@ -57,8 +61,8 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             current <- repository.read(album).transact(xa)
             foreign <- repository.read(foreignAlbum).transact(xa)
           yield (result.isLeft, current, foreign)
-        val expectedForeign = ReadResult.Found(Composition(foreignCover, placements = Vector.empty[CoverPlacement]))
-        val expectedMoved   = ReadResult.Found(Composition(cover, placements = swapped))
+        val expectedForeign = ReadResult.Found(Composition(foreignCover, placements = Vector.empty[CoverPlacement], dimensions = emptyDimensions))
+        val expectedMoved   = ReadResult.Found(Composition(cover, placements = swapped, dimensions = dimensions))
         val cause           = new IllegalStateException("Lost commit acknowledgement")
         val interrupted     = Transactor.after.set(xa, xa.strategy.after >> cause.raiseError[ConnectionIO, Unit])
 
@@ -80,19 +84,19 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           removed            <- repository.read(album).transact(xa)
           title              <- sql"SELECT title FROM album WHERE id = ${album.value}".query[String].unique.transact(xa)
         yield
-          assertEquals(empty, ReadResult.Found(Composition(cover, placements = Vector.empty[CoverPlacement])))
+          assertEquals(empty, ReadResult.Found(Composition(cover, placements = Vector.empty[CoverPlacement], dimensions = dimensions)))
           assertEquals(missing, ReadResult.NotFound)
           assertEquals(missingReplacement, ReplaceResult.NotFound)
           assertEquals(firstSave, ReplaceResult.Replaced)
           assertEquals(swapSave, ReplaceResult.Replaced)
           assertEquals(release, ReplaceResult.Replaced)
-          assertEquals(saved, ReadResult.Found(Composition(cover, placements = Vector(first, second))))
+          assertEquals(saved, ReadResult.Found(Composition(cover, placements = Vector(first, second), dimensions = dimensions)))
           assertEquals(moved, expectedMoved)
           assert(failed.isLeft)
           assertEquals(retained, moved)
           assertEquals(rejectedSlots, Vector.fill(invalidSlots.size)((true, expectedMoved, expectedForeign)))
           assertEquals(uncertain, cause.asLeft[ReplaceResult])
-          assertEquals(committed, ReadResult.Found(Composition(cover, placements = Vector(first))))
+          assertEquals(committed, ReadResult.Found(Composition(cover, placements = Vector(first), dimensions = dimensions)))
           assertEquals(removed, empty)
           assertEquals(title, "Album")
 
@@ -120,11 +124,11 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           finalRead <- repository.read(album).transact(xa)
         yield
           assertEquals(front, SetSpineOwnerResult.Updated)
-          assertEquals(saved, ReadResult.Found(Composition(changed, placements = Vector(first, second))))
-          assertEquals(later, ReadResult.Found(Composition(changed, placements = Vector(first))))
+          assertEquals(saved, ReadResult.Found(Composition(changed, placements = Vector(first, second), dimensions = dimensions)))
+          assertEquals(later, ReadResult.Found(Composition(changed, placements = Vector(first), dimensions = dimensions)))
           assertEquals(missing, SetSpineOwnerResult.NotFound)
           assertEquals(lost, cause.asLeft[SetSpineOwnerResult])
-          assertEquals(finalRead, ReadResult.Found(Composition(cover, placements = Vector(first))))
+          assertEquals(finalRead, ReadResult.Found(Composition(cover, placements = Vector(first), dimensions = dimensions)))
 
   test("should reject invalid persisted cover shape, identities and transforms and propagate unavailable reads"):
     val database = Resource.make(Files.createTempFile(Path.of("target"), "cover-validity-", ".sqlite").blocking[IO]): path =>
@@ -152,7 +156,53 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           assert(identity.isLeft)
           assert(transform.isLeft)
           assert(failed.isLeft)
-          assertEquals(retained, ReadResult.Found(Composition(cover, placements = Vector(first))))
+          assertEquals(retained, ReadResult.Found(Composition(cover, placements = Vector(first), dimensions = dimensions)))
+
+  test("should count opening and photo spreads, resize at the page threshold and fail explicitly without specifications"):
+    val database = Resource.make(Files.createTempFile(Path.of("target"), "cover-dimensions-", ".sqlite").blocking[IO]): path =>
+      Files.deleteIfExists(path).blocking[IO].void
+    val nextSpecification = CoverSpecification.from(pageLimit = 36, width = 10397, height = 3402, spine = 154).fold(fail(_), identity)
+    val expanded          = CoverDimensions.forSpreads(spreads = 16, NonEmptyVector.one(nextSpecification))
+    val empty             =
+      Composition(cover, placements = Vector.empty[CoverPlacement], dimensions = CoverDimensions.forSpreads(15, NonEmptyVector.one(specification)))
+    val chapterOpening = new UUID(7L, 0L)
+    val sixteenth      = new UUID(7L, 14L)
+
+    database.evalTap(path => FlywayMigrator.make[IO](path).use(_.migrate).void).use: path =>
+      SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 1, maxSessions = 1)).buildTransactor.use: xa =>
+        val repository = SqliteCoverRepository.make
+        val addSpreads = (1 to 13).toVector.traverse_ { position =>
+          val id = new UUID(7L, position.toLong)
+          sql"""INSERT INTO spread
+                SELECT $id, id, 'photos_only', NULL, 'c', $position FROM spread_template WHERE kind = 'photos_only' LIMIT 1""".update.run.void
+        }
+        val clearSpecifications = sql"DELETE FROM cover_specification".update.run >> repository.read(album)
+
+        for
+          _ <- seedComposition.transact(xa)
+          _ <- sql"""INSERT INTO spread
+                     SELECT $chapterOpening, id, 'chapter_start', NULL, 'c', 0 FROM spread_template WHERE kind = 'chapter_start' LIMIT 1""".update.run.transact(
+            xa
+          )
+          _       <- addSpreads.transact(xa)
+          fifteen <- repository.read(album).transact(xa)
+          _       <- sql"""INSERT INTO spread
+                     SELECT $sixteenth, id, 'photos_only', NULL, 'c', 14 FROM spread_template WHERE kind = 'photos_only' LIMIT 1""".update.run.transact(
+            xa
+          )
+          sixteen  <- repository.read(album).transact(xa)
+          foreign  <- repository.read(foreignAlbum).transact(xa)
+          _        <- sql"DELETE FROM spread WHERE id = $sixteenth".update.run.transact(xa)
+          restored <- repository.read(album).transact(xa)
+          failed   <- clearSpecifications.transact(xa).attempt
+          retained <- repository.read(album).transact(xa)
+        yield
+          assertEquals(fifteen, ReadResult.Found(empty))
+          assertEquals(sixteen, ReadResult.Found(empty.copy(dimensions = expanded)))
+          assertEquals(foreign, ReadResult.Found(empty.copy(cover = foreignCover, dimensions = emptyDimensions)))
+          assertEquals(restored, fifteen)
+          assertEquals(failed.isLeft, true)
+          assertEquals(retained, restored)
 
   private def seedComposition =
     val template = new UUID(2L, 22L)

@@ -1,0 +1,20 @@
+.cover-surface {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+.cover-photo-frame {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.cover-spine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  border-inline: 1px solid rgb(0 0 0 / 18%);
+  background: linear-gradient(90deg, rgb(0 0 0 / 8%), transparent 30%, transparent 70%, rgb(0 0 0 / 8%));
+  pointer-events: none;
+}

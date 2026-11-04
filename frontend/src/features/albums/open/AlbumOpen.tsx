@@ -29,6 +29,7 @@ export function AlbumOpen(props: {
     | "editPlacements"
     | "saveSynopsis"
     | "saveAuthors"
+    | "rename"
     | "saveDescription"
     | "saveCaption"
     | keyof GearClient

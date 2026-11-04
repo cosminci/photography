@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untrack } from "solid-js";
 import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient } from "../model/Album";
-import { describeFailure } from "../model/Presentation";
+import { describeFailure, validateTitle } from "../model/Presentation";
 import type { Chapter, Spread, Workspace } from "../model/Workspace";
 import type { ChapterSave, Scheduling } from "../model/Photo";
 import { PhotoPane } from "./PhotoPane";
@@ -65,6 +65,7 @@ export function AlbumWorkspace(props: {
     | "editPlacements"
     | "saveSynopsis"
     | "saveAuthors"
+    | "rename"
     | "saveDescription"
     | "saveCaption"
     | "chapters"
@@ -131,7 +132,9 @@ export function AlbumWorkspace(props: {
   let ownershipGeneration = 0;
   let sessionWasAvailable = untrack(() => props.session.available());
   const [contentBlocks, setContentBlocks] = createSignal<Readonly<Record<string, string>>>({});
-  const [textEdit, setTextEdit] = createSignal<{ chapter: Chapter | undefined; opener: HTMLButtonElement }>();
+  const [textEdit, setTextEdit] = createSignal<
+    { kind: "name"; opener: HTMLButtonElement } | { kind: "description"; chapter: Chapter | undefined; opener: HTMLButtonElement }
+  >();
   const contentReason = createMemo(() => Object.values(contentBlocks())[0]);
   function blockContent(key: string, reason: string | undefined) {
     setContentBlocks((current) =>
@@ -157,6 +160,16 @@ export function AlbumWorkspace(props: {
   async function readAuthors() {
     await readContent();
     return props.album.authors;
+  }
+  async function saveName(title: string) {
+    const metadata = await props.client.rename(props.album.id, title.trim());
+    if (metadata.id !== props.album.id) throw new AcknowledgedWriteError("Unexpected saved album identity");
+    publishAlbum({ ...props.album, title: metadata.title });
+    return metadata.title;
+  }
+  async function readName() {
+    await readContent();
+    return props.album.title;
   }
   const historyAccessLost = () => !active || compensationEpoch !== props.session.lossRevision() || !props.session.available();
   async function prepareHistoryTarget(destination: string | null, requireGrant = true) {
@@ -354,6 +367,10 @@ export function AlbumWorkspace(props: {
     },
     recordPlacement,
   );
+  const savedCoverAspectRatio = createMemo(() => {
+    const compositionSnapshot = placement.snapshot();
+    return compositionSnapshot?.kind === "cover" ? compositionSnapshot.geometry.width / compositionSnapshot.geometry.height : coverAspectRatio;
+  });
   const selection = createMemo(() => findSelection(props.workspace.spreads, part()));
   const selectedSpread = createMemo(() => {
     const selected = selection();
@@ -533,7 +550,7 @@ export function AlbumWorkspace(props: {
     reader: reader(),
     ownershipUnavailable: ownershipReason(),
     captions,
-    onEditText: (opener) => setTextEdit({ chapter: chapter(), opener }),
+    onEditText: (opener) => setTextEdit({ kind: "description", chapter: chapter(), opener }),
     get textUnavailable() {
       return contentEditReason();
     },
@@ -1158,7 +1175,7 @@ export function AlbumWorkspace(props: {
                 </div>
               </Show>
               <FullscreenReader
-                aspectRatio={part() === "cover" ? coverAspectRatio : spreadAspectRatio}
+                aspectRatio={part() === "cover" ? savedCoverAspectRatio() : spreadAspectRatio}
                 label={readerLabel()}
                 entryMount={readerEntry()}
                 unavailable={
@@ -1255,7 +1272,38 @@ export function AlbumWorkspace(props: {
               </Show>
               <Show when={chapter() === undefined && part() !== "cover"}>
                 <div class="chapter-metadata-row">
-                  <CompositionControls session={placement} unavailable={editing().unavailable} reader={reader()} feedbackId="photo-save-feedback" />
+                  <Show when={!reader()}>
+                    <div class="spread-commands" role="group" aria-label="Spread commands">
+                      <CompositionControls
+                        session={placement}
+                        unavailable={editing().unavailable}
+                        reader={reader()}
+                        feedbackId="photo-save-feedback"
+                      />
+                      <button
+                        type="button"
+                        class="icon-button"
+                        aria-label="Edit album name"
+                        title="Edit album name"
+                        disabled={(refreshReason() ?? navigationReason()) !== undefined}
+                        aria-describedby={(refreshReason() ?? navigationReason()) === undefined ? undefined : "album-name-reason"}
+                        onClick={(event) => {
+                          setTextEdit({ kind: "name", opener: event.currentTarget });
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
+                        </svg>
+                      </button>
+                      <Show when={refreshReason() ?? navigationReason()}>
+                        {(reason) => (
+                          <span class="visually-hidden" id="album-name-reason">
+                            {reason()}
+                          </span>
+                        )}
+                      </Show>
+                    </div>
+                  </Show>
                 </div>
               </Show>
             </Show>
@@ -1390,40 +1438,59 @@ export function AlbumWorkspace(props: {
         }}
       </Show>
       <Show when={textEdit()} keyed>
-        {(action) => (
-          <TextEditor
-            ownership={{
-              maybeAuthority:
-                props.session.available() && (action.chapter !== undefined || ownershipReason() === undefined)
-                  ? props.session.authority()
-                  : undefined,
-              recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
-              reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
-              pending: props.session.targetPending() || ownershipLoading(),
-              recover: async () => {
-                if (!props.session.available()) await props.session.reconnect();
-                else await confirmOwnership(editingTarget(), true);
-              },
-            }}
-            heading={action.chapter === undefined ? "Album synopsis" : `Chapter description for ${action.chapter.name}`}
-            label={action.chapter === undefined ? "Synopsis" : "Chapter description"}
-            text={action.chapter?.description ?? props.album.synopsis}
-            save={(text) => saveText(action.chapter, text)}
-            read={() => readText(action.chapter)}
-            onCompleted={(before, after) => {
-              recordText(action.chapter, before, after);
-            }}
-            onClose={() => {
-              setTextEdit(undefined);
-            }}
-            onBlock={(reason) => {
-              blockContent("text", reason);
-            }}
-            returnFocus={() => {
-              restoreFocus(action.opener);
-            }}
-          />
-        )}
+        {(action) => {
+          const owner = action.kind === "description" ? action.chapter : undefined;
+          return (
+            <TextEditor
+              singleLine={action.kind === "name"}
+              validate={action.kind === "name" ? validateTitle : undefined}
+              ownership={{
+                maybeAuthority:
+                  props.session.available() && (action.kind === "name" || owner !== undefined || ownershipReason() === undefined)
+                    ? action.kind === "name"
+                      ? props.session.lossRevision()
+                      : props.session.authority()
+                    : undefined,
+                recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
+                reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
+                pending: props.session.targetPending() || ownershipLoading(),
+                recover: async () => {
+                  if (!props.session.available()) await props.session.reconnect();
+                  else await confirmOwnership(editingTarget(), true);
+                },
+              }}
+              heading={action.kind === "name" ? "Edit album name" : owner === undefined ? "Album synopsis" : `Chapter description for ${owner.name}`}
+              label={action.kind === "name" ? "Album name" : owner === undefined ? "Synopsis" : "Chapter description"}
+              text={action.kind === "name" ? props.album.title : (owner?.description ?? props.album.synopsis)}
+              save={(text) => (action.kind === "name" ? saveName(text) : saveText(owner, text))}
+              read={() => (action.kind === "name" ? readName() : readText(owner))}
+              onCompleted={(before, after) => {
+                if (action.kind === "description") recordText(owner, before, after);
+                else if (before !== after)
+                  history.record(
+                    createContentCompensation({
+                      label: "Rename album",
+                      before,
+                      after,
+                      read: readName,
+                      write: saveName,
+                      equal: (left, right) => left === right,
+                      prepare: () => prepareHistoryTarget(null, false),
+                    }),
+                  );
+              }}
+              onClose={() => {
+                setTextEdit(undefined);
+              }}
+              onBlock={(reason) => {
+                blockContent("text", reason);
+              }}
+              returnFocus={() => {
+                restoreFocus(action.opener);
+              }}
+            />
+          );
+        }}
       </Show>
     </section>
   );

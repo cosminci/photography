@@ -1,7 +1,7 @@
 package photography.ports.cover
 
 import photography.domain.album.AlbumId
-import photography.domain.layout.{Cover, CoverPlacement, SpineOwner}
+import photography.domain.layout.{Cover, CoverDimensions, CoverPlacement, SpineOwner}
 
 trait CoverRepository[Db[_]]:
   def read(album: AlbumId): Db[CoverRepository.ReadResult]
@@ -10,7 +10,7 @@ trait CoverRepository[Db[_]]:
   def setSpineOwner(album: AlbumId, owner: SpineOwner): Db[CoverRepository.SetSpineOwnerResult]
 
 object CoverRepository:
-  final case class Composition(cover: Cover, placements: Vector[CoverPlacement])
+  final case class Composition(cover: Cover, placements: Vector[CoverPlacement], dimensions: CoverDimensions)
 
   enum ReadResult:
     case Found(composition: Composition)

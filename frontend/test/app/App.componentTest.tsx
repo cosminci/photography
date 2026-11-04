@@ -1,3 +1,4 @@
+import { coverGeometries } from "../features/albums/CoverGeometry";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app/App";
@@ -541,7 +542,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+              spineOwner: "front",
+            }
           : {
               kind: "spread",
               id: context.id,
@@ -553,7 +562,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+              spineOwner: "front",
+            }
           : {
               kind: "spread",
               id: context.id,

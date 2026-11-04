@@ -22,7 +22,24 @@ export function ChapterMetadata(props: {
   return (
     <section class="spread-details" aria-label="Spread details">
       <div class="chapter-metadata-row">
-        {props.leading}
+        <div class="spread-commands" role="group" aria-label="Spread commands">
+          {props.leading}
+          <button
+            type="button"
+            class="icon-button metadata-edit"
+            aria-label="Edit chapter details"
+            title="Edit chapter details"
+            disabled={props.unavailable !== undefined}
+            aria-describedby={props.unavailable !== undefined ? "metadata-feedback" : undefined}
+            onClick={(event) => {
+              props.onEdit(event.currentTarget);
+            }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
+            </svg>
+          </button>
+        </div>
         <dl class="chapter-metadata">
           <div>
             <dt>Chapter spread</dt>
@@ -49,21 +66,6 @@ export function ChapterMetadata(props: {
             <dd>{describePeriod(props.chapter)}</dd>
           </div>
         </dl>
-        <button
-          type="button"
-          class="icon-button metadata-edit"
-          aria-label="Edit chapter details"
-          title="Edit chapter details"
-          disabled={props.unavailable !== undefined}
-          aria-describedby={props.unavailable !== undefined ? "metadata-feedback" : undefined}
-          onClick={(event) => {
-            props.onEdit(event.currentTarget);
-          }}
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
-          </svg>
-        </button>
       </div>
       <Show when={props.unavailable}>
         {(reason) => (

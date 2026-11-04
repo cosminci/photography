@@ -1,3 +1,4 @@
+import { coverGeometries } from "./CoverGeometry";
 import { describe, expect, it, vi } from "vitest";
 import {
   createPlacementCompensation,
@@ -26,7 +27,15 @@ const populated: SpreadSnapshot = {
   ...empty,
   placements: [{ kind: "spread", id: "old-placement", slotId: "left", photoId: "photo", transform, captionCorner: "top_left" }],
 };
-const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
+const cover: CoverSnapshot = {
+  kind: "cover",
+  frontSlotId: "front",
+  backSlotId: "back",
+  pageCount: 30,
+  geometry: coverGeometries.front,
+  spineOwner: "front",
+  placements: [],
+};
 function build(before: PlacementSnapshot = populated, after: PlacementSnapshot = empty) {
   const read = vi.fn().mockResolvedValue(after);
   const edit = vi.fn().mockRejectedValue(new Error("Lost response"));
@@ -79,7 +88,7 @@ describe("placement compensating commands", () => {
         { kind: "cover" as const, id: "back-photo", photoId: "back-photo", slotId: cover.backSlotId, transform },
       ],
     };
-    const back = { ...front, spineOwner: "back" as const };
+    const back = { ...front, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" as const };
     const edit = vi.fn().mockResolvedValue(back);
     const action = createPlacementCompensation({
       album: "album",
@@ -286,7 +295,7 @@ describe("placement compensating commands", () => {
     };
     const step = planPlacementCompensation(cover, target);
     expect(step).toMatchObject({ edit: { operation: "place", photoId: "photo", slotId: "front" } });
-    const spine = planPlacementCompensation(cover, { ...cover, spineOwner: "back" });
+    const spine = planPlacementCompensation(cover, { ...cover, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" });
     expect(spine).toMatchObject({ edit: { operation: "spineOwner", owner: "back" } });
     const back = { ...target, placements: target.placements.map((row) => ({ ...row, slotId: target.backSlotId })) };
     expect(sameComposition(target, back)).toBe(false);

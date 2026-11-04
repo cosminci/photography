@@ -276,7 +276,26 @@ object PhotoPlacementApi:
         "frontSlotId" -> Json.fromString(value.cover.front.id.value.toString),
         "backSlotId"  -> Json.fromString(value.cover.back.id.value.toString),
         "spineOwner"  -> Json.fromString(spine),
-        "placements"  -> Json.arr(placements*)
+        "pageCount"   -> Json.fromLong(value.dimensions.pageCount),
+        "placements"  -> Json.arr(placements*),
+        "geometry"    -> encodeCoverGeometry(value.dimensions, value.cover.spineOwner)
+      )
+
+    private def encodeCoverGeometry(dimensions: CoverDimensions, owner: SpineOwner) =
+      Json.obj(
+        "width"      -> Json.fromDoubleOrNull(dimensions.width),
+        "height"     -> Json.fromDoubleOrNull(dimensions.height),
+        "spineStart" -> Json.fromDoubleOrNull(dimensions.spineStart),
+        "spineWidth" -> Json.fromDoubleOrNull(dimensions.spineWidth),
+        "front"      -> encodeCoverFrame(dimensions.frontFrame(owner)),
+        "back"       -> encodeCoverFrame(dimensions.backFrame(owner))
+      )
+
+    private def encodeCoverFrame(frame: CoverPhotoFrame) =
+      Json.obj(
+        "x"      -> Json.fromDoubleOrNull(frame.x),
+        "width"  -> Json.fromDoubleOrNull(frame.width),
+        "height" -> Json.fromDoubleOrNull(frame.height)
       )
 
     private def encodePlacement(id: UUID, slot: UUID, photo: PhotoId, transform: PhotoTransform) =
