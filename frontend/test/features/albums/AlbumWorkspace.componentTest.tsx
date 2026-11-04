@@ -1,6 +1,6 @@
 import { coverGeometries } from "./CoverGeometry";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { createSignal, untrack } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
 import { editingSession } from "../editing/EditingSessionStub";
@@ -972,7 +972,7 @@ describe("album workspace browser boundary", () => {
   it.each(["synopsis", "description"] as const)("should undo and redo a saved %s while navigation retains history", async (kind) => {
     const built = buildHistoryBook();
     const [blocked, setBlocked] = createSignal(false);
-    const select = vi.fn().mockImplementation(() => Promise.resolve(!blocked()));
+    const select = vi.fn(editingSession.select).mockImplementation(() => Promise.resolve(!untrack(blocked)));
     const session = {
       ...editingSession,
       select,
