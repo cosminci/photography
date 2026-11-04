@@ -52,6 +52,8 @@ Book presentation preserves editorial text and derives headings and supporting i
 
 Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
 
+Cover artwork dimensions derive from the actual interior page count and persisted print specifications. The saved spine owner includes the spine in its photograph's frame; catalog, editor and Reader share those authoritative frames and saved transforms.
+
 Photos belong to chapter collections independently of their use in layouts. Chapter spreads use their chapter's photos; Synopsis and Cover can use the album collection. Removing a spread releases its placements rather than deleting its photographs.
 
 ## Editing journey
@@ -73,6 +75,8 @@ Photo editing persists placements and transforms for interior layouts and Cover;
 Bleed selects one spread-wide mode: full-height outer photos bleed top, bottom and outward, leaving an opposite stack inset; without a full-height outer photo, outer stacks bleed outward together. Inner slots remain inset, and imported and newly created spreads use the same rule without changing template geometry or placement identities.
 
 The command box starts the metadata row and groups bleed with chapter editing. Mixed saved directions remain readable without mutation and have an explained disabled toggle; standard directions can be enabled or cleared through the existing spread save and ownership boundary.
+
+Album cards display both saved cover faces and the actual interior page count, refreshing when the catalog is re-entered. Album renaming belongs to the Synopsis command box and preserves independent title ownership.
 
 ```mermaid
 sequenceDiagram

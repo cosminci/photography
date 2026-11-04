@@ -122,6 +122,77 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it("should rename from synopsis while preserving unrelated content and returning focus", async () => {
+    let metadata = album;
+    const client = buildClient({
+      open: vi.fn(() => Promise.resolve(metadata)),
+      rename: vi.fn<AlbumClient["rename"]>((_id, title) => {
+        metadata = { ...metadata, title };
+        return Promise.resolve(metadata);
+      }),
+    });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit album name" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    fireEvent.input(screen.getByRole("textbox", { name: "Album name" }), { target: { value: "  A quieter journey  " } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(metadata).toEqual({ ...album, title: "A quieter journey" });
+    expect(screen.getByRole("heading", { level: 1, name: "A quieter journey" })).toBeInTheDocument();
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
+  it("should validate an album-name draft before writing and preserve it on rejection", async () => {
+    const client = buildClient({ rename: vi.fn().mockRejectedValue(new AlbumRequestError(400, "Name rejected")) });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit album name" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    const field = screen.getByRole("textbox", { name: "Album name" });
+    fireEvent.input(field, { target: { value: " " } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("alert")).toBeVisible();
+    expect(client.rename).not.toHaveBeenCalled();
+    fireEvent.input(field, { target: { value: "My journey" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Name rejected")).toBeVisible();
+    expect(field).toHaveValue("My journey");
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(edit).toHaveFocus());
+  });
+
+  it.each(["foreign acknowledgement", "lost acknowledgement"] as const)(
+    "should reconcile a renamed album after %s without renaming twice",
+    async (failure) => {
+      let metadata = album;
+      const client = buildClient({
+        open: vi.fn(() => Promise.resolve(metadata)),
+        rename: vi.fn<AlbumClient["rename"]>((_id, title) => {
+          metadata = { ...metadata, title };
+          return failure === "foreign acknowledgement" ? Promise.resolve({ ...metadata, id: "foreign" }) : Promise.reject(new Error("Disconnected"));
+        }),
+      });
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+      const edit = await screen.findByRole("button", { name: "Edit album name" });
+      await waitFor(() => expect(edit).toBeEnabled());
+      fireEvent.click(edit);
+      fireEvent.input(screen.getByRole("textbox", { name: "Album name" }), { target: { value: "Renamed journey" } });
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+      if (failure === "lost acknowledgement") {
+        const read = await screen.findByRole("button", { name: "Read saved content" });
+        await waitFor(() => expect(read).toBeEnabled());
+        fireEvent.click(read);
+      }
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(client.rename).toHaveBeenCalledExactlyOnceWith(album.id, "Renamed journey");
+      expect(screen.getByRole("heading", { level: 1, name: "Renamed journey" })).toBeInTheDocument();
+    },
+  );
   it.each(["synopsis", "chapter"] as const)("should group %s spread commands at their owning metadata row", async (kind) => {
     window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
     render(() => <AlbumOpen session={editingSession} id={album.id} client={buildClient()} events={events} />);
@@ -594,6 +665,8 @@ describe("album workspace browser boundary", () => {
       frontSlotId: "front",
       backSlotId: "back",
       spineOwner: "front" as const,
+      pageCount: 30,
+      geometry: coverGeometries.front,
     };
     const receive = vi.fn<(event: PhotoEvent) => void>();
     const client = buildClient({ readPlacements: vi.fn().mockResolvedValue(cover) }, saved);
@@ -1302,9 +1375,10 @@ describe("album workspace browser boundary", () => {
     expect(client.open).toHaveBeenCalledTimes(acquired);
     expect(screen.getByRole("heading", { name: metadata.title })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent("山 the end");
+    vi.mocked(client.open).mockResolvedValue(metadata);
     fireEvent.click(screen.getByRole("button", { name: "Cover" }));
     expect(await screen.findByRole("group", { name: `Cover: back on the left; front on the right. ${metadata.title}. by Mara` })).toBeInTheDocument();
-    expect(screen.getByText("by Mara · 2026")).toBeInTheDocument();
+    expect(await screen.findByText("by Mara · 2026")).toBeInTheDocument();
   });
 
   it("should retain a cleared chapter description after failed acknowledged acquisition and retry reads only", async () => {
@@ -1520,10 +1594,15 @@ describe("album workspace browser boundary", () => {
   it("shows failed Cover reads and retries through the authoritative read boundary", async () => {
     window.history.replaceState(null, "", "?part=cover");
     const client = buildClient({
-      readPlacements: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("offline"))
-        .mockResolvedValue({ kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }),
+      readPlacements: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({
+        kind: "cover",
+        placements: [],
+        frontSlotId: "front",
+        backSlotId: "back",
+        spineOwner: "front",
+        pageCount: 30,
+        geometry: coverGeometries.front,
+      }),
     });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
@@ -1634,17 +1713,45 @@ describe("album workspace browser boundary", () => {
 
   it.each(["front", "back"] as const)("should show the saved %s spine owner without acquiring new editing authority", async (owner) => {
     window.history.replaceState(null, "", "?part=cover");
+    const photograph = {
+      id: "cover-photo",
+      filename: "Forest.jpg",
+      width: 4000,
+      height: 2000,
+      caption: null,
+      capturedLocal: null,
+      thumbnail: { url: "/forest.jpg", width: 400, height: 200 },
+    };
     const client = buildClient({
+      chapterPhotos: vi.fn((id) =>
+        Promise.resolve(
+          id === vacation.id ? { ...inventory, photos: [photograph], placedPhotoIds: [photograph.id], counts: { total: 1, unplaced: 0 } } : inventory,
+        ),
+      ),
       readPlacements: vi.fn().mockResolvedValue({
         kind: "cover",
-        placements: [],
+        placements: [
+          {
+            kind: "cover",
+            id: "back-placement",
+            slotId: "back",
+            photoId: photograph.id,
+            transform: { x: 10, y: -5, zoom: 2, mirrored: true },
+          },
+        ],
         frontSlotId: "front",
         backSlotId: "back",
         spineOwner: owner,
+        pageCount: 30,
+        geometry: coverGeometries[owner],
       }),
     });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     expect(await screen.findByText(`Spine/gutter: ${owner} cover`)).toBeInTheDocument();
+    const image = within(screen.getByRole("group", { name: /Cover: back on the left/ })).getByAltText(photograph.filename);
+    expect(Number.parseFloat(image.style.width)).toBeCloseTo((2880 / coverGeometries[owner].back.width) * 100);
+    expect(Number.parseFloat(image.style.height)).toBeCloseTo(200);
+    expect(image).toHaveStyle({ transform: "scaleX(-1)" });
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
@@ -2890,7 +2997,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
     readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              spineOwner: "front",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+            }
           : {
               kind: "spread",
               id: context.id,
@@ -2902,7 +3017,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
     editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              spineOwner: "front",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+            }
           : {
               kind: "spread",
               id: context.id,
@@ -2949,3 +3072,4 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
 function membership(spreads: readonly Spread[]) {
   return spreads.map(({ id, chapter }) => ({ id, chapter }));
 }
+import { coverGeometries } from "./CoverGeometry";

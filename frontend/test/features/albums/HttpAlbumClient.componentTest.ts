@@ -1,3 +1,4 @@
+import { coverGeometries } from "./CoverGeometry";
 import { describe, expect, it, vi } from "vitest";
 import { makeHttpAlbumClient } from "../../../src/features/albums/api/HttpAlbumClient";
 import { AcknowledgedWriteError, AlbumRequestError } from "../../../src/features/albums/model/Album";
@@ -226,7 +227,7 @@ describe("same-origin album HTTP client", () => {
     const context: PlacementContext = kind === "cover" ? { kind } : { kind, id: "spread" };
     const snapshot =
       kind === "cover"
-        ? { frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] }
+        ? { frontSlotId: "front", backSlotId: "back", pageCount: 30, geometry: coverGeometries.front, spineOwner: "front", placements: [] }
         : { id: "spread", kind: "photos_only", templateId: "layout", bleedState: "disabled", bleedAvailable: false, slots: [], placements: [] };
     const transform = { x: 0, y: 0, zoom: 1, mirrored: false };
     const edits: PlacementEdit[] = [

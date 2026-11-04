@@ -8,6 +8,8 @@ import type { WorkspaceEditingSession } from "../features/editing/EditorSession"
 
 export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; session: WorkspaceEditingSession }) {
   const [path, setPath] = createSignal(window.location.pathname);
+  const [opening, setOpening] = createSignal(false);
+  let page: HTMLElement;
   const id = createMemo(() => /^\/albums\/([^/]+)\/?$/.exec(path())?.[1]);
   createEffect(() => {
     if (id() === undefined && props.session.available()) void props.session.select(null);
@@ -20,11 +22,13 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
     const destination = new URL(link.href);
     if (destination.origin !== window.location.origin || !/^\/(?:albums\/[^/]+\/?)?$/.test(destination.pathname)) return;
     event.preventDefault();
+    setOpening(destination.pathname !== "/");
     window.history.pushState(null, "", destination);
     setPath(destination.pathname);
   }
   const syncHistory = () => {
     queueMicrotask(() => {
+      setOpening(false);
       setPath(window.location.pathname);
     });
   };
@@ -36,6 +40,13 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
     document.removeEventListener("click", navigate);
     window.removeEventListener("popstate", syncHistory);
   });
+  function finishOpening() {
+    if (!opening()) return;
+    setOpening(false);
+    queueMicrotask(() => {
+      page.focus();
+    });
+  }
   return (
     <>
       <header class="topbar">
@@ -43,9 +54,29 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
           Album Layout Studio
         </a>
       </header>
-      <main class="page">
-        <Show when={id()} fallback={<AlbumDashboard client={props.client} />}>
-          {(albumId) => <AlbumOpen client={props.client} events={props.events} id={albumId()} session={props.session} />}
+      <main
+        class="page"
+        tabIndex={-1}
+        ref={(element) => {
+          page = element;
+        }}
+      >
+        <Show when={id() === undefined || opening()}>
+          <div class="catalog-content" inert={opening()} aria-busy={opening()}>
+            <AlbumDashboard client={props.client} />
+          </div>
+        </Show>
+        <Show when={opening()}>
+          <p role="status" aria-label="Opening album" class="catalog-opening">
+            Opening album…
+          </p>
+        </Show>
+        <Show when={id()}>
+          {(albumId) => (
+            <div class="album-content" hidden={opening()}>
+              <AlbumOpen client={props.client} events={props.events} id={albumId()} session={props.session} onReady={finishOpening} />
+            </div>
+          )}
         </Show>
       </main>
     </>

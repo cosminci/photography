@@ -1,3 +1,4 @@
+import { coverGeometries } from "./CoverGeometry";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { createRoot, createSignal } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
@@ -15,6 +16,8 @@ const cover: CoverSnapshot = {
   kind: "cover",
   frontSlotId: "front",
   backSlotId: "back",
+  pageCount: 30,
+  geometry: coverGeometries.front,
   spineOwner: "front",
   placements: [],
 };
@@ -143,7 +146,7 @@ describe("saved composition controls", () => {
   });
 
   it("should persist spine ownership through the existing composition session and hide editing controls in Reader", async () => {
-    const edit = vi.fn().mockResolvedValue({ ...cover, spineOwner: "back" });
+    const edit = vi.fn().mockResolvedValue({ ...cover, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" });
     const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(cover), editPlacements: edit }, vi.fn()));
     await session.load("album", { kind: "cover" });
     const view = render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);

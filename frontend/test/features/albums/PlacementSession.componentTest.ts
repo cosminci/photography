@@ -235,7 +235,15 @@ describe("placement save lifecycle", () => {
 
     const pending = session.load("album", { kind: "cover" });
     session.selectSpread("album", initial);
-    resolve({ kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] });
+    resolve({
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      spineOwner: "front",
+      placements: [],
+      pageCount: 30,
+      geometry: coverGeometries.front,
+    });
     await pending;
 
     expect(session.snapshot()).toEqual(initial);
@@ -286,7 +294,15 @@ describe("placement save lifecycle", () => {
     const old = new Promise<PlacementSnapshot>((_resolve, fail) => {
       reject = fail;
     });
-    const cover: CoverSnapshot = { kind: "cover", frontSlotId: "front", backSlotId: "back", spineOwner: "front", placements: [] };
+    const cover: CoverSnapshot = {
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      spineOwner: "front",
+      placements: [],
+      pageCount: 30,
+      geometry: coverGeometries.front,
+    };
     const read = vi.fn().mockReturnValueOnce(old).mockResolvedValue(cover);
     const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: vi.fn() }, vi.fn()));
 
@@ -438,3 +454,4 @@ describe("placement save lifecycle", () => {
     expect(session.navigationReason()).toBeUndefined();
   });
 });
+import { coverGeometries } from "./CoverGeometry";

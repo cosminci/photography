@@ -1,3 +1,4 @@
+import { coverGeometries } from "../features/albums/CoverGeometry";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app/App";
@@ -5,6 +6,7 @@ import { editingSession } from "../features/editing/EditingSessionStub";
 import { AlbumRequestError, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
 import type { PlacementContext, PlacementSnapshot } from "../../src/features/albums/model/Placement";
 import type { AlbumPhotoEvents, PhotoEvent } from "../../src/features/albums/model/Photo";
+import type { WorkspaceEditingSession } from "../../src/features/editing/EditorSession";
 
 const events: AlbumPhotoEvents = {
   subscribe: (_id, receive) => {
@@ -47,6 +49,51 @@ const dialogAnimationFinished = vi.fn<() => Promise<void>>().mockResolvedValue(u
 const browserYear = vi.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
 
 describe("album dashboard and open", () => {
+  it("should retain the catalog until album acquisition and initial ownership settle, then focus the workspace", async () => {
+    let admit!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      admit = resolve;
+    });
+    let confirm!: (value: boolean) => void;
+    const confirming = new Promise<boolean>((resolve) => {
+      confirm = resolve;
+    });
+    const select = vi.fn<WorkspaceEditingSession["select"]>((target) => (target === null ? Promise.resolve(true) : confirming));
+    const base = buildClient();
+    const client = buildClient({
+      open: vi.fn(async (id: string, signal?: AbortSignal) => {
+        await reading;
+        return base.open(id, signal);
+      }),
+    });
+    render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
+
+    expect(await screen.findByRole("status", { name: "Opening album" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
+    admit();
+    await waitFor(() => {
+      expect(select).toHaveBeenCalledWith(expect.objectContaining({ kind: "spread" }), false);
+    });
+    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
+    expect(screen.getByRole("status", { name: "Opening album" })).toBeVisible();
+    confirm(true);
+
+    expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+  });
+
+  it("should reveal retryable opening failures instead of leaving the catalog busy", async () => {
+    const client = buildClient({ open: vi.fn().mockRejectedValue(new Error("offline")) });
+    render(() => <App session={editingSession} client={client} events={events} />);
+    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
+    expect(await screen.findByRole("button", { name: "Retry album" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Opening album" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
+  });
+
   it("should preserve the loaded document across catalog navigation and keep draft resolution ahead of history departure", async () => {
     const select = vi.fn().mockResolvedValue(true);
     const documentBefore = document;
@@ -128,7 +175,8 @@ describe("album dashboard and open", () => {
     expect(screen.getByRole("banner")).toContainElement(screen.getByRole("link", { name: "Album Layout Studio" }));
     expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: `Rename ${firstAlbum.title}` })).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /^Rename / })).toHaveLength(0);
+    expect(screen.getByRole("button", { name: `Delete ${firstAlbum.title}` })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     expect(screen.getByRole("link", { name: firstAlbum.title })).toBeInTheDocument();
     resolveNext(secondPage);
@@ -298,41 +346,6 @@ describe("album dashboard and open", () => {
     expect(add).toHaveFocus();
   });
 
-  it("should preserve rename input on failure, save a correction and restore focus", async () => {
-    const renamedAlbum = { ...firstAlbum, title: "Asian capitals" };
-    const client = buildClient({
-      rename: vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValueOnce(renamedAlbum),
-      list: vi
-        .fn()
-        .mockResolvedValueOnce(firstPage)
-        .mockResolvedValueOnce({ ...firstPage, albums: [renamedAlbum, ...firstPage.albums.slice(1)] }),
-    });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    const rename = await screen.findByRole("button", { name: `Rename ${firstAlbum.title}` });
-
-    fireEvent.click(rename);
-    const input = screen.getByRole("textbox", { name: "Album name" });
-    expect(input).toHaveFocus();
-    expect(input).toHaveValue(firstAlbum.title);
-    fireEvent.input(input, { target: { value: "   " } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter an album title.");
-    expect(client.rename).not.toHaveBeenCalled();
-    fireEvent.input(input, { target: { value: "Asian capitals" } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not");
-    expect(input).toHaveValue("Asian capitals");
-    fireEvent.input(input, { target: { value: "  Asian capitals  " } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(client.rename).toHaveBeenLastCalledWith(firstAlbum.id, renamedAlbum.title);
-    expect(await screen.findByRole("button", { name: `Rename ${renamedAlbum.title}` })).toHaveFocus();
-    expect(screen.getByRole("button", { name: `Rename ${renamedAlbum.title}` })).toBe(rename);
-  });
-
   it("should protect a pending delete, preserve confirmation on failure and fall back after the last page disappears", async () => {
     let rejectDelete: (error: Error) => void = () => {
       throw new Error("Delete was not requested");
@@ -463,7 +476,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+              spineOwner: "front",
+            }
           : {
               kind: "spread",
               id: context.id,
@@ -475,7 +496,15 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
       Promise.resolve(
         context.kind === "cover"
-          ? { kind: "cover", placements: [], frontSlotId: "front", backSlotId: "back", spineOwner: "front" }
+          ? {
+              kind: "cover",
+              placements: [],
+              frontSlotId: "front",
+              backSlotId: "back",
+              pageCount: 30,
+              geometry: coverGeometries.front,
+              spineOwner: "front",
+            }
           : {
               kind: "spread",
               id: context.id,

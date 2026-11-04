@@ -8,6 +8,7 @@ import { albumAuthors, type Author } from "../model/Album";
 import type { CaptionEditing } from "./PhotoCaption";
 import { EditorialText } from "./EditorialText";
 import { visibleBox } from "../model/Layout";
+import { CoverSurface } from "./CoverSurface";
 
 export interface CanvasPhotos {
   readonly session: PlacementSession;
@@ -24,7 +25,6 @@ export interface CanvasPhotos {
 
 export const spreadWidth = 2381.102;
 export const spreadHeight = 765.354;
-export const coverPhotoWidth = 1148;
 export const spreadAspectRatio = spreadWidth / spreadHeight;
 export const coverAspectRatio = 3;
 
@@ -219,40 +219,61 @@ export function CoverCanvas(props: { title: string; year: number; authors: reado
       class="cover-canvas"
       role={props.editing !== undefined && !props.editing.reader ? "group" : "img"}
       aria-label={`Cover: back on the left; front on the right. ${props.title}. ${getCoverCredits(props.authors)}`}
-      style={{ "aspect-ratio": coverAspectRatio }}
+      style={{ "aspect-ratio": composition() === undefined ? coverAspectRatio : undefined }}
     >
-      <div class="cover-back">
-        <Show when={composition()}>
-          {(cover) => (
-            <div class="cover-photo">
-              <Show when={props.editing}>
-                {(editing) => <SlotPhoto slotId={cover().backSlotId} label="Back cover" width={1148} height={765.354} editing={editing()} />}
-              </Show>
+      <Show when={composition()} fallback={<p role="status">Loading cover…</p>}>
+        {(cover) => (
+          <CoverSurface
+            geometry={cover().geometry}
+            spineOwner={cover().spineOwner}
+            back={
+              <>
+                <Show when={props.editing}>
+                  {(editing) => (
+                    <SlotPhoto
+                      slotId={cover().backSlotId}
+                      label="Back cover"
+                      width={cover().geometry.back.width}
+                      height={cover().geometry.back.height}
+                      editing={editing()}
+                    />
+                  )}
+                </Show>
+                <span class="cover-side-label">Back cover</span>
+              </>
+            }
+            front={
+              <>
+                <Show when={props.editing}>
+                  {(editing) => (
+                    <SlotPhoto
+                      slotId={cover().frontSlotId}
+                      label="Front cover"
+                      width={cover().geometry.front.width}
+                      height={cover().geometry.front.height}
+                      editing={editing()}
+                    />
+                  )}
+                </Show>
+                <span class="cover-side-label">Front cover</span>
+              </>
+            }
+          >
+            <div
+              class="cover-title"
+              style={{
+                left: `${String((100 * (cover().geometry.spineStart + cover().geometry.spineWidth)) / cover().geometry.width)}%`,
+                "--cover-width": cover().geometry.width,
+              }}
+            >
+              <h3>{props.title}</h3>
+              <p>
+                {getCoverCredits(props.authors)} · {props.year}
+              </p>
             </div>
-          )}
-        </Show>
-        <span>Back cover</span>
-      </div>
-      <div class="cover-front">
-        <Show when={composition()}>
-          {(cover) => (
-            <div class="cover-photo">
-              <Show when={props.editing}>
-                {(editing) => <SlotPhoto slotId={cover().frontSlotId} label="Front cover" width={1148} height={765.354} editing={editing()} />}
-              </Show>
-            </div>
-          )}
-        </Show>
-        <span>Front cover</span>
-        <div class="cover-title">
-          <h3>{props.title}</h3>
-          <p>
-            {getCoverCredits(props.authors)} · {props.year}
-          </p>
-        </div>
-      </div>
-      <Show when={composition()}>
-        {(saved) => <span class="cover-owner-indication">Spine/gutter: {saved().spineOwner === "front" ? "front cover" : "back cover"}</span>}
+            <span class="cover-owner-indication">Spine/gutter: {cover().spineOwner === "front" ? "front cover" : "back cover"}</span>
+          </CoverSurface>
+        )}
       </Show>
     </div>
   );

@@ -1,4 +1,4 @@
-import { Show, createEffect, createMemo, createUniqueId, on, onCleanup, onMount } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, onMount } from "solid-js";
 import { createContentSave } from "./ContentSave";
 
 export function TextEditor(props: {
@@ -10,9 +10,12 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
+  singleLine?: boolean;
+  validate?: ((text: string) => string | undefined) | undefined;
   ownership: { maybeAuthority: number | undefined; recoveryLabel: string; reason: string; pending: boolean; recover: () => Promise<void> };
 }) {
   const feedback = createUniqueId();
+  const [validation, setValidation] = createSignal<string>();
   const save = createContentSave({
     maybeAuthority: () => props.ownership.maybeAuthority,
     save: (text: string) => props.save(text),
@@ -25,7 +28,7 @@ export function TextEditor(props: {
   const needsOwnership = createMemo(() => props.ownership.maybeAuthority === undefined);
   const unavailable = createMemo(() => (needsOwnership() ? props.ownership.reason : save.unavailable()));
   let dialog!: HTMLDialogElement;
-  let input!: HTMLTextAreaElement;
+  let input!: HTMLTextAreaElement | HTMLInputElement;
   let status!: HTMLDivElement;
   onMount(() => {
     save.begin(props.text);
@@ -80,6 +83,12 @@ export function TextEditor(props: {
         aria-label={props.heading}
         onSubmit={(event) => {
           event.preventDefault();
+          const error = props.validate?.(input.value);
+          setValidation(error);
+          if (error !== undefined) {
+            input.focus();
+            return;
+          }
           void save.commit(true);
         }}
       >
@@ -95,19 +104,39 @@ export function TextEditor(props: {
             {props.ownership.recoveryLabel}
           </button>
         </Show>
-        <textarea
-          ref={(element) => {
-            input = element;
-          }}
-          aria-label={props.label}
-          rows={14}
-          value={save.draft()?.value ?? props.text}
-          disabled={unavailable() !== undefined}
-          aria-describedby={feedback}
-          onInput={(event) => {
-            save.change(event.currentTarget.value);
-          }}
-        />
+        <Show
+          when={props.singleLine}
+          fallback={
+            <textarea
+              ref={(element) => {
+                input = element;
+              }}
+              aria-label={props.label}
+              rows={14}
+              value={save.draft()?.value ?? props.text}
+              disabled={unavailable() !== undefined}
+              aria-describedby={feedback}
+              onInput={(event) => {
+                setValidation(undefined);
+                save.change(event.currentTarget.value);
+              }}
+            />
+          }
+        >
+          <input
+            ref={(element) => {
+              input = element;
+            }}
+            aria-label={props.label}
+            value={save.draft()?.value ?? props.text}
+            disabled={unavailable() !== undefined}
+            aria-describedby={feedback}
+            onInput={(event) => {
+              setValidation(undefined);
+              save.change(event.currentTarget.value);
+            }}
+          />
+        </Show>
         <div
           ref={(element) => {
             status = element;
@@ -117,6 +146,7 @@ export function TextEditor(props: {
         >
           <Show when={unavailable()}>{(reason) => <p role="status">{reason()}</p>}</Show>
           <Show when={save.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
+          <Show when={validation()}>{(message) => <p role="alert">{message()}</p>}</Show>
           <Show when={save.recovery() !== undefined}>
             <button
               type="button"
