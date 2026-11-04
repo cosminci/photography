@@ -49,7 +49,10 @@ export function readCalendarDay(value: string): string {
   const day = `${value.slice(6, 10)}-${value.slice(3, 5)}-${value.slice(0, 2)}`;
   return isCalendarDay(day) ? day : "";
 }
-export function matchesChapterDetails(chapter: Chapter | undefined, details: ChapterDetails): boolean {
+export function matchesChapterDetails(
+  chapter: Pick<Chapter, "kind" | "sourceFolder" | "countries" | "name" | "start" | "end"> | undefined,
+  details: ChapterDetails,
+): boolean {
   if (
     chapter?.kind !== details.kind ||
     chapter.sourceFolder !== details.sourceFolder ||

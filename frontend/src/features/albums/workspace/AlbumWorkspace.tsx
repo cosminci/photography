@@ -31,6 +31,9 @@ import { createCaptionEditing } from "./PhotoCaption";
 import { RetainedCaption } from "./RetainedCaption";
 import type { EditingTarget, WorkspaceEditingSession } from "../../editing/EditorSession";
 import { BrowserAlias } from "../../editing/BrowserAlias";
+import { createBookHistory, type HistoryDirection } from "./BookHistory";
+import { BookHistoryControls } from "./BookHistoryControls";
+import { createContentCompensation } from "./ContentCompensation";
 
 type SpreadAction = { opener: HTMLButtonElement; spreadId: string } & (
   | { kind: "add"; chapterId: string }
@@ -73,8 +76,28 @@ export function AlbumWorkspace(props: {
   onPhotoRefresh: (ids: readonly string[]) => Promise<void>;
   onInventoryRetry: (id: string) => void;
   onAlbumSaved: (saved: Album) => void;
+  historyLimit?: number | undefined;
   onReady?: (() => void) | undefined;
 }) {
+  const history = createBookHistory(untrack(() => props.historyLimit));
+  const [historyBusy, setHistoryBusy] = createSignal(false);
+  const historyReason = createMemo(() =>
+    historyBusy() || history.unavailable() ? history.message() || "Finish the history action before editing." : undefined,
+  );
+  let compensationEpoch = untrack(() => props.session.lossRevision());
+  let ownershipRequest = Promise.resolve();
+  function resetUnsupportedHistory() {
+    history.reset("This saved edit starts a new Undo history. Earlier content edits cannot be skipped.");
+  }
+  createEffect(
+    on(
+      () => props.session.lossRevision(),
+      () => {
+        history.reset("Editing access was lost. Undo history has been cleared; retained drafts still require review.");
+      },
+      { defer: true },
+    ),
+  );
   const readPart = () => new URL(window.location.href).searchParams.get("part");
   const [part, setPart] = createSignal(readPart());
   const [interior, setInterior] = createSignal<string | null>(untrack(() => (part() === "cover" ? null : part())));
@@ -88,6 +111,7 @@ export function AlbumWorkspace(props: {
   const [spreadNeedsReload, setSpreadNeedsReload] = createSignal(false);
   const [confirmation, setConfirmation] = createSignal<{ action: SpreadAction; placements: number }>();
   const [reloadTarget, setReloadTarget] = createSignal<{ destination: SpreadDestination; opener: HTMLButtonElement }>();
+  let reconcileUnsupportedEdit: (() => void) | undefined;
   const [choice, setChoice] = createSignal<PhotoChoice>();
   const [reader, setReader] = createSignal(false);
   const [ownershipLoading, setOwnershipLoading] = createSignal(false);
@@ -133,6 +157,56 @@ export function AlbumWorkspace(props: {
     await readContent();
     return props.album.title;
   }
+  const historyAccessLost = () => !active || compensationEpoch !== props.session.lossRevision() || !props.session.available();
+  async function prepareHistoryTarget(destination: string | null, requireGrant = true) {
+    if (historyAccessLost()) return "Editing access changed. History cannot replay after access loss.";
+    if (findSelection(props.workspace.spreads, destination).kind === "invalid") {
+      await readContent();
+      if (historyAccessLost()) return "Editing access changed. History cannot replay after access loss.";
+      if (findSelection(props.workspace.spreads, destination).kind === "invalid") return "The saved spread is no longer available.";
+    }
+    setReader(false);
+    setChoice(undefined);
+    showSelection(destination);
+    await Promise.resolve();
+    await ownershipRequest;
+    if (historyAccessLost()) return "Editing access changed. History cannot replay after access loss.";
+    if (requireGrant && ownershipReason() !== undefined) await confirmOwnership(editingTarget(), true);
+    if (historyAccessLost()) return "Editing access changed. History cannot replay after access loss.";
+    return requireGrant ? ownershipReason() : undefined;
+  }
+  async function traverseHistory(direction: HistoryDirection) {
+    compensationEpoch = props.session.lossRevision();
+    await runHistory(() => history.traverse(direction));
+  }
+  async function reconcileHistory() {
+    await runHistory(() => history.reconcile());
+  }
+  async function runHistory(operation: () => Promise<void>) {
+    /* v8 ignore next */
+    if (historyBusy()) return;
+    setHistoryBusy(true);
+    try {
+      await operation();
+      await refresh();
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+  function recordText(owner: Chapter | undefined, before: string, after: string) {
+    if (before === after) return;
+    history.record(
+      createContentCompensation({
+        label: owner === undefined ? "Edit synopsis" : "Edit chapter description",
+        before,
+        after,
+        read: () => readText(owner),
+        write: (text) => saveText(owner, text),
+        equal: (left, right) => left === right,
+        prepare: () => prepareHistoryTarget(owner?.id ?? null),
+      }),
+    );
+  }
   async function saveText(owner: Chapter | undefined, text: string) {
     if (owner !== undefined) {
       await props.client.saveDescription(props.album.id, owner.id, text);
@@ -149,25 +223,42 @@ export function AlbumWorkspace(props: {
     if (metadata === undefined) throw new Error("The saved chapter could not be found");
     return metadata.description;
   }
+  async function saveCaption(photoId: string, text: string) {
+    const owner = props.workspace.chapters.find(
+      (candidate) => props.workspace.photoInventories[candidate.id]?.photos.some((photo) => photo.id === photoId) === true,
+    );
+    if (owner === undefined) throw new AlbumRequestError(404, "The photo could not be found in its chapter");
+    await props.client.saveCaption(owner.id, photoId, text);
+  }
+  async function readCaption(photoId: string) {
+    await readContent();
+    const photo = Object.values(props.workspace.photoInventories)
+      .flatMap((inventory) => inventory.photos)
+      .find((candidate) => candidate.id === photoId);
+    if (photo === undefined) throw new Error("The saved photo could not be found");
+    return photo.caption ?? "";
+  }
   const captions = createCaptionEditing({
     maybeAuthority: () => (props.session.available() && ownershipReason() === undefined ? props.session.authority() : undefined),
-    save: async (photoId, text) => {
-      const owner = props.workspace.chapters.find(
-        (candidate) => props.workspace.photoInventories[candidate.id]?.photos.some((photo) => photo.id === photoId) === true,
-      );
-      if (owner === undefined) throw new AlbumRequestError(404, "The photo could not be found in its chapter");
-      await props.client.saveCaption(owner.id, photoId, text);
-    },
-    read: async (photoId) => {
-      await readContent();
-      const photo = Object.values(props.workspace.photoInventories)
-        .flatMap((inventory) => inventory.photos)
-        .find((candidate) => candidate.id === photoId);
-      if (photo === undefined) throw new Error("The saved photo could not be found");
-      return photo.caption ?? "";
-    },
+    save: saveCaption,
+    read: readCaption,
     onBlock: (photoId, reason) => {
       blockContent(`caption-${photoId}`, reason);
+    },
+    onCompleted: (photoId, before, after) => {
+      if (before === after) return;
+      const destination = part();
+      history.record(
+        createContentCompensation({
+          label: "Edit caption",
+          before,
+          after,
+          read: () => readCaption(photoId),
+          write: (text) => saveCaption(photoId, text),
+          equal: (left, right) => left === right,
+          prepare: () => prepareHistoryTarget(destination),
+        }),
+      );
     },
   });
   const placement = createPlacementSession(
@@ -179,6 +270,9 @@ export function AlbumWorkspace(props: {
     {
       available: () => ownershipReason() === undefined,
       authority: () => props.session.authority(),
+    },
+    (before, after) => {
+      if (JSON.stringify(before) !== JSON.stringify(after)) resetUnsupportedHistory();
     },
   );
   const savedCoverAspectRatio = createMemo(() => {
@@ -230,7 +324,7 @@ export function AlbumWorkspace(props: {
       }
       const reconnect = !sessionWasAvailable;
       sessionWasAvailable = true;
-      void confirmOwnership(reader() ? null : target, false, reconnect);
+      ownershipRequest = confirmOwnership(reader() ? null : target, false, reconnect);
     }),
   );
   const displayedSpread = createMemo(() => {
@@ -353,6 +447,7 @@ export function AlbumWorkspace(props: {
     onChoose: setChoice,
     unavailable:
       ownershipReason() ??
+      historyReason() ??
       contentReason() ??
       (spreadPending()
         ? "Saving spread. Please wait."
@@ -369,12 +464,15 @@ export function AlbumWorkspace(props: {
   }));
   const navigationReason = createMemo(
     () =>
+      historyReason() ??
       contentReason() ??
       (spreadPending()
         ? "Saving spread. Please wait."
         : spreadNeedsReload()
           ? "Reload the saved workspace before choosing another spread action."
-          : placement.navigationReason()),
+          : reloadTarget() !== undefined
+            ? "Read the saved spread before continuing."
+            : placement.navigationReason()),
   );
   const otherOwner = createMemo(() => {
     const maybeTarget = editingTarget();
@@ -405,6 +503,9 @@ export function AlbumWorkspace(props: {
             : undefined,
   );
   const creationReason = createMemo(() => refreshReason() ?? navigationReason() ?? getChapterCapacityReason(props.workspace.spreads.length));
+  const spreadReadReason = createMemo(() =>
+    reloadTarget() !== undefined || spreadNeedsReload() ? "Read the saved spread before continuing." : undefined,
+  );
   const contentEditReason = createMemo(() => ownershipReason() ?? refreshReason() ?? navigationReason());
   let workspaceElement: HTMLElement;
   let refreshGeneration = 0;
@@ -540,6 +641,13 @@ export function AlbumWorkspace(props: {
     setSpreadPending(true);
     setSpreadError(undefined);
     setFailedAction(undefined);
+    const before = JSON.stringify(props.workspace.spreads);
+    const revision = props.session.lossRevision();
+    reconcileUnsupportedEdit = () => {
+      untrack(() => {
+        if (revision === props.session.lossRevision() && JSON.stringify(props.workspace.spreads) !== before) resetUnsupportedHistory();
+      });
+    };
     try {
       let destination: SpreadDestination = { kind: "part", part: part() };
       if (action.kind === "add")
@@ -554,6 +662,8 @@ export function AlbumWorkspace(props: {
         destination = { kind: "index", index: action.index };
       }
       if (!active) return;
+      if (revision === props.session.lossRevision()) resetUnsupportedHistory();
+      reconcileUnsupportedEdit = undefined;
       setConfirmation(undefined);
       setReloadTarget({ destination, opener: action.opener });
       await reloadSpread();
@@ -596,10 +706,31 @@ export function AlbumWorkspace(props: {
           <h1>{props.album.title}</h1>
           <span aria-hidden="true">|</span>
           <AlbumAuthors
+            maybeAuthority={() => (props.session.available() ? props.session.lossRevision() : undefined)}
             authors={props.album.authors}
-            unavailable={refreshReason() ?? placement.navigationReason() ?? Object.entries(contentBlocks()).find(([key]) => key !== "authors")?.[1]}
+            unavailable={
+              historyReason() ??
+              refreshReason() ??
+              spreadReadReason() ??
+              placement.navigationReason() ??
+              Object.entries(contentBlocks()).find(([key]) => key !== "authors")?.[1]
+            }
             save={saveAuthors}
             read={readAuthors}
+            onCompleted={(before, after) => {
+              if (before.length === after.length && before.every((author) => after.includes(author))) return;
+              history.record(
+                createContentCompensation({
+                  label: "Change authors",
+                  before,
+                  after,
+                  read: readAuthors,
+                  write: saveAuthors,
+                  equal: (left, right) => left.length === right.length && left.every((author) => right.includes(author)),
+                  prepare: () => prepareHistoryTarget(part(), false),
+                }),
+              );
+            }}
             onBlock={(reason) => {
               blockContent("authors", reason);
             }}
@@ -610,6 +741,21 @@ export function AlbumWorkspace(props: {
           </a>
         </div>
         <div class="workspace-controls" role="group" aria-label="Workspace controls">
+          <Show when={!reader()}>
+            <BookHistoryControls
+              history={history}
+              unavailable={
+                (historyBusy() ? "Finishing the history action. Please wait." : undefined) ??
+                contentReason() ??
+                refreshReason() ??
+                spreadReadReason() ??
+                placement.navigationReason() ??
+                (confirmation() !== undefined ? "Finish the spread confirmation." : undefined)
+              }
+              traverse={traverseHistory}
+              reconcile={reconcileHistory}
+            />
+          </Show>
           <BrowserAlias session={props.session} />
           <Show when={!reader() && ownershipReason() !== undefined && otherOwner() === undefined && editingTarget()}>
             {(target) => (
@@ -780,6 +926,8 @@ export function AlbumWorkspace(props: {
               if (spreadNeedsReload()) {
                 void refresh().then(() => {
                   if (props.workspaceError === undefined) {
+                    reconcileUnsupportedEdit?.();
+                    reconcileUnsupportedEdit = undefined;
                     setSpreadNeedsReload(false);
                     setFailedAction(undefined);
                     setSpreadError(undefined);
@@ -1024,6 +1172,7 @@ export function AlbumWorkspace(props: {
       <Show when={dialog()} keyed>
         {(action) => (
           <ChapterDialog
+            onCompleted={resetUnsupportedHistory}
             resources={{ client: props.client, albumId: props.album.id, maybeChapterId: action.chapter?.id }}
             save={(details) =>
               action.chapter === undefined
@@ -1070,7 +1219,11 @@ export function AlbumWorkspace(props: {
               validate={action.kind === "name" ? validateTitle : undefined}
               ownership={{
                 maybeAuthority:
-                  props.session.available() && (action.kind === "name" || ownershipReason() === undefined) ? props.session.authority() : undefined,
+                  props.session.available() && (action.kind === "name" || ownershipReason() === undefined)
+                    ? action.kind === "name"
+                      ? props.session.lossRevision()
+                      : props.session.authority()
+                    : undefined,
                 recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
                 reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
                 pending: props.session.targetPending() || ownershipLoading(),
@@ -1084,6 +1237,21 @@ export function AlbumWorkspace(props: {
               text={action.kind === "name" ? props.album.title : (owner?.description ?? props.album.synopsis)}
               save={(text) => (action.kind === "name" ? saveName(text) : saveText(owner, text))}
               read={() => (action.kind === "name" ? readName() : readText(owner))}
+              onCompleted={(before, after) => {
+                if (action.kind === "description") recordText(owner, before, after);
+                else if (before !== after)
+                  history.record(
+                    createContentCompensation({
+                      label: "Rename album",
+                      before,
+                      after,
+                      read: readName,
+                      write: saveName,
+                      equal: (left, right) => left === right,
+                      prepare: () => prepareHistoryTarget(null, false),
+                    }),
+                  );
+              }}
               onClose={() => {
                 setTextEdit(undefined);
               }}

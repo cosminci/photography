@@ -1,7 +1,8 @@
-import { createRoot } from "solid-js";
+import { coverGeometries } from "./CoverGeometry";
+import { createRoot, createSignal } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
-import { createPlacementSession } from "../../../src/features/albums/workspace/PlacementSession";
-import type { CoverSnapshot, PlacementSnapshot, SpreadContext, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
+import { createPlacementSession, matchesCompletedEdit } from "../../../src/features/albums/workspace/PlacementSession";
+import type { CoverSnapshot, PlacementEdit, PlacementSnapshot, SpreadContext, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
 import { AlbumRequestError } from "../../../src/features/albums/model/Album";
 
 const initial: SpreadSnapshot = {
@@ -20,6 +21,175 @@ const initial: SpreadSnapshot = {
 const context: SpreadContext = { kind: "spread", id: "spread" };
 
 describe("placement save lifecycle", () => {
+  it("should keep a cancelled preview cleared when a queued adjustment is confirmed by recovery", async () => {
+    const original = initial.placements[0]?.transform;
+    if (original === undefined) throw new Error("Missing framing.");
+    const transform = { ...original, x: 2 };
+    const saved = { ...initial, placements: initial.placements.map((row) => ({ ...row, transform })) };
+    const session = createRoot(() =>
+      createPlacementSession(
+        { readPlacements: vi.fn().mockResolvedValue(saved), editPlacements: vi.fn().mockRejectedValue(new Error("Lost response")) },
+        () => Promise.resolve(),
+      ),
+    );
+    session.selectSpread("album", initial);
+    session.complete("p", transform);
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+    session.restore("p", original);
+
+    await session.retry();
+
+    expect(session.placements()).toEqual(saved.placements);
+    expect(session.navigationReason()).toBeUndefined();
+  });
+
+  it.each((["acknowledged", "uncertain"] as const).flatMap((outcome) => [false, true].map((lostAccess) => ({ outcome, lostAccess }))))(
+    "should fence a reactive placement $outcome after loss=$lostAccess even if authority has rebound",
+    async ({ outcome, lostAccess }) => {
+      const [authority, setAuthority] = createSignal(1);
+      const completed = vi.fn();
+      let acknowledge!: (value: PlacementSnapshot) => void;
+      let fail!: (failure: Error) => void;
+      const pending = new Promise<PlacementSnapshot>((resolve, reject) => {
+        acknowledge = resolve;
+        fail = reject;
+      });
+      const cover: CoverSnapshot = {
+        kind: "cover",
+        frontSlotId: "front",
+        backSlotId: "back",
+        pageCount: 30,
+        geometry: coverGeometries.front,
+        spineOwner: "front",
+        placements: [],
+      };
+      const saved: CoverSnapshot = { ...cover, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" };
+      const session = createRoot(() =>
+        createPlacementSession(
+          { readPlacements: vi.fn().mockResolvedValueOnce(cover).mockResolvedValue(saved), editPlacements: vi.fn().mockReturnValue(pending) },
+          () => Promise.resolve(),
+          { available: () => true, authority },
+          completed,
+        ),
+      );
+      await session.load("album", { kind: "cover" });
+      const editing = session.edit({ operation: "spineOwner", owner: "back" });
+      if (lostAccess) {
+        setAuthority(2);
+        await Promise.resolve();
+      }
+      if (outcome === "acknowledged") acknowledge(saved);
+      else fail(new Error("Lost response"));
+      await editing;
+      if (outcome === "uncertain") await session.retry();
+
+      expect(completed).toHaveBeenCalledTimes(lostAccess ? 0 : 1);
+      if (!lostAccess) expect(completed).toHaveBeenCalledWith(cover, saved, { operation: "spineOwner", owner: "back" });
+    },
+  );
+
+  it.each(["retained", "lost"] as const)("should record a read-confirmed photo placement once only while authority is %s", async (ownership) => {
+    let authority = 1;
+    const completed = vi.fn();
+    const edit = vi.fn().mockRejectedValue(new Error("Lost response"));
+    const session = createRoot(() =>
+      createPlacementSession(
+        { readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: edit },
+        () => Promise.resolve(),
+        { available: () => true, authority: () => authority },
+        completed,
+      ),
+    );
+    const before = { ...initial, placements: [] };
+    const command = { operation: "place", photoId: "photo", slotId: "s" } as const;
+    session.selectSpread("album", before);
+    await session.edit(command);
+    if (ownership === "lost") authority++;
+
+    await session.retry();
+    await session.retry();
+
+    expect(edit).toHaveBeenCalledOnce();
+    expect(completed).toHaveBeenCalledTimes(ownership === "retained" ? 1 : 0);
+    if (ownership === "retained") expect(completed).toHaveBeenCalledWith(before, initial, command);
+    expect(session.snapshot()).toEqual(initial);
+  });
+
+  it("should record each completed adjustment separately before collection refresh", async () => {
+    const completed = vi.fn();
+    const changes = [1, 2, 3].map((x) => ({ x, y: 0, zoom: 2, mirrored: false }));
+    let finish!: (value: PlacementSnapshot) => void;
+    const pending = new Promise<PlacementSnapshot>((resolve) => (finish = resolve));
+    const edit = vi
+      .fn()
+      .mockReturnValueOnce(pending)
+      .mockImplementation((_album: string, _context: unknown, command: { transform: (typeof changes)[number] }) =>
+        Promise.resolve({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: command.transform })) }),
+      );
+    const refresh = vi.fn().mockRejectedValue(new Error("Collection unavailable"));
+    const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn(), editPlacements: edit }, refresh, undefined, completed));
+    session.selectSpread("album", initial);
+
+    for (const change of changes) session.complete("p", change);
+    finish({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: { x: 1, y: 0, zoom: 2, mirrored: false } })) });
+    await vi.waitFor(() => {
+      expect(session.saving()).toBe(false);
+    });
+
+    expect(completed).toHaveBeenCalledTimes(3);
+    expect(edit).toHaveBeenCalledTimes(3);
+    expect(session.error()).toMatch(/collection could not be refreshed/);
+  });
+
+  describe("saved placement acknowledgement matching", () => {
+    const missing = { ...initial, placements: [] };
+    const cover: CoverSnapshot = {
+      kind: "cover",
+      frontSlotId: "front",
+      backSlotId: "back",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
+    };
+    const cases: readonly { command: PlacementEdit; saved: PlacementSnapshot; completed: boolean }[] = [
+      { command: { operation: "place", photoId: "photo", slotId: "s" }, saved: initial, completed: true },
+      { command: { operation: "place", photoId: "other", slotId: "s" }, saved: initial, completed: false },
+      { command: { operation: "place", photoId: "photo", slotId: "other" }, saved: initial, completed: false },
+      { command: { operation: "bleed", enabled: false }, saved: initial, completed: true },
+      { command: { operation: "bleed", enabled: true }, saved: initial, completed: false },
+      { command: { operation: "bleed", enabled: true }, saved: cover, completed: false },
+      { command: { operation: "spineOwner", owner: "front" }, saved: cover, completed: true },
+      { command: { operation: "spineOwner", owner: "back" }, saved: cover, completed: false },
+      { command: { operation: "spineOwner", owner: "front" }, saved: initial, completed: false },
+      { command: { operation: "remove", placementId: "p" }, saved: missing, completed: true },
+      { command: { operation: "remove", placementId: "p" }, saved: initial, completed: false },
+      { command: { operation: "move", placementId: "p", slotId: "s" }, saved: initial, completed: true },
+      { command: { operation: "move", placementId: "p", slotId: "other" }, saved: initial, completed: false },
+      { command: { operation: "move", placementId: "p", slotId: "s" }, saved: missing, completed: false },
+      {
+        command: { operation: "adjust", placementId: "p", transform: { x: 0, y: 0, zoom: 1, mirrored: false } },
+        saved: initial,
+        completed: true,
+      },
+      {
+        command: { operation: "adjust", placementId: "p", transform: { x: 0, y: 0, zoom: 1, mirrored: false } },
+        saved: missing,
+        completed: false,
+      },
+      { command: { operation: "captionCorner", placementId: "p", captionCorner: "top_left" }, saved: initial, completed: true },
+      { command: { operation: "captionCorner", placementId: "p", captionCorner: "bottom_left" }, saved: initial, completed: false },
+      { command: { operation: "captionCorner", placementId: "p", captionCorner: "top_left" }, saved: missing, completed: false },
+      { command: { operation: "captionCorner", placementId: "p", captionCorner: "top_left" }, saved: cover, completed: false },
+    ];
+
+    it.each(cases)("should report completed=$completed for $command.operation against the saved composition", ({ command, saved, completed }) => {
+      expect(matchesCompletedEdit(saved, command)).toBe(completed);
+    });
+  });
+
   it.each(["retry", "apply"] as const)("should retain drafts when ownership changes during %s reconciliation", async (action) => {
     let authority = 1;
     const transform = { x: 2, y: 3, zoom: 2, mirrored: false };
@@ -239,10 +409,10 @@ describe("placement save lifecycle", () => {
       kind: "cover",
       frontSlotId: "front",
       backSlotId: "back",
-      spineOwner: "front",
-      placements: [],
       pageCount: 30,
       geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
     });
     await pending;
 
@@ -298,10 +468,10 @@ describe("placement save lifecycle", () => {
       kind: "cover",
       frontSlotId: "front",
       backSlotId: "back",
-      spineOwner: "front",
-      placements: [],
       pageCount: 30,
       geometry: coverGeometries.front,
+      spineOwner: "front",
+      placements: [],
     };
     const read = vi.fn().mockReturnValueOnce(old).mockResolvedValue(cover);
     const session = createRoot(() => createPlacementSession({ readPlacements: read, editPlacements: vi.fn() }, vi.fn()));
@@ -454,4 +624,3 @@ describe("placement save lifecycle", () => {
     expect(session.navigationReason()).toBeUndefined();
   });
 });
-import { coverGeometries } from "./CoverGeometry";

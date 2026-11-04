@@ -1,9 +1,10 @@
+import { readAppConfig } from "../../src/app/AppConfig";
 import { coverGeometries } from "../features/albums/CoverGeometry";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app/App";
 import { editingSession } from "../features/editing/EditingSessionStub";
-import { AlbumRequestError, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
+import { AlbumRequestError, type Album, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
 import type { PlacementContext, PlacementSnapshot } from "../../src/features/albums/model/Placement";
 import type { AlbumPhotoEvents, PhotoEvent } from "../../src/features/albums/model/Photo";
 import type { WorkspaceEditingSession } from "../../src/features/editing/EditorSession";
@@ -49,6 +50,37 @@ const dialogAnimationFinished = vi.fn<() => Promise<void>>().mockResolvedValue(u
 const browserYear = vi.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
 
 describe("album dashboard and open", () => {
+  it("should carry the configured history limit into the opened workspace", async () => {
+    let album: Album = { ...firstAlbum, synopsis: "", authors: ["Cosmin", "Mara", "Iacob"] };
+    const client = buildClient({
+      open: vi.fn(() => Promise.resolve(album)),
+      saveAuthors: vi.fn<AlbumClient["saveAuthors"]>((_id, authors) => {
+        album = { ...album, authors };
+        return Promise.resolve(album);
+      }),
+    });
+    const config = readAppConfig({ VITE_BOOK_HISTORY_LIMIT: "1" });
+    window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
+    render(() => <App session={editingSession} client={client} events={events} historyLimit={config.historyLimit} />);
+    const mara = await screen.findByRole("button", { name: "Mara" });
+    await waitFor(() => expect(mara).toBeEnabled());
+    fireEvent.click(mara);
+    await waitFor(() => expect(mara).toHaveAttribute("aria-pressed", "false"));
+    const iacob = screen.getByRole("button", { name: "Iacob" });
+    await waitFor(() => expect(iacob).toBeEnabled());
+    fireEvent.click(iacob);
+    await waitFor(() => expect(iacob).toHaveAttribute("aria-pressed", "false"));
+    const undo = screen.getByRole("button", { name: "Undo: Change authors" });
+    await waitFor(() => expect(undo).toBeEnabled());
+    fireEvent.click(undo);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change authors" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(iacob).toHaveAttribute("aria-pressed", "true");
+    expect(mara).toHaveAttribute("aria-pressed", "false");
+    expect(client.saveAuthors).toHaveBeenLastCalledWith(firstAlbum.id, ["Cosmin", "Iacob"]);
+  });
+
   it("should retain the catalog until album acquisition and initial ownership settle, then focus the workspace", async () => {
     let admit!: () => void;
     const reading = new Promise<void>((resolve) => {

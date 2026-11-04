@@ -85,6 +85,7 @@ export function createEditorSession(
   const [grant, setGrant] = createSignal<TargetGrant>();
   const [targetMessage, setTargetMessage] = createSignal<string | undefined>("Choose a spread to edit.");
   const [authority, setAuthority] = createSignal(0);
+  const [lossRevision, setLossRevision] = createSignal(0);
   const [ownershipRevision, setOwnershipRevision] = createSignal(0);
   const [maybeOtherOwner, setOtherOwner] = createSignal<{ target: EditingTarget; alias: string }>();
   const reloadDeadline = Date.now() + 30_000;
@@ -105,6 +106,7 @@ export function createEditorSession(
   let requests = new AbortController();
 
   function forgetAuthority(reason: string) {
+    setLossRevision((current) => current + 1);
     requests.abort();
     requests = new AbortController();
     transition = Promise.resolve(true);
@@ -118,6 +120,7 @@ export function createEditorSession(
   }
 
   function loseGrant(reason: string) {
+    setLossRevision((current) => current + 1);
     requests.abort();
     requests = new AbortController();
     setGrant(undefined);
@@ -452,6 +455,7 @@ export function createEditorSession(
     connecting,
     targetPending,
     authority,
+    lossRevision,
     ownershipRevision,
     owner: (target: EditingTarget) => {
       const maybeOwner = maybeOtherOwner();
@@ -470,7 +474,17 @@ export function createEditorSession(
 export type EditorSession = ReturnType<typeof createEditorSession>;
 export type WorkspaceEditingSession = Pick<
   EditorSession,
-  "available" | "authority" | "targetReason" | "targetPending" | "select" | "reconnect" | "alias" | "owner" | "ownershipRevision" | "rename"
+  | "available"
+  | "authority"
+  | "lossRevision"
+  | "targetReason"
+  | "targetPending"
+  | "select"
+  | "reconnect"
+  | "alias"
+  | "owner"
+  | "ownershipRevision"
+  | "rename"
 >;
 
 export function sameTarget(left: EditingTarget, right: EditingTarget): boolean {

@@ -1,5 +1,7 @@
+import type { CameraSelection } from "../../../src/features/albums/model/Gear";
+import type { Photo } from "../../../src/features/albums/model/Photo";
+import { createSignal, untrack } from "solid-js";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
 import { editingSession } from "../editing/EditingSessionStub";
@@ -11,7 +13,7 @@ import {
   type AlbumClient,
   type Author,
 } from "../../../src/features/albums/model/Album";
-import type { Chapter, Spread, Workspace } from "../../../src/features/albums/model/Workspace";
+import type { Chapter, ChapterDetails, Spread, SpreadContext as TemplateContext, Workspace } from "../../../src/features/albums/model/Workspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
 import type {
   PlacementContext,
@@ -122,6 +124,638 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it.each(["lost-selection", "lost-retry"] as const)("should fence synopsis compensation during %s without writing", async (access) => {
+    const built = buildHistoryBook();
+    const [lossRevision, setLossRevision] = createSignal(0);
+    const [blocked, setBlocked] = createSignal(false);
+    let restoring = false;
+    let finish: ((value: boolean) => void) | undefined;
+    const select = vi.fn((_target: unknown, explicit?: boolean) => {
+      if (!restoring) return Promise.resolve(true);
+      setBlocked(true);
+      if ((access === "lost-selection" && explicit !== true) || (access === "lost-retry" && explicit === true))
+        return new Promise<boolean>((resolve) => {
+          finish = resolve;
+        });
+      return Promise.resolve(false);
+    });
+    render(() => (
+      <AlbumOpen
+        session={{ ...editingSession, select, lossRevision, targetReason: () => (blocked() ? "Another browser owns this opening." : undefined) }}
+        id={album.id}
+        client={built.client}
+        events={events}
+      />
+    ));
+    const edit = await screen.findByRole("button", { name: "Edit synopsis" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: "Saved text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cover" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit synopsis" })).toBeEnabled());
+    restoring = true;
+    fireEvent.click(screen.getByRole("button", { name: "Undo: Edit synopsis" }));
+    await waitFor(() => {
+      expect(finish).toBeDefined();
+    });
+
+    setLossRevision(1);
+    finish?.(true);
+
+    await screen.findByText(/Editing access was lost. Undo history/);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(built.client.saveSynopsis).toHaveBeenCalledOnce();
+    expect(built.metadata().synopsis).toBe("Saved text");
+  });
+
+  it.each(["saved", "unchanged", "uncertain-saved", "uncertain-unchanged", "rejected"] as const)(
+    "should start a new history only for changed photo composition after %s",
+    async (outcome) => {
+      const built = buildHistoryBook();
+      let cover = {
+        kind: "cover" as const,
+        placements: [],
+        pageCount: 30,
+        geometry: coverGeometries.front,
+        spineOwner: "front" as "front" | "back",
+        frontSlotId: "front",
+        backSlotId: "back",
+      };
+      vi.mocked(built.client.readPlacements).mockImplementation(() => Promise.resolve(cover));
+      vi.mocked(built.client.editPlacements).mockImplementation(() => {
+        if (outcome === "saved" || outcome === "uncertain-saved") cover = { ...cover, spineOwner: "back", geometry: coverGeometries.back };
+        if (outcome === "rejected") return Promise.reject(new AlbumRequestError(400, "Rejected composition"));
+        return outcome.startsWith("uncertain") ? Promise.reject(new Error("Lost response")) : Promise.resolve(cover);
+      });
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const mara = await screen.findByRole("button", { name: "Mara" });
+      await waitFor(() => expect(mara).toBeEnabled());
+      fireEvent.click(mara);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+      const owner = await screen.findByRole("combobox", { name: "Spine/gutter owner" });
+      await waitFor(() => expect(owner).toBeEnabled());
+
+      fireEvent.change(owner, { target: { value: "back" } });
+      if (outcome.startsWith("uncertain") || outcome === "rejected") {
+        const retry = await screen.findByRole("button", { name: "Retry photos" });
+        expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
+        await waitFor(() => expect(retry).toBeEnabled());
+        fireEvent.click(retry);
+      }
+
+      if (outcome === "saved" || outcome === "uncertain-saved") {
+        await screen.findByText(/This saved edit starts a new Undo history/);
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      } else await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      expect(built.client.editPlacements).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["metadata", "gear", "partial", "rejected", "cancelled"] as const)(
+    "should announce and enforce the chapter history boundary after %s",
+    async (outcome) => {
+      const built = buildHistoryBook();
+      if (outcome === "partial") vi.mocked(built.client.saveChapterGear).mockRejectedValueOnce(new AlbumRequestError(400, "Gear rejected"));
+      if (outcome === "rejected") vi.mocked(built.client.updateChapter).mockRejectedValueOnce(new AlbumRequestError(400, "Chapter rejected"));
+      window.history.replaceState(null, "", "?part=vacation");
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const mara = await screen.findByRole("button", { name: "Mara" });
+      await waitFor(() => expect(mara).toBeEnabled());
+      fireEvent.click(mara);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Edit chapter details" }));
+      await screen.findByText(/Saving changed chapter details or gear starts a new Undo history/);
+      const save = screen.getByRole("button", { name: "Save chapter" });
+      await waitFor(() => expect(save).toBeEnabled());
+      if (outcome !== "gear") fireEvent.input(screen.getByRole("textbox", { name: "Location / name" }), { target: { value: "Changed chapter" } });
+      if (outcome === "gear" || outcome === "partial") {
+        fireEvent.change(screen.getByRole("combobox", { name: "Add camera" }), { target: { value: "body" } });
+        fireEvent.change(screen.getByRole("combobox", { name: "Add lens for Body" }), { target: { value: "lens" } });
+      }
+
+      fireEvent.click(outcome === "cancelled" ? screen.getByRole("button", { name: "Cancel" }) : save);
+
+      if (outcome === "rejected") {
+        await screen.findByText("Chapter rejected");
+        fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      }
+      if (outcome === "partial") {
+        await screen.findByText(/Gear rejected/);
+        expect(built.chapters()[0]?.name).toBe("Changed chapter");
+        expect(built.gear()).toEqual([]);
+      } else await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      if (outcome === "cancelled" || outcome === "rejected")
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      else {
+        await screen.findByText(/This saved edit starts a new Undo history/);
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      }
+    },
+  );
+  it.each(["synopsis", "authors"] as const)(
+    "should undo a reviewed %s over independent saved content to its authoritative baseline",
+    async (kind) => {
+      const built = buildHistoryBook();
+      const [authority, setAuthority] = createSignal(1);
+      const [lossRevision, setLossRevision] = createSignal(0);
+      const originalSynopsis = built.client.saveSynopsis;
+      if (kind === "authors") vi.mocked(built.client.saveAuthors).mockRejectedValueOnce(new Error("Lost response"));
+      render(() => <AlbumOpen session={{ ...editingSession, authority, lossRevision }} id={album.id} client={built.client} events={events} />);
+      if (kind === "synopsis") {
+        const opener = await screen.findByRole("button", { name: "Edit synopsis" });
+        await waitFor(() => expect(opener).toBeEnabled());
+        fireEvent.click(opener);
+        fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: "My retained text" } });
+        await originalSynopsis(album.id, "Independent text");
+      } else {
+        const authors = await screen.findByRole("group", { name: "Album authors" });
+        await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+        fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+        await screen.findByRole("button", { name: "Read saved authors" });
+        await built.client.saveAuthors(album.id, ["Mara"]);
+      }
+      setAuthority(2);
+      setLossRevision(1);
+      if (kind === "synopsis") {
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        await screen.findByText("The draft is not saved. Review it before saving again.");
+        expect(screen.getByRole("textbox", { name: "Synopsis" })).toHaveValue("My retained text");
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Read saved authors" }));
+        fireEvent.click(await screen.findByRole("button", { name: "Retry authors" }));
+      }
+
+      const label = kind === "synopsis" ? "Edit synopsis" : "Change authors";
+      await clickHistory(`Undo: ${label}`);
+      await waitFor(() => {
+        expect(kind === "synopsis" ? built.metadata().synopsis : built.metadata().authors).toEqual(
+          kind === "synopsis" ? "Independent text" : ["Mara"],
+        );
+      });
+      await clickHistory(`Redo: ${label}`);
+      await waitFor(() => {
+        expect(kind === "synopsis" ? built.metadata().synopsis : built.metadata().authors).toEqual(
+          kind === "synopsis" ? "My retained text" : ["Cosmin", "Iacob"],
+        );
+      });
+    },
+  );
+
+  it.each(
+    (["add", "template", "delete", "reorder"] as const).flatMap((kind) =>
+      (["acknowledged", "uncertain"] as const).map((outcome) => ({ kind, outcome })),
+    ),
+  )("should not resurrect history for a late $kind $outcome after access loss", async ({ kind, outcome }) => {
+    const built = buildHistoryBook([
+      opening,
+      vacationOpening,
+      vacationPhoto,
+      { ...vacationPhoto, id: "second-photo" },
+      ...workspace.spreads.slice(3),
+    ]);
+    const [lossRevision, setLossRevision] = createSignal(0);
+    const loseAccess = () => {
+      setLossRevision(1);
+      if (outcome === "uncertain") throw new Error("Lost response after access loss.");
+    };
+    if (kind === "add") {
+      const command = vi.mocked(built.client.addSpread).getMockImplementation();
+      if (command === undefined) throw new Error("Missing add command.");
+      vi.mocked(built.client.addSpread).mockImplementationOnce(async (...args) => {
+        const id = await command(...args);
+        loseAccess();
+        return id;
+      });
+    } else if (kind === "template") {
+      const command = vi.mocked(built.client.changeSpreadTemplate).getMockImplementation();
+      if (command === undefined) throw new Error("Missing template command.");
+      vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(async (...args) => {
+        await command(...args);
+        loseAccess();
+      });
+    } else if (kind === "delete") {
+      const command = vi.mocked(built.client.deleteSpread).getMockImplementation();
+      if (command === undefined) throw new Error("Missing delete command.");
+      vi.mocked(built.client.deleteSpread).mockImplementationOnce(async (...args) => {
+        await command(...args);
+        loseAccess();
+      });
+    } else {
+      const command = vi.mocked(built.client.replaceChapterComposition).getMockImplementation();
+      if (command === undefined) throw new Error("Missing reorder command.");
+      vi.mocked(built.client.replaceChapterComposition).mockImplementationOnce(async (...args) => {
+        await command(...args);
+        loseAccess();
+      });
+    }
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={{ ...editingSession, lossRevision }} id={album.id} client={built.client} events={events} />);
+    const control = await screen.findByRole("button", {
+      name: kind === "add" ? "Add spread" : kind === "delete" ? "Delete spread" : kind === "template" ? "Alternate layout" : "Shift spread right",
+    });
+    await waitFor(() => expect(control).toBeEnabled());
+    fireEvent.click(control);
+    if (outcome === "uncertain") fireEvent.click(await screen.findByRole("button", { name: "Reload saved workspace" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cover" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled());
+    await screen.findByText(/Editing access was lost. Undo history/);
+  });
+
+  it.each((["add", "template", "delete", "reorder"] as const).flatMap((kind) => [false, true].map((saved) => ({ kind, saved }))))(
+    "should read an unconfirmed $kind outcome without replaying it (saved=$saved) or skipping to an older edit",
+    async ({ kind, saved }) => {
+      const second = { ...vacationPhoto, id: "second-photo" };
+      const built = buildHistoryBook([opening, vacationOpening, vacationPhoto, second, ...workspace.spreads.slice(3)]);
+      window.history.replaceState(null, "", "?part=vacation-photo");
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const authors = await screen.findByRole("group", { name: "Album authors" });
+      await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+      fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      if (kind === "add") {
+        const command = vi.mocked(built.client.addSpread).getMockImplementation();
+        if (command === undefined) throw new Error("Missing add command.");
+        vi.mocked(built.client.addSpread).mockImplementationOnce(async (...args) => {
+          if (saved) await command(...args);
+          throw new Error("Lost add response.");
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
+      } else if (kind === "template") {
+        const command = vi.mocked(built.client.changeSpreadTemplate).getMockImplementation();
+        if (command === undefined) throw new Error("Missing template command.");
+        vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(async (...args) => {
+          if (saved) await command(...args);
+          throw new Error("Lost template response.");
+        });
+        fireEvent.click(await screen.findByRole("button", { name: "Alternate layout" }));
+      } else if (kind === "delete") {
+        const command = vi.mocked(built.client.deleteSpread).getMockImplementation();
+        if (command === undefined) throw new Error("Missing delete command.");
+        vi.mocked(built.client.deleteSpread).mockImplementationOnce(async (...args) => {
+          if (saved) await command(...args);
+          throw new Error("Lost delete response.");
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
+      } else {
+        const command = vi.mocked(built.client.replaceChapterComposition).getMockImplementation();
+        if (command === undefined) throw new Error("Missing reorder command.");
+        vi.mocked(built.client.replaceChapterComposition).mockImplementationOnce(async (...args) => {
+          if (saved) await command(...args);
+          throw new Error("Lost reorder response.");
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Shift spread right" }));
+      }
+      const recover = await screen.findByRole("button", { name: "Reload saved workspace" });
+      expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
+      fireEvent.click(recover);
+      if (saved) {
+        await screen.findByText(/This saved edit starts a new Undo history/);
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      } else {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+      }
+      expect(built.client.addSpread).toHaveBeenCalledTimes(kind === "add" ? 1 : 0);
+      expect(built.client.deleteSpread).toHaveBeenCalledTimes(kind === "delete" ? 1 : 0);
+      expect(built.client.changeSpreadTemplate).toHaveBeenCalledTimes(kind === "template" ? 1 : 0);
+      expect(built.client.replaceChapterComposition).toHaveBeenCalledTimes(kind === "reorder" ? 1 : 0);
+    },
+  );
+
+  it.each(["revert", "replace"] as const)(
+    "should record only changed saved authors after a rejected selection is corrected by %s",
+    async (correction) => {
+      const built = buildHistoryBook();
+      await built.client.saveAuthors(album.id, ["Cosmin", "Mara"]);
+      vi.mocked(built.client.saveAuthors).mockRejectedValueOnce(new AlbumRequestError(400, "Rejected authors"));
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const authors = await screen.findByRole("group", { name: "Album authors" });
+      const mara = within(authors).getByRole("button", { name: "Mara" });
+      await waitFor(() => expect(mara).toBeEnabled());
+      fireEvent.click(mara);
+      await screen.findByRole("button", { name: "Retry authors" });
+
+      fireEvent.click(within(authors).getByRole("button", { name: correction === "revert" ? "Mara" : "Iacob" }));
+
+      if (correction === "revert") {
+        await waitFor(() => {
+          expect(built.metadata().authors).toEqual(["Cosmin", "Mara"]);
+        });
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Retry authors" })).not.toBeInTheDocument());
+        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      } else {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+        expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+        await clickHistory("Undo: Change authors");
+        await waitFor(() => {
+          expect(built.metadata().authors).toEqual(["Cosmin", "Mara"]);
+        });
+      }
+    },
+  );
+
+  it("should preserve older history when a rejected caption is explicitly saved unchanged", async () => {
+    const placed = {
+      kind: "spread" as const,
+      id: "history-placement",
+      photoId: "history-photo",
+      slotId: photoSlot.id,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+      captionCorner: "bottom_right" as const,
+    };
+    const built = buildHistoryBook([opening, { ...vacationOpening, placements: [placed] }, ...workspace.spreads.slice(2)], true);
+    vi.mocked(built.client.saveCaption).mockRejectedValueOnce(new AlbumRequestError(400, "Rejected caption"));
+    window.history.replaceState(null, "", "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption for History.jpg" }));
+    const editor = screen.getByRole("textbox", { name: "Caption for History.jpg" });
+    editor.textContent = "Rejected text";
+    fireEvent.input(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
+    const retry = await screen.findByRole("button", { name: "Retry caption" });
+    editor.textContent = "Saved caption";
+    fireEvent.input(editor);
+
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+    expect(built.photo().caption).toBe("Saved caption");
+    expect(built.client.saveCaption).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { destination: "album", missingPhoto: false },
+    { destination: "spread", missingPhoto: false },
+    { destination: "spread", missingPhoto: true },
+  ])(
+    "should recover a cleared $destination caption without overwriting a missing photograph ($missingPhoto)",
+    async ({ destination, missingPhoto }) => {
+      const placed = {
+        kind: "spread" as const,
+        id: "history-placement",
+        photoId: "history-photo",
+        slotId: photoSlot.id,
+        transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+        captionCorner: "bottom_right" as const,
+      };
+      const built = buildHistoryBook(
+        [
+          { ...opening, placements: destination === "album" ? [placed] : [] },
+          { ...vacationOpening, placements: destination === "album" ? [] : [placed] },
+          ...workspace.spreads.slice(2),
+        ],
+        true,
+      );
+      window.history.replaceState(null, "", destination === "album" ? "/albums/album" : "?part=vacation");
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const caption = await screen.findByRole("button", { name: "Edit caption for History.jpg" });
+      await waitFor(() => expect(caption).not.toHaveAttribute("aria-disabled", "true"));
+      fireEvent.click(caption);
+      const editor = screen.getByRole("textbox", { name: "Caption for History.jpg" });
+      editor.textContent = "";
+      fireEvent.input(editor);
+      fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit caption" })).toBeEnabled());
+      if (missingPhoto) vi.mocked(built.client.chapterPhotos).mockResolvedValue(inventory);
+
+      await clickHistory("Undo: Edit caption");
+
+      if (missingPhoto) {
+        await screen.findByRole("button", { name: "Read saved history action" });
+        expect(built.client.saveCaption).toHaveBeenCalledOnce();
+      } else {
+        await waitFor(() => {
+          expect(built.photo().caption).toBe("Saved caption");
+        });
+        await clickHistory("Redo: Edit caption");
+        await waitFor(() => {
+          expect(built.photo().caption).toBeNull();
+        });
+        expect(built.client.saveCaption).toHaveBeenCalledTimes(3);
+      }
+    },
+  );
+
+  it.each(["missing", "lost-read", "restored"] as const)("should reconcile a history destination that is %s during refresh", async (outcome) => {
+    const placed = {
+      kind: "spread" as const,
+      id: "history-placement",
+      photoId: "history-photo",
+      slotId: photoSlot.id,
+      transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+      captionCorner: "bottom_right" as const,
+    };
+    const built = buildHistoryBook([opening, vacationOpening, { ...vacationPhoto, placements: [placed] }, ...workspace.spreads.slice(3)], true);
+    const [lossRevision, setLossRevision] = createSignal(0);
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={{ ...editingSession, lossRevision }} id={album.id} client={built.client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit caption for History.jpg" });
+    await waitFor(() => expect(edit).not.toHaveAttribute("aria-disabled", "true"));
+    fireEvent.click(edit);
+    const editor = screen.getByRole("textbox", { name: "Caption for History.jpg" });
+    editor.textContent = "Changed caption";
+    fireEvent.input(editor);
+    fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit caption" })).toBeEnabled());
+    await built.client.deleteSpread(album.id, vacationPhoto.id, false);
+    fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Edit caption" })).toBeEnabled());
+    if (outcome === "lost-read")
+      vi.mocked(built.client.composition).mockImplementationOnce(() => {
+        setLossRevision(1);
+        return Promise.resolve(membership(built.spreads()));
+      });
+    if (outcome === "restored") built.spreads().splice(2, 0, { ...vacationPhoto, placements: [placed] });
+
+    await clickHistory("Undo: Edit caption");
+
+    if (outcome === "restored") {
+      await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Edit caption" })).toBeEnabled());
+      expect(built.photo().caption).toBe("Saved caption");
+      expect(built.client.saveCaption).toHaveBeenCalledTimes(2);
+      return;
+    }
+    if (outcome === "lost-read") await screen.findByText(/Editing access was lost. Undo history has been cleared/);
+    else await screen.findByText("The saved spread is no longer available.");
+    expect(built.client.saveCaption).toHaveBeenCalledOnce();
+  });
+
+  it.each(["synopsis", "chapter"] as const)("should retain older history when an unchanged %s is saved", async (kind) => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter details" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter details" }));
+    const save = await screen.findByRole("button", { name: kind === "synopsis" ? "Save" : "Save chapter" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+  });
+
+  it("should fence compensation when editing access is lost during its saved-content comparison", async () => {
+    const built = buildHistoryBook();
+    const [lossRevision, setLossRevision] = createSignal(0);
+    render(() => <AlbumOpen session={{ ...editingSession, lossRevision }} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+    let finish!: (saved: Album) => void;
+    vi.mocked(built.client.open).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Undo: Change authors" }));
+    await waitFor(() => {
+      expect(built.client.open).toHaveBeenCalledTimes(2);
+    });
+    setLossRevision(1);
+    finish(built.metadata());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled());
+    expect(built.client.saveAuthors).toHaveBeenCalledOnce();
+    expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+  });
+  it.each(["synopsis", "description"] as const)("should undo and redo a saved %s while navigation retains history", async (kind) => {
+    const built = buildHistoryBook();
+    const [blocked, setBlocked] = createSignal(false);
+    const select = vi.fn(editingSession.select).mockImplementation(() => Promise.resolve(!untrack(blocked)));
+    const session = {
+      ...editingSession,
+      select,
+      targetReason: () => (blocked() ? "View only. Mara is editing this spread." : undefined),
+    };
+    window.history.replaceState(null, "", kind === "synopsis" ? "/albums/album" : "?part=vacation");
+    render(() => <AlbumOpen session={session} id={album.id} client={built.client} events={events} />);
+    const opener = await screen.findByRole("button", { name: kind === "synopsis" ? "Edit synopsis" : "Edit chapter description" });
+    await waitFor(() => expect(opener).toBeEnabled());
+    fireEvent.click(opener);
+    fireEvent.input(screen.getByRole("textbox", { name: kind === "synopsis" ? "Synopsis" : "Chapter description" }), {
+      target: { value: "New book text" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const label = kind === "synopsis" ? "Edit synopsis" : "Edit chapter description";
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cover" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    setBlocked(true);
+    await clickHistory(`Undo: ${label}`);
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Book edit history" })).getByRole("status")).toHaveTextContent("Mara"));
+    expect(kind === "synopsis" ? built.client.saveSynopsis : built.client.saveDescription).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenLastCalledWith({ kind: "spread", id: kind === "synopsis" ? opening.id : vacationOpening.id }, true);
+    setBlocked(false);
+    expect(kind === "synopsis" ? built.metadata().synopsis : built.chapters()[0]?.description).toBe("New book text");
+    await clickHistory(`Undo: ${label}`);
+    await waitFor(() => {
+      expect(kind === "synopsis" ? built.metadata().synopsis : built.chapters()[0]?.description).toBe(
+        kind === "synopsis" ? album.synopsis : vacation.description,
+      );
+    });
+    await clickHistory(`Redo: ${label}`);
+    await waitFor(() => {
+      expect(kind === "synopsis" ? built.metadata().synopsis : built.chapters()[0]?.description).toBe("New book text");
+    });
+  });
+
+  it("should reconcile an uncertain inverse using saved reads without issuing the inverse twice", async () => {
+    const built = buildHistoryBook();
+    const original = vi.mocked(built.client.saveAuthors).getMockImplementation();
+    if (original === undefined) throw new Error("Missing author test command.");
+    vi.mocked(built.client.saveAuthors)
+      .mockImplementationOnce(original)
+      .mockImplementationOnce(async (id, authors) => {
+        await original(id, authors);
+        throw new Error("Lost inverse response.");
+      });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    await clickHistory("Undo: Change authors");
+    const recover = await screen.findByRole("button", { name: "Read saved history action" });
+    await waitFor(() => expect(recover).toBeEnabled());
+    fireEvent.click(recover);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change authors" })).toBeEnabled());
+    expect(built.metadata().authors).toEqual(album.authors);
+    expect(built.client.saveAuthors).toHaveBeenCalledTimes(2);
+  });
+
+  it("should clear history on unexpected ownership loss and fence a late independent author acknowledgement", async () => {
+    const built = buildHistoryBook();
+    const [available, setAvailable] = createSignal(true);
+    const [lossRevision, setLossRevision] = createSignal(0);
+    let finish!: (saved: Album) => void;
+    vi.mocked(built.client.saveAuthors).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(() => <AlbumOpen session={{ ...editingSession, available, lossRevision }} id={album.id} client={built.client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+    await waitFor(() => expect(within(authors).getByRole("button", { name: "Mara" })).toBeEnabled());
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    setAvailable(false);
+    setLossRevision(1);
+    finish({ ...album, authors: ["Cosmin", "Iacob"] });
+    await waitFor(() => expect(authors).toHaveAttribute("aria-busy", "false"));
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(within(screen.getByRole("group", { name: "Book edit history" })).getByRole("status")).toHaveTextContent("Editing access was lost.");
+  });
+  it("should omit a normalized unchanged album name from history", async () => {
+    const client = buildClient({ rename: vi.fn().mockResolvedValue(album) });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const edit = await screen.findByRole("button", { name: "Edit album name" });
+    await waitFor(() => expect(edit).toBeEnabled());
+    fireEvent.click(edit);
+    fireEvent.input(screen.getByRole("textbox", { name: "Album name" }), { target: { value: ` ${album.title} ` } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(client.rename).toHaveBeenCalledExactlyOnceWith(album.id, album.title);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+  });
+
+  it("should undo and redo authors through the saved content owner with descriptive controls", async () => {
+    let metadata = album;
+    const client = buildClient({
+      open: vi.fn(() => Promise.resolve(metadata)),
+      saveAuthors: vi.fn((_id: string, authors: readonly Author[]) => {
+        metadata = { ...metadata, authors };
+        return Promise.resolve(metadata);
+      }),
+    });
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const authors = await screen.findByRole("group", { name: "Album authors" });
+
+    fireEvent.click(within(authors).getByRole("button", { name: "Mara" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Undo: Change authors" }));
+    await waitFor(() => {
+      expect(metadata.authors).toEqual(album.authors);
+    });
+    const redo = await screen.findByRole("button", { name: "Redo: Change authors" });
+    await waitFor(() => expect(redo).toBeEnabled());
+    fireEvent.click(redo);
+    await waitFor(() => {
+      expect(metadata.authors).toEqual(["Cosmin", "Iacob"]);
+    });
+
+    expect(client.saveAuthors).toHaveBeenCalledTimes(3);
+  });
+
   it("should rename from synopsis while preserving unrelated content and returning focus", async () => {
     let metadata = album;
     const client = buildClient({
@@ -142,6 +776,13 @@ describe("album workspace browser boundary", () => {
     expect(metadata).toEqual({ ...album, title: "A quieter journey" });
     expect(screen.getByRole("heading", { level: 1, name: "A quieter journey" })).toBeInTheDocument();
     await waitFor(() => expect(edit).toHaveFocus());
+    metadata = { ...metadata, synopsis: "Independent synopsis", authors: ["Mara"] };
+    await clickHistory("Undo: Rename album");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Rename album" })).toBeEnabled());
+    expect(metadata).toEqual({ ...album, synopsis: "Independent synopsis", authors: ["Mara"] });
+    await clickHistory("Redo: Rename album");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Rename album" })).toBeEnabled());
+    expect(metadata).toEqual({ ...album, title: "A quieter journey", synopsis: "Independent synopsis", authors: ["Mara"] });
   });
 
   it("should validate an album-name draft before writing and preserve it on rejection", async () => {
@@ -2298,6 +2939,8 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.synopsis);
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.title);
     expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
+      "Undo",
+      "Redo",
       "Edit your name",
       "About browser alias",
       "Reader mode",
@@ -3073,3 +3716,126 @@ function membership(spreads: readonly Spread[]) {
   return spreads.map(({ id, chapter }) => ({ id, chapter }));
 }
 import { coverGeometries } from "./CoverGeometry";
+
+async function clickHistory(name: string) {
+  const control = await screen.findByRole("button", { name });
+  await waitFor(() => expect(control).toBeEnabled());
+  fireEvent.click(control);
+}
+
+function buildHistoryBook(initialSpreads: readonly Spread[] = workspace.spreads, withPhoto = false) {
+  let spreads = [...initialSpreads];
+  let chapters = [...workspace.chapters];
+  let metadata = album;
+  let gear: readonly CameraSelection[] = [];
+  let generation = 0;
+  let photo: Photo = {
+    id: "history-photo",
+    filename: "History.jpg",
+    width: 1200,
+    height: 800,
+    capturedLocal: null,
+    caption: "Saved caption",
+    thumbnail: { url: "/thumbnails/history.jpg", width: 600, height: 400 },
+  };
+  const client = buildClient({
+    open: vi.fn(() => Promise.resolve(metadata)),
+    chapters: vi.fn(() => Promise.resolve(chapters)),
+    composition: vi.fn(() => Promise.resolve(membership(spreads))),
+    spread: vi.fn((_album: string, id: string) => {
+      const saved = spreads.find((spread) => spread.id === id);
+      if (saved === undefined) throw new Error("Missing test spread.");
+      return Promise.resolve(saved);
+    }),
+    readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> => {
+      if (context.kind === "cover")
+        return Promise.resolve({
+          kind: "cover",
+          placements: [],
+          pageCount: 30,
+          geometry: coverGeometries.front,
+          spineOwner: "front",
+          frontSlotId: "front",
+          backSlotId: "back",
+        });
+      const saved = spreads.find((spread) => spread.id === context.id);
+      if (saved === undefined) throw new Error("Missing test spread.");
+      return Promise.resolve({
+        kind: "spread",
+        id: saved.id,
+        placements: saved.placements,
+        layout: { kind: saved.kind, templateId: saved.templateId, slots: saved.slots, bleed: saved.bleed },
+      });
+    }),
+    saveAuthors: vi.fn((_id: string, authors: readonly Author[]) => {
+      metadata = { ...metadata, authors };
+      return Promise.resolve(metadata);
+    }),
+    gearCatalog: vi.fn().mockResolvedValue({
+      cameras: [{ id: "body", name: "Body", code: "body", kind: "interchangeable_lens", mount: "sony_e", sensorFormat: "aps_c" }],
+      lenses: [{ id: "lens", name: "Lens", code: "lens", mount: "sony_e", coverage: "aps_c" }],
+    }),
+    saveSynopsis: vi.fn((_id: string, synopsis: string) => {
+      metadata = { ...metadata, synopsis };
+      return Promise.resolve(metadata);
+    }),
+    saveDescription: vi.fn((_album: string, chapterId: string, description: string) => {
+      chapters = chapters.map((chapter) => (chapter.id === chapterId ? { ...chapter, description } : chapter));
+      return Promise.resolve();
+    }),
+    chapterGear: vi.fn(() => Promise.resolve(gear)),
+    chapterPhotos: vi.fn((id: string) => {
+      if (!withPhoto || id !== vacation.id) return Promise.resolve(inventory);
+      return Promise.resolve({ ...inventory, photos: [photo], placedPhotoIds: [photo.id], counts: { total: 1, unplaced: 0 } });
+    }),
+    saveCaption: vi.fn((_chapter: string, _photo: string, caption: string) => {
+      photo = { ...photo, caption: caption === "" ? null : caption };
+      return Promise.resolve();
+    }),
+    saveChapterGear: vi.fn((_album: string, _chapter: string, selection: readonly CameraSelection[]) => {
+      gear = selection;
+      return Promise.resolve();
+    }),
+    updateChapter: vi.fn((_album: string, id: string, details: ChapterDetails) => {
+      chapters = chapters.map((chapter) => (chapter.id === id ? { ...chapter, ...details } : chapter));
+      return Promise.resolve({ id, scheduling: "not-requested" as const });
+    }),
+    addSpread: vi.fn((_album: string, chapterId: string, afterId: string) => {
+      const id = `recreated-${String(++generation)}`;
+      const fresh = { ...vacationPhoto, chapter: chapterId, id, slots: [{ ...photoSlot, id: `${id}-slot` }] };
+      spreads.splice(spreads.findIndex((spread) => spread.id === afterId) + 1, 0, fresh);
+      return Promise.resolve(id);
+    }),
+    deleteSpread: vi.fn((_album: string, id: string) => {
+      spreads = spreads.filter((spread) => spread.id !== id);
+      return Promise.resolve();
+    }),
+    templates: vi.fn((context: TemplateContext) =>
+      Promise.resolve([
+        { id: "layout", name: "Applied layout", slots: context === "photos_only" ? [photoSlot] : [photoSlot, textSlot] },
+        { id: "alternate", name: "Alternate layout", slots: [{ ...photoSlot, x: 10, width: 40 }] },
+      ]),
+    ),
+    changeSpreadTemplate: vi.fn((_album: string, id: string, templateId: string) => {
+      const slots = templateId === "alternate" ? [{ ...photoSlot, x: 10, width: 40 }] : [photoSlot];
+      spreads = spreads.map((spread) =>
+        spread.id === id ? { ...spread, templateId, slots: slots.map((slot) => ({ ...slot, id: `slot-${String(++generation)}` })) } : spread,
+      );
+      return Promise.resolve();
+    }),
+    replaceChapterComposition: vi.fn((_album: string, chapterId: string, expected: readonly string[], proposed: readonly string[]) => {
+      const old = spreads.filter((spread) => spread.chapter === chapterId);
+      if (JSON.stringify(old.map((spread) => spread.id)) !== JSON.stringify(expected))
+        return Promise.reject(new AlbumRequestError(409, "Order changed."));
+      const reordered = proposed.map((id) => {
+        const found = old.find((spread) => spread.id === id);
+        if (found === undefined) throw new Error("Missing chapter member.");
+        return found;
+      });
+      const index = spreads.findIndex((spread) => spread.chapter === chapterId);
+      spreads.splice(index, old.length, ...reordered);
+      return Promise.resolve();
+    }),
+  });
+  return { client, spreads: () => spreads, metadata: () => metadata, chapters: () => chapters, gear: () => gear, photo: () => photo };
+}

@@ -37,6 +37,7 @@ export function AlbumOpen(props: {
   events: AlbumPhotoEvents;
   id: string;
   session: WorkspaceEditingSession;
+  historyLimit?: number | undefined;
   onReady?: () => void;
 }) {
   const client = untrack(() => props.client);
@@ -92,6 +93,7 @@ export function AlbumOpen(props: {
             {(album) => (
               <AlbumWorkspace
                 album={album()}
+                historyLimit={props.historyLimit}
                 onReady={props.onReady}
                 session={props.session}
                 workspace={workspace()}
