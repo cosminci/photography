@@ -8,9 +8,9 @@ Existing editing APIs create identities and persist the book; they do not expose
 
 ## Incremental delivery
 
-Content, photo-composition and chapter-details/gear history share one bounded chronology. Spread-structure compensation follows in a separate delivery.
+Content, photo-composition, chapter-details/gear and spread-structure history share one bounded chronology. Recreated spread identities remain associated with earlier actions so traversal follows the restored book.
 
-Until those integrations ship, a confirmed changed edit in a deferred category visibly starts a new history rather than leaving older edits traversable. Pending or uncertain edits block traversal; read recovery keeps history for an unchanged outcome and resets it for a changed deferred edit, without repeating the mutation.
+Pending or uncertain edits block traversal; read recovery records confirmed outcomes once without repeating mutations. An unacknowledged creation with changed membership blocks history rather than guessing the generated identity.
 
 Chapter-details Save groups the portions actually saved, retaining partial progress and recording recovered completions once. Chapter creation and source-photo replacement announce their permanent history boundary before saving; unchanged details, rejected saves and cancellations preserve existing history.
 

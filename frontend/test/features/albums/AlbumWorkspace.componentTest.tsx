@@ -876,13 +876,12 @@ describe("album workspace browser boundary", () => {
       const recover = await screen.findByRole("button", { name: "Reload saved workspace" });
       expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
       fireEvent.click(recover);
-      if (saved && kind === "template") {
-        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change template" })).toBeEnabled());
-      } else if (saved) {
-        await screen.findByText(/This saved edit starts a new Undo history/);
-        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      if (kind === "add" && saved) {
+        await screen.findByRole("button", { name: "Keep current book and clear history" });
+        expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
       } else {
-        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+        const label = !saved ? "Change authors" : kind === "template" ? "Change template" : kind === "delete" ? "Delete spread" : "Reorder spread";
+        await waitFor(() => expect(screen.getByRole("button", { name: `Undo: ${label}` })).toBeEnabled());
       }
       expect(built.client.addSpread).toHaveBeenCalledTimes(kind === "add" ? 1 : 0);
       expect(built.client.deleteSpread).toHaveBeenCalledTimes(kind === "delete" ? 1 : 0);
@@ -891,6 +890,183 @@ describe("album workspace browser boundary", () => {
     },
   );
 
+  it.each(["add", "template"] as const)("should retain a missing acknowledged %s reference and retry only reads", async (kind) => {
+    const built = buildHistoryBook();
+    if (kind === "add") {
+      const command = vi.mocked(built.client.addSpread).getMockImplementation();
+      if (command === undefined) throw new Error("Missing add command.");
+      vi.mocked(built.client.addSpread).mockImplementationOnce(async (...args) => {
+        const id = await command(...args);
+        await built.client.deleteSpread(album.id, id, true);
+        return id;
+      });
+    } else {
+      const command = vi.mocked(built.client.changeSpreadTemplate).getMockImplementation();
+      if (command === undefined) throw new Error("Missing template command.");
+      vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(async (...args) => {
+        await command(...args);
+        await built.client.deleteSpread(album.id, vacationPhoto.id, true);
+      });
+    }
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const control = await screen.findByRole("button", { name: kind === "add" ? "Add spread" : "Alternate layout" });
+    await waitFor(() => expect(control).toBeEnabled());
+    fireEvent.click(control);
+    const read = await screen.findByRole("button", { name: "Retry workspace" });
+    fireEvent.click(read);
+
+    await waitFor(() => {
+      expect(built.client.chapters).toHaveBeenCalledTimes(3);
+    });
+    await screen.findByRole("button", { name: "Retry workspace" });
+    expect(built.client.addSpread).toHaveBeenCalledTimes(kind === "add" ? 1 : 0);
+    expect(built.client.changeSpreadTemplate).toHaveBeenCalledTimes(kind === "template" ? 1 : 0);
+  });
+
+  it.each(["template", "delete", "reorder"] as const)(
+    "should block an uncertain %s whose readback differs from both known outcomes",
+    async (kind) => {
+      const built = buildHistoryBook([
+        opening,
+        vacationOpening,
+        vacationPhoto,
+        { ...vacationPhoto, id: "second-photo" },
+        ...workspace.spreads.slice(3),
+      ]);
+      const failure = () => {
+        built.spreads().splice(2, 0, { ...vacationPhoto, id: "external-spread" });
+        if (kind === "template") {
+          const index = built.spreads().findIndex((spread) => spread.id === vacationPhoto.id);
+          built.spreads().splice(index, 1, { ...vacationPhoto, templateId: "external-template" });
+        }
+        return Promise.reject(new Error("Lost response during an intervening change."));
+      };
+      if (kind === "template") vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(failure);
+      else if (kind === "delete") vi.mocked(built.client.deleteSpread).mockImplementationOnce(failure);
+      else vi.mocked(built.client.replaceChapterComposition).mockImplementationOnce(failure);
+      window.history.replaceState(null, "", "?part=vacation-photo");
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const control = await screen.findByRole("button", {
+        name: kind === "delete" ? "Delete spread" : kind === "template" ? "Alternate layout" : "Shift spread right",
+      });
+      await waitFor(() => expect(control).toBeEnabled());
+      fireEvent.click(control);
+      fireEvent.click(await screen.findByRole("button", { name: "Reload saved workspace" }));
+
+      await screen.findByRole("button", { name: "Keep current book and clear history" });
+      expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    },
+  );
+
+  it("should publish an acknowledged structural save by retrying reads without replaying the mutation", async () => {
+    const built = buildHistoryBook();
+    vi.mocked(built.client.chapters).mockResolvedValueOnce(workspace.chapters).mockRejectedValueOnce(new Error("Read unavailable"));
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const add = await screen.findByRole("button", { name: "Add spread" });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry workspace" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Add spread" })).toBeEnabled());
+    expect(built.client.addSpread).toHaveBeenCalledOnce();
+  });
+
+  it("should follow recreated spread identities across add, delete, undo and redo", async () => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const add = await screen.findByRole("button", { name: "Add spread" });
+    await waitFor(() => expect(add).toBeEnabled());
+    fireEvent.click(add);
+    await clickHistory("Undo: Add spread");
+    await waitFor(() => {
+      expect(built.spreads()).toHaveLength(workspace.spreads.length);
+    });
+    await clickHistory("Redo: Add spread");
+    await waitFor(() => {
+      expect(built.spreads().some((spread) => spread.id === "recreated-2")).toBe(true);
+    });
+    await waitFor(() => {
+      expect(window.location.search).toBe("?part=recreated-2");
+      expect(screen.getByRole("button", { name: "Delete spread" })).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
+    await clickHistory("Undo: Delete spread");
+    await waitFor(() => {
+      expect(built.spreads().some((spread) => spread.id === "recreated-3")).toBe(true);
+    });
+    await clickHistory("Undo: Add spread");
+    await waitFor(() => {
+      expect(built.spreads()).toHaveLength(workspace.spreads.length);
+    });
+    await waitFor(() => {
+      expect(built.client.deleteSpread).toHaveBeenLastCalledWith(album.id, "recreated-3", true);
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add spread" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add spread" }));
+    await clickHistory("Undo: Add spread");
+    await clickHistory("Redo: Add spread");
+    await waitFor(() => {
+      expect(built.spreads().some((spread) => spread.id === "recreated-5")).toBe(true);
+    });
+  });
+
+  it("should follow a recreated spread and generated slots when reversing its earlier template edit", async () => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const alternate = await screen.findByRole("button", { name: "Alternate layout" });
+    await waitFor(() => expect(alternate).toBeEnabled());
+    fireEvent.click(alternate);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change template" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Delete spread" }));
+    await clickHistory("Undo: Delete spread");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change template" })).toBeEnabled());
+    expect(window.location.search).toBe("?part=recreated-2");
+    expect(built.spreads()[2]?.templateId).toBe("alternate");
+
+    await clickHistory("Undo: Change template");
+
+    await waitFor(() => {
+      expect(built.spreads()[2]?.templateId).toBe("layout");
+    });
+    expect(built.client.changeSpreadTemplate).toHaveBeenLastCalledWith(album.id, "recreated-2", "layout", true);
+    await clickHistory("Redo: Change template");
+    await waitFor(() => {
+      expect(built.spreads()[2]?.templateId).toBe("alternate");
+    });
+    await clickHistory("Redo: Delete spread");
+    await waitFor(() => {
+      expect(built.spreads().map((spread) => spread.id)).not.toContain("recreated-2");
+    });
+    expect(built.client.deleteSpread).toHaveBeenLastCalledWith(album.id, "recreated-2", true);
+  });
+
+  it("should reverse a chapter reorder with expected membership and preserve other chapter blocks", async () => {
+    const second = { ...vacationPhoto, id: "second-photo" };
+    const built = buildHistoryBook([opening, vacationOpening, vacationPhoto, second, ...workspace.spreads.slice(3)]);
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const later = await screen.findByRole("button", { name: "Shift spread right" });
+    await waitFor(() => expect(later).toBeEnabled());
+    fireEvent.click(later);
+    await clickHistory("Undo: Reorder spread");
+    await waitFor(() => {
+      expect(built.spreads().map((spread) => spread.id)).toEqual([opening.id, vacationOpening.id, vacationPhoto.id, second.id, "home-opening"]);
+    });
+    await clickHistory("Redo: Reorder spread");
+    await waitFor(() => {
+      expect(built.spreads()[2]?.id).toBe(second.id);
+    });
+    expect(built.client.replaceChapterComposition).toHaveBeenLastCalledWith(
+      album.id,
+      vacation.id,
+      [vacationOpening.id, vacationPhoto.id, second.id],
+      [vacationOpening.id, second.id, vacationPhoto.id],
+    );
+  });
   it("should reverse template geometry through existing commands and track newly generated slots", async () => {
     const built = buildHistoryBook();
     window.history.replaceState(null, "", "?part=vacation-photo");
