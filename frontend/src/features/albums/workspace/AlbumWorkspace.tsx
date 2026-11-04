@@ -2,7 +2,6 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, untra
 import { AcknowledgedWriteError, AlbumRequestError, SpreadOccupiedError, type Album, type AlbumClient } from "../model/Album";
 import { describeFailure, validateTitle } from "../model/Presentation";
 import type { Chapter, Spread, Workspace } from "../model/Workspace";
-import type { PlacementEdit, PlacementSnapshot } from "../model/Placement";
 import type { ChapterSave, Scheduling } from "../model/Photo";
 import { PhotoPane } from "./PhotoPane";
 import { ChapterDialog } from "./ChapterDialog";
@@ -36,6 +35,8 @@ import { createBookHistory, type HistoryDirection } from "./BookHistory";
 import { BookHistoryControls } from "./BookHistoryControls";
 import { createContentCompensation } from "./ContentCompensation";
 import { createPlacementCompensation, sameComposition } from "./PlacementCompensation";
+import type { PlacementContext, PlacementEdit, PlacementSnapshot } from "../model/Placement";
+import { createSpreadCompensation } from "./SpreadCompensation";
 import { createChapterCompensation, sameChapterBook, type ChapterBookState } from "./ChapterCompensation";
 import { chapterDetails } from "./ChapterDetails";
 
@@ -68,6 +69,7 @@ export function AlbumWorkspace(props: {
     | "saveDescription"
     | "saveCaption"
     | "chapters"
+    | "composition"
     | keyof GearClient
   >;
   onRefresh: () => Promise<void>;
@@ -90,9 +92,18 @@ export function AlbumWorkspace(props: {
   );
   let compensationEpoch = untrack(() => props.session.lossRevision());
   let ownershipRequest = Promise.resolve();
-  function resetUnsupportedHistory() {
-    history.reset("This saved edit starts a new Undo history. Earlier content edits cannot be skipped.");
-  }
+  const spreadIdentities = new Map<string, string>();
+  const resolveSpreadId = (id: string) => spreadIdentities.get(id) ?? id;
+  const identities = {
+    resolve: resolveSpreadId,
+    replace: (oldId: string, newId: string) => {
+      const previous = resolveSpreadId(oldId);
+      for (const [id, current] of spreadIdentities) if (current === previous) spreadIdentities.set(id, newId);
+      spreadIdentities.set(oldId, newId);
+    },
+  };
+  let pendingSpreadHistory: (() => void) | undefined;
+  let uncertainSpreadHistory: (() => void) | undefined;
   createEffect(
     on(
       () => props.session.lossRevision(),
@@ -115,8 +126,6 @@ export function AlbumWorkspace(props: {
   const [spreadNeedsReload, setSpreadNeedsReload] = createSignal(false);
   const [confirmation, setConfirmation] = createSignal<{ action: SpreadAction; placements: number }>();
   const [reloadTarget, setReloadTarget] = createSignal<{ destination: SpreadDestination; opener: HTMLButtonElement }>();
-  let reconcileSpreadHistory: (() => void) | undefined;
-  let pendingTemplateHistory: (() => void) | undefined;
   const [choice, setChoice] = createSignal<PhotoChoice>();
   const [reader, setReader] = createSignal(false);
   const [ownershipLoading, setOwnershipLoading] = createSignal(false);
@@ -200,6 +209,7 @@ export function AlbumWorkspace(props: {
   }
   function recordText(owner: Chapter | undefined, before: string, after: string) {
     if (before === after) return;
+    const destination = owner?.id ?? null;
     history.record(
       createContentCompensation({
         label: owner === undefined ? "Edit synopsis" : "Edit chapter description",
@@ -208,7 +218,80 @@ export function AlbumWorkspace(props: {
         read: () => readText(owner),
         write: (text) => saveText(owner, text),
         equal: (left, right) => left === right,
-        prepare: () => prepareHistoryTarget(owner?.id ?? null),
+        prepare: () => prepareHistoryTarget(destination),
+      }),
+    );
+  }
+  function recordPlacement(before: PlacementSnapshot, after: PlacementSnapshot, edit: PlacementEdit) {
+    const labels: Record<PlacementEdit["operation"], string> = {
+      place: "Place photo",
+      remove: "Remove photo",
+      move: "Move photo",
+      adjust: "Adjust photo",
+      captionCorner: "Change caption corner",
+      bleed: "Change spread bleed",
+      spineOwner: "Change spine owner",
+    };
+    recordComposition(before, after, labels[edit.operation]);
+  }
+  function recordComposition(before: PlacementSnapshot, after: PlacementSnapshot, label: string) {
+    if (sameComposition(before, after)) return;
+    const context = (): PlacementContext => (before.kind === "cover" ? { kind: "cover" } : { kind: "spread", id: resolveSpreadId(before.id) });
+    history.record(
+      createPlacementCompensation({
+        album: props.album.id,
+        label,
+        before,
+        after,
+        context,
+        authorize: () => prepareHistoryTarget(before.kind === "cover" ? "cover" : resolveSpreadId(before.id)),
+        client: props.client,
+      }),
+    );
+  }
+  function snapshotSpread(spread: Spread) {
+    return {
+      kind: "spread" as const,
+      id: spread.id,
+      placements: spread.placements,
+      layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots, bleed: spread.bleed },
+    };
+  }
+  function recordSpreadExistence(spread: Spread, order: readonly string[], present: boolean) {
+    /* v8 ignore next */
+    if (spread.chapter === null) throw new Error("An album opening cannot be recreated as a photo spread.");
+    history.record(
+      createSpreadCompensation({
+        album: props.album.id,
+        chapter: spread.chapter,
+        spread: snapshotSpread(spread),
+        order,
+        present,
+        identities,
+        client: props.client,
+        prepare: prepareHistoryTarget,
+        removed: showSelection,
+      }),
+    );
+  }
+  function recordSpreadOrder(chapterId: string, before: readonly string[], after: readonly string[], target: string) {
+    let observed = after.map(resolveSpreadId);
+    history.record(
+      createContentCompensation({
+        label: "Reorder spread",
+        before,
+        after,
+        equal: (left, right) => {
+          const resolved = right.map(resolveSpreadId);
+          return left.length === right.length && left.every((id, index) => resolveSpreadId(id) === resolved[index]);
+        },
+        prepare: () => prepareHistoryTarget(resolveSpreadId(target), false),
+        read: async () => {
+          const members = await props.client.composition(props.album.id, new AbortController().signal);
+          observed = members.filter((member) => member.chapter === chapterId).map((member) => member.id);
+          return observed;
+        },
+        write: (order) => props.client.replaceChapterComposition(props.album.id, chapterId, observed, order.map(resolveSpreadId)),
       }),
     );
   }
@@ -261,45 +344,11 @@ export function AlbumWorkspace(props: {
           read: () => readCaption(photoId),
           write: (text) => saveCaption(photoId, text),
           equal: (left, right) => left === right,
-          prepare: () => prepareHistoryTarget(destination),
+          prepare: () => prepareHistoryTarget(destination === null || destination === "cover" ? destination : resolveSpreadId(destination)),
         }),
       );
     },
   });
-  function recordPlacement(before: PlacementSnapshot, after: PlacementSnapshot, edit: PlacementEdit) {
-    const labels: Record<PlacementEdit["operation"], string> = {
-      place: "Place photo",
-      remove: "Remove photo",
-      move: "Move photo",
-      adjust: "Adjust photo",
-      captionCorner: "Change caption corner",
-      bleed: "Change spread bleed",
-      spineOwner: "Change spine owner",
-    };
-    recordComposition(before, after, labels[edit.operation]);
-  }
-  function recordComposition(before: PlacementSnapshot, after: PlacementSnapshot, label: string) {
-    if (sameComposition(before, after)) return;
-    history.record(
-      createPlacementCompensation({
-        album: props.album.id,
-        label,
-        before,
-        after,
-        context: () => (before.kind === "cover" ? { kind: "cover" } : { kind: "spread", id: before.id }),
-        authorize: () => prepareHistoryTarget(before.kind === "cover" ? "cover" : before.id),
-        client: props.client,
-      }),
-    );
-  }
-  function snapshotSpread(spread: Spread) {
-    return {
-      kind: "spread" as const,
-      id: spread.id,
-      placements: spread.placements,
-      layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots, bleed: spread.bleed },
-    };
-  }
   const placement = createPlacementSession(
     untrack(() => props.client),
     async () => {
@@ -667,8 +716,8 @@ export function AlbumWorkspace(props: {
     const destination =
       target.destination.kind === "part" ? target.destination.part : findDeletionSelection(props.workspace.spreads, target.destination.index);
     try {
-      pendingTemplateHistory?.();
-      pendingTemplateHistory = undefined;
+      pendingSpreadHistory?.();
+      pendingSpreadHistory = undefined;
     } catch (failure) {
       setSpreadError(describeFailure(failure));
       workspaceElement.focus();
@@ -686,48 +735,105 @@ export function AlbumWorkspace(props: {
     setSpreadPending(true);
     setSpreadError(undefined);
     setFailedAction(undefined);
-    const before = JSON.stringify(props.workspace.spreads);
-    const revision = props.session.lossRevision();
-    reconcileSpreadHistory = () => {
-      untrack(() => {
-        if (revision === props.session.lossRevision() && JSON.stringify(props.workspace.spreads) !== before) resetUnsupportedHistory();
-      });
-    };
+    uncertainSpreadHistory = undefined;
     try {
+      const before = navigatorSpreads().find((spread) => spread.id === action.spreadId);
+      if (before === undefined) throw new AlbumRequestError(404, "The spread is no longer available.");
+      const order = navigatorSpreads()
+        .filter((spread) => spread.chapter === before.chapter)
+        .map((spread) => spread.id);
+      const epoch = props.session.lossRevision();
+      const currentOrder = () => props.workspace.spreads.filter((spread) => spread.chapter === before.chapter).map((spread) => spread.id);
+      const equalOrder = (left: readonly string[], right: readonly string[]) =>
+        left.length === right.length && left.every((id, index) => id === right[index]);
       let destination: SpreadDestination = { kind: "part", part: part() };
-      if (action.kind === "add")
-        destination = { kind: "part", part: await props.client.addSpread(props.album.id, action.chapterId, action.spreadId) };
-      else if (action.kind === "move") {
-        const replacement = buildChapterReorder(props.workspace.spreads, action.spreadId, action.direction);
-        await props.client.replaceChapterComposition(props.album.id, replacement.chapter, replacement.expectedSpreadIds, replacement.spreadIds);
-      } else if (action.kind === "template") {
-        const previous = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
-        if (previous === undefined) throw new AlbumRequestError(404, "The spread is no longer available.");
-        reconcileSpreadHistory = () => {
+      if (action.kind === "add") {
+        uncertainSpreadHistory = () => {
           untrack(() => {
-            if (revision !== props.session.lossRevision()) return;
+            if (epoch === props.session.lossRevision() && !equalOrder(currentOrder(), order))
+              history.block(
+                "A new spread appeared without a confirmed identity. Review the saved book; Undo cannot skip this edit or guess which spread to remove.",
+              );
+          });
+        };
+        const freshId = await props.client.addSpread(props.album.id, action.chapterId, action.spreadId);
+        destination = { kind: "part", part: freshId };
+        pendingSpreadHistory = () => {
+          untrack(() => {
+            if (epoch !== props.session.lossRevision()) return;
+            const fresh = props.workspace.spreads.find((spread) => spread.id === freshId);
+            if (fresh === undefined) throw new AlbumRequestError(404, "The new spread was saved, but its composition could not be read.");
+            recordSpreadExistence(
+              fresh,
+              props.workspace.spreads.filter((spread) => spread.chapter === action.chapterId).map((spread) => spread.id),
+              true,
+            );
+          });
+        };
+      } else if (action.kind === "move") {
+        const replacement = buildChapterReorder(props.workspace.spreads, action.spreadId, action.direction);
+        uncertainSpreadHistory = () => {
+          untrack(() => {
+            if (epoch !== props.session.lossRevision()) return;
+            const current = currentOrder();
+            if (equalOrder(current, replacement.spreadIds))
+              recordSpreadOrder(replacement.chapter, replacement.expectedSpreadIds, replacement.spreadIds, action.spreadId);
+            else if (!equalOrder(current, replacement.expectedSpreadIds))
+              history.block("The saved chapter order differs from both known reorder outcomes. Review the saved book.");
+          });
+        };
+        await props.client.replaceChapterComposition(props.album.id, replacement.chapter, replacement.expectedSpreadIds, replacement.spreadIds);
+        pendingSpreadHistory = () => {
+          untrack(() => {
+            if (epoch === props.session.lossRevision())
+              recordSpreadOrder(replacement.chapter, replacement.expectedSpreadIds, replacement.spreadIds, action.spreadId);
+          });
+        };
+      } else if (action.kind === "template") {
+        uncertainSpreadHistory = () => {
+          untrack(() => {
+            if (epoch !== props.session.lossRevision()) return;
             const current = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
-            if (current?.templateId === action.templateId) recordComposition(snapshotSpread(previous), snapshotSpread(current), "Change template");
-            else if (current === undefined || !sameComposition(snapshotSpread(previous), snapshotSpread(current)))
+            if (current?.templateId === action.templateId) recordComposition(snapshotSpread(before), snapshotSpread(current), "Change template");
+            else if (current === undefined || !sameComposition(snapshotSpread(before), snapshotSpread(current)))
               history.block("The saved spread differs from both known template outcomes. Review the saved book.");
           });
         };
         await props.client.changeSpreadTemplate(props.album.id, action.spreadId, action.templateId, confirmPlacements);
-        pendingTemplateHistory = () => {
+        pendingSpreadHistory = () => {
           untrack(() => {
-            if (revision !== props.session.lossRevision()) return;
-            const current = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
-            if (current === undefined) throw new AlbumRequestError(404, "The saved template composition could not be read.");
-            recordComposition(snapshotSpread(previous), snapshotSpread(current), "Change template");
+            if (epoch !== props.session.lossRevision()) return;
+            const savedSpread = props.workspace.spreads.find((spread) => spread.id === action.spreadId);
+            if (savedSpread === undefined) throw new AlbumRequestError(404, "The saved template composition could not be read.");
+            recordComposition(snapshotSpread(before), snapshotSpread(savedSpread), "Change template");
           });
         };
       } else {
+        uncertainSpreadHistory = () => {
+          untrack(() => {
+            if (epoch !== props.session.lossRevision()) return;
+            const current = currentOrder();
+            if (
+              equalOrder(
+                current,
+                order.filter((id) => id !== before.id),
+              )
+            )
+              recordSpreadExistence(before, order, false);
+            else if (!equalOrder(current, order))
+              history.block("The saved chapter membership differs from both known deletion outcomes. Review the saved book.");
+          });
+        };
         await props.client.deleteSpread(props.album.id, action.spreadId, confirmPlacements);
         destination = { kind: "index", index: action.index };
+        pendingSpreadHistory = () => {
+          untrack(() => {
+            if (epoch === props.session.lossRevision()) recordSpreadExistence(before, order, false);
+          });
+        };
       }
+      uncertainSpreadHistory = undefined;
       if (!active) return;
-      if (action.kind !== "template" && revision === props.session.lossRevision()) resetUnsupportedHistory();
-      reconcileSpreadHistory = undefined;
       setConfirmation(undefined);
       setReloadTarget({ destination, opener: action.opener });
       await reloadSpread();
@@ -994,8 +1100,8 @@ export function AlbumWorkspace(props: {
               if (spreadNeedsReload()) {
                 void refresh().then(() => {
                   if (props.workspaceError === undefined) {
-                    reconcileSpreadHistory?.();
-                    reconcileSpreadHistory = undefined;
+                    uncertainSpreadHistory?.();
+                    uncertainSpreadHistory = undefined;
                     setSpreadNeedsReload(false);
                     setFailedAction(undefined);
                     setSpreadError(undefined);
