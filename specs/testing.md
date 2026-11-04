@@ -18,6 +18,8 @@ Transactional, concurrency and recovery guarantees need evidence where state is 
 
 Recovery confidence requires evidence for both the persisted commit and the client's knowledge of its outcome. Partial saves, lost acknowledgements and stale reads must be exercised across those boundaries to establish that recovery preserves successful work.
 
+Reversible editing needs cross-owner journeys to establish chronological intent and history lifetime. Component tests prove compensation and retained progress; real persistence and access boundaries establish saved round trips and interference handling, including identity changes during restoration.
+
 Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
 
 Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.

@@ -16,6 +16,10 @@ For isolated work, set `PHOTOGRAPHY_SQLITE_PATH`, `PHOTOGRAPHY_PHOTO_ROOT` and `
 
 Stop with Ctrl+C. If a forked process survives, identify the listener and terminate that exact owned PID; preserve unrelated services and retained data.
 
+## Frontend configuration
+
+Browser-local history capacity is frontend configuration, fixed at development-server startup or asset build time. `VITE_BOOK_HISTORY_LIMIT` selects that capacity; the [frontend configuration](../frontend/src/app/AppConfig.ts) owns its default and validation, and deployment changes require rebuilding the assets.
+
 ## Run on the NAS
 
 Use one backend instance with durable SQLite and thumbnail storage, and mount original photo directories read-only. The backend serves the built application and API together; the frontend development server is unnecessary on the NAS.

@@ -111,6 +111,12 @@ Saving and delivering the saved result are distinct outcomes: once a write is ac
 
 An editor spanning several owners does not imply an all-or-nothing transaction. Chapter metadata resolves before gear commits separately; partial-save recovery preserves the saved portion and retries only unresolved work.
 
+Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent without retaining editing authority; album exit, reload or unexpected access loss ends its lifetime.
+
+Reversal uses ordinary authoritative commands and current ownership, preserving unrelated work rather than restoring whole-album snapshots. Visible composition can be restored with regenerated identities, which retained history follows.
+
+Compensation is best effort, not an atomic restoration transaction: interrupted work retains progress, and a blocked or uncertain newest action stops traversal. Chapter creation and source-photo replacement establish explicit history boundaries; shared-catalog changes remain independently owned.
+
 Editing keeps book content primary and preserves the user's spatial context through saves. Temporary guards prevent conflicting actions without hiding controls or shifting the layout; their reasons are accessible, while errors and recovery actions remain visible.
 
 Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
