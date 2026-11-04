@@ -21,6 +21,7 @@ export function ChapterDialog(props: {
   resources: { client: Pick<AlbumClient, "chapters"> & GearClient; albumId: string; maybeChapterId: string | undefined };
   onSaved: (result: ChapterSave) => void;
   onReconciled: (chapterId: string) => void;
+  onCompleted?: () => void;
   onBlock: (reason: string | undefined) => void;
   onClose: () => void;
   returnFocus: () => void;
@@ -58,6 +59,7 @@ export function ChapterDialog(props: {
     },
     read: (draft) => resources.client.chapterGear(resources.albumId, draft.chapterId, controller.signal),
     equal: (saved, draft) => sameGear(saved, draft.cameras),
+    onCompleted: () => props.onCompleted?.(),
     onSaved: (_saved, draft) => {
       closeSaved(draft.chapterId);
     },
@@ -79,6 +81,9 @@ export function ChapterDialog(props: {
       return chapter !== undefined && (metadata.recovery() === "acknowledged" || matchesChapterDetails(chapter, details)) ? chapter.id : undefined;
     },
     equal: (chapterId) => chapterId !== undefined,
+    onCompleted: (details) => {
+      if (!matchesChapterDetails(existing, details)) props.onCompleted?.();
+    },
     onSaved: (chapterId) => {
       /* v8 ignore next */
       if (chapterId === undefined) throw new AcknowledgedWriteError("The saved chapter identity could not be acquired.");
@@ -245,6 +250,7 @@ export function ChapterDialog(props: {
           void submit(event);
         }}
       >
+        <p class="history-boundary-notice">Saving changed chapter details or gear starts a new Undo history. Your current book is kept.</p>
         <Show when={existing === undefined && homeAvailable}>
           <label>
             Chapter type

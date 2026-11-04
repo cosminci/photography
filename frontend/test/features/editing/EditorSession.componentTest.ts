@@ -309,16 +309,19 @@ describe("browser editing session", () => {
     const { session, transport } = await connect();
     vi.mocked(transport.select).mockResolvedValue({ revision: "1", grant: { ...grant, remainingMillis: 1000 } });
     await session.select(target);
+    const revision = session.lossRevision();
     const granted = session.requestSignal();
     await vi.advanceTimersByTimeAsync(1000);
     expect(granted.aborted).toBe(true);
     expect(session.available()).toBe(true);
+    expect(session.lossRevision()).toBe(revision + 1);
     const live = session.requestSignal();
     expect(live.aborted).toBe(false);
     session.interrupt("offline");
     expect(live.aborted).toBe(true);
     expect(session.requestSignal().aborted).toBe(false);
     expect(session.available()).toBe(false);
+    expect(session.lossRevision()).toBe(revision + 2);
   });
 
   it("should reuse identification already remembered by another first-run tab", async () => {
@@ -559,6 +562,7 @@ describe("browser editing session", () => {
 
   it("should acquire one target, release it for Reader and retain the independent session", async () => {
     const { session, transport } = await connect();
+    const revision = session.lossRevision();
 
     await session.select(target);
 
@@ -570,6 +574,7 @@ describe("browser editing session", () => {
     expect(transport.release).toHaveBeenCalledWith(expect.anything(), "1", grant.grantId);
     expect(session.available()).toBe(true);
     expect(session.headers()["X-Editor-Grant"]).toBeUndefined();
+    expect(session.lossRevision()).toBe(revision);
   });
 
   it("should renew the session and target independently every ten seconds and block immediately on connection loss", async () => {

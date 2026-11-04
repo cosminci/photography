@@ -6,7 +6,7 @@ import { AlbumOpen } from "../features/albums/open/AlbumOpen";
 import "./app.css";
 import type { WorkspaceEditingSession } from "../features/editing/EditorSession";
 
-export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; session: WorkspaceEditingSession }) {
+export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; session: WorkspaceEditingSession; historyLimit?: number }) {
   const [path, setPath] = createSignal(window.location.pathname);
   const [opening, setOpening] = createSignal(false);
   let page: HTMLElement;
@@ -74,7 +74,14 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
         <Show when={id()}>
           {(albumId) => (
             <div class="album-content" hidden={opening()}>
-              <AlbumOpen client={props.client} events={props.events} id={albumId()} session={props.session} onReady={finishOpening} />
+              <AlbumOpen
+                client={props.client}
+                events={props.events}
+                id={albumId()}
+                session={props.session}
+                historyLimit={props.historyLimit}
+                onReady={finishOpening}
+              />
             </div>
           )}
         </Show>

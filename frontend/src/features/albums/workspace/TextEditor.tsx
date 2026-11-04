@@ -10,6 +10,7 @@ export function TextEditor(props: {
   onClose: () => void;
   onBlock: (reason: string | undefined) => void;
   returnFocus: () => void;
+  onCompleted?: (before: string, after: string) => void;
   singleLine?: boolean;
   validate?: ((text: string) => string | undefined) | undefined;
   ownership: { maybeAuthority: number | undefined; recoveryLabel: string; reason: string; pending: boolean; recover: () => Promise<void> };
@@ -21,6 +22,8 @@ export function TextEditor(props: {
     save: (text: string) => props.save(text),
     read: () => props.read(),
     equal: (left, right) => left === right,
+    rebase: (saved) => saved,
+    onCompleted: (before, after) => props.onCompleted?.(before, after),
     onSaved: () => {
       props.onClose();
     },

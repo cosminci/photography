@@ -1,6 +1,7 @@
 import { render } from "solid-js/web";
 import { ErrorBoundary, Show, createResource } from "solid-js";
 import { App } from "./app/App";
+import { readAppConfig } from "./app/AppConfig";
 import { makeHttpAlbumClient } from "./features/albums/api/HttpAlbumClient";
 import { makeAlbumPhotoEvents } from "./features/albums/api/AlbumPhotoEvents";
 import { createEditorSession } from "./features/editing/EditorSession";
@@ -41,7 +42,7 @@ render(() => {
           const client = makeHttpAlbumClient(makeEditorRequests(fetch, session));
           return (
             <EditorSessionGate session={session}>
-              <App client={client} events={events} session={session} />
+              <App client={client} events={events} session={session} historyLimit={readAppConfig(import.meta.env).historyLimit} />
             </EditorSessionGate>
           );
         }}
