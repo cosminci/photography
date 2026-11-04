@@ -27,7 +27,7 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | ID | Observable outcome |
 | --- | --- |
 | A1 | Undo/Redo covers photo assignment, replacement, removal, move/swap, pan/zoom/mirror, caption corners, template changes, the spread bleed toggle and Cover spine ownership. |
-| A2 | Completed caption, synopsis, chapter-description, album-name and author edits participate in the same chronological history; the synopsis also offers album renaming. |
+| A2 | Completed caption, synopsis, chapter-description, album-name and author edits participate in the same chronological history; album renaming is available on the synopsis. |
 | A3 | Chapter name, countries, dates and camera/lens selections are undoable book edits; adding a chapter lens after editing a caption undoes the lens first, then the caption. |
 | A4 | Spread creation, deletion and reordering participate in that history; Undo selects the affected spread and restores a deleted spread into its original chapter and position. |
 | A5 | A completed gesture or text edit creates one action; no-ops, cancellations and rejected writes create none, and a new confirmed edit clears Redo. |
@@ -45,12 +45,13 @@ The [implementation design](design.md) defines owner evolution, completion evide
 | A17 | Aligned catalog cards show both saved cover photographs, a subtle central gutter and a compact title strip followed by the actual interior page count in small text, retaining framing and empty/loading/retryable failure states. |
 | A18 | Opening an album keeps the catalog visible until the workspace is ready, without an intermediate blank page; loading failures remain visible and retryable. |
 | A19 | Cover dimensions follow the interior page count; the spine-owning photograph extends continuously across the spine, with identical saved pan, zoom and mirror in catalog, editor and Reader. |
+| A20 | Bleed uses one spread-wide mode: two full-height outer photos bleed top/bottom/outward; two outer stacks bleed outward; a full-height outer photo opposite a stack bleeds alone, leaving the stack inset. Saved directions matching that mode are standard, including imported openings. |
 
 ## Doc Sync
 
 | Owner | Enduring delta |
 | --- | --- |
-| specs/design.md — Editing journey / Browser editing ownership | Reversible editing is browser-local intent over authoritative content; navigation preserves intent, not authority, and restoration respects current ownership and unrelated work. |
+| specs/design.md — Editing journey / Browser editing ownership | Reversible editing is browser-local intent over authoritative content; navigation preserves intent, not authority, and restoration respects current ownership and unrelated work. Bleed selects one spread-wide mode before applying per-slot directions. |
 | specs/testing.md — Confidence model | Establish chronological user intent across separately owned saves and prove reversals at their actual persistence and access boundaries. |
 | specs/operational.md — Frontend configuration | Document the build-time history limit and its default. |
 | specs/design.md — Cover composition | The persisted print specification catalog and current interior spread count determine cover geometry; presentation consumers share the authoritative frames. |

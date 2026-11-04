@@ -60,7 +60,7 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
               }}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 3C6.5 6 3 9 3 12a5 5 0 0 0 10 0c0-3-3.5-6-5-9ZM17 10c-1 2-4 5-4 7a4 4 0 0 0 8 0c0-2-3-5-4-7Z" />
+                <path d="M7 3C5.5 6 3 8.5 3 11a4 4 0 0 0 8 0c0-2.5-2.5-5-4-8ZM18 10c-1 2-3 4-3 6a3 3 0 0 0 6 0c0-2-2-4-3-6Z" />
               </svg>
             </button>
           )}

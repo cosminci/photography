@@ -539,7 +539,7 @@
       "put": {
         "operationId": "setSpreadBleed",
         "summary": "Apply the complete eligible bleed selection or clear all saved directions",
-        "description": "Requires the exact current spread grant. Full-height outer slots bleed top, bottom and outward; outer stacks bleed outward together; inner slots stay inset. Preserves raw template boxes, placements and transforms. Reads preserve mixed selections; enabled edges reach the boundary and disabled edges retract to seven-point margins. Every response is no-store. Reconcile uncertain outcomes with an authoritative read before another mutation.",
+        "description": "Requires the exact current spread grant. Selects one spread-wide mode: when any full-height outer photo exists, only full-height outer photos bleed top, bottom and outward; otherwise outer stacks bleed outward together. Inner slots stay inset. Preserves raw template boxes, placements and transforms. Reads preserve mixed selections; enabled edges reach the boundary and disabled edges retract to seven-point margins. Every response is no-store. Reconcile uncertain outcomes with an authoritative read before another mutation.",
         "parameters": [
           { "$ref": "#/components/parameters/WorkspaceAlbumId" }, { "$ref": "#/components/parameters/SpreadId" },
           { "$ref": "#/components/parameters/EditorSession" }, { "$ref": "#/components/parameters/EditorTab" },

@@ -32,6 +32,8 @@ Compensation is best effort, not an atomic server transaction: independently wri
 
 The authoritative mixed-bleed state disables only the spread bleed toggle, preserving its saved framing without introducing another bleed classifier. Ordinary standard bleed and other supported editing operations retain their existing owners.
 
+Spread owns selection of one coordinated bleed mode before classification or mutation: any full-height outer photo selects top/bottom/outward bleed for full-height outer photos only; otherwise eligible outer stacks bleed outward together. SlotBox retains local edge geometry, while Spread compares and applies the same spread-wide selection. Imported matching directions classify as enabled without rewriting saved boxes, identities, transforms or directions.
+
 ## Presentation refinements
 
 The catalog preview owner orchestrates one cover read and the referenced front/back photo reads, retaining shared-photo identity and saved framing. Each face owns its media retry; cover-data retry remains with their shared acquisition.
@@ -51,5 +53,7 @@ Application navigation retains the catalog while the existing workspace acquisit
 CompositionControls retains bleed mutation, availability and focus ownership, rendered as a compact droplet before chapter metadata. Cover spine editing retains its existing location.
 
 The metadata command box groups bleed and the existing chapter editor at the row's start; synopsis renaming reuses TextEditor/ContentSave recovery and ordinary album rename, publishing the acknowledged title through the existing album owner. Album-name compensation compares the authoritative title and preserves unrelated album content.
+
+The synopsis owns the album-name editing entry point; catalog actions retain deletion, while the catalog dialog owns album creation and deletion only. The bleed icon uses two separated droplets with clear space between their strokes.
 
 `VITE_BOOK_HISTORY_LIMIT=25 npm --prefix frontend run build` configures the retained action limit for that frontend build; development reads the same setting when its server starts. An absent value defaults to 10, while nonpositive, fractional or unsafe values produce an explicit configuration error.
