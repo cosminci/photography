@@ -19,6 +19,7 @@ import type {
   PlacementContext,
   PlacementEdit,
   PlacementSnapshot,
+  CoverSnapshot,
   SpreadPlacement,
   SpreadSnapshot,
 } from "../../../src/features/albums/model/Placement";
@@ -171,7 +172,7 @@ describe("album workspace browser boundary", () => {
   });
 
   it.each(["saved", "unchanged", "uncertain-saved", "uncertain-unchanged", "rejected"] as const)(
-    "should start a new history only for changed photo composition after %s",
+    "should record only changed photo composition after %s without skipping earlier content",
     async (outcome) => {
       const built = buildHistoryBook();
       let cover = {
@@ -207,10 +208,30 @@ describe("album workspace browser boundary", () => {
       }
 
       if (outcome === "saved" || outcome === "uncertain-saved") {
-        await screen.findByText(/This saved edit starts a new Undo history/);
-        expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change spine owner" })).toBeEnabled());
       } else await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
       expect(built.client.editPlacements).toHaveBeenCalledOnce();
+      if (outcome === "saved" || outcome === "uncertain-saved") {
+        vi.mocked(built.client.editPlacements).mockImplementation((_album, _context, edit) => {
+          if (edit.operation !== "spineOwner") throw new Error("Unexpected cover command.");
+          cover = { ...cover, spineOwner: edit.owner, geometry: coverGeometries[edit.owner] };
+          return Promise.resolve(cover);
+        });
+        await clickHistory("Undo: Change spine owner");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+        expect(cover.spineOwner).toBe("front");
+        expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+        await clickHistory("Undo: Change authors");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change authors" })).toBeEnabled());
+        expect(built.metadata().authors).toEqual(album.authors);
+        await clickHistory("Redo: Change authors");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change spine owner" })).toBeEnabled());
+        await clickHistory("Redo: Change spine owner");
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change spine owner" })).toBeEnabled());
+        expect(cover.spineOwner).toBe("back");
+        expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+        expect(built.client.editPlacements).toHaveBeenCalledTimes(3);
+      }
     },
   );
 
@@ -252,6 +273,83 @@ describe("album workspace browser boundary", () => {
       else {
         await screen.findByText(/This saved edit starts a new Undo history/);
         expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+      }
+    },
+  );
+
+  it.each(["owned", "contended", "lost-selection", "lost-retry"] as const)(
+    "should acquire cover history normally with %s access and fence interrupted acquisition",
+    async (access) => {
+      const built = buildHistoryBook();
+      const [lossRevision, setLossRevision] = createSignal(0);
+      const [blocked, setBlocked] = createSignal(false);
+      let restoring = false;
+      let waiting = false;
+      let finish!: (value: boolean) => void;
+      const select = vi.fn((_target: unknown, explicit?: boolean) => {
+        if (!restoring || access === "owned") return Promise.resolve(true);
+        setBlocked(true);
+        if ((access === "lost-selection" && explicit !== true) || (access === "lost-retry" && explicit === true)) {
+          waiting = true;
+          return new Promise<boolean>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return Promise.resolve(false);
+      });
+      let cover: CoverSnapshot = {
+        kind: "cover",
+        frontSlotId: "front",
+        backSlotId: "back",
+        pageCount: 30,
+        geometry: coverGeometries.front,
+        spineOwner: "front",
+        placements: [],
+      };
+      const read = vi.mocked(built.client.readPlacements).getMockImplementation();
+      if (read === undefined) throw new Error("Missing composition reader.");
+      vi.mocked(built.client.readPlacements).mockImplementation((id, context) =>
+        context.kind === "cover" ? Promise.resolve(cover) : read(id, context),
+      );
+      vi.mocked(built.client.editPlacements).mockImplementation((_album, _context, command) => {
+        if (command.operation !== "spineOwner") throw new Error("Unexpected cover command.");
+        cover = { ...cover, spineOwner: command.owner, geometry: coverGeometries[command.owner] };
+        return Promise.resolve(cover);
+      });
+      window.history.replaceState(null, "", "?part=cover");
+      render(() => (
+        <AlbumOpen
+          session={{ ...editingSession, select, lossRevision, targetReason: () => (blocked() ? "Another browser owns this cover." : undefined) }}
+          id={album.id}
+          client={built.client}
+          events={events}
+        />
+      ));
+      const owner = await screen.findByRole("combobox", { name: "Spine/gutter owner" });
+      await waitFor(() => expect(owner).toBeEnabled());
+      fireEvent.change(owner, { target: { value: "back" } });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Spreads" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Spreads" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change spine owner" })).toBeEnabled());
+      restoring = true;
+
+      fireEvent.click(screen.getByRole("button", { name: "Undo: Change spine owner" }));
+
+      if (access === "lost-selection" || access === "lost-retry") {
+        await waitFor(() => {
+          expect(waiting).toBe(true);
+        });
+        setLossRevision(1);
+        finish(true);
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled());
+        expect(built.client.editPlacements).toHaveBeenCalledOnce();
+      } else if (access === "contended") {
+        await screen.findAllByText("Another browser owns this cover.");
+        expect(built.client.editPlacements).toHaveBeenCalledOnce();
+      } else {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change spine owner" })).toBeEnabled());
+        expect(cover.spineOwner).toBe("front");
+        expect(built.client.editPlacements).toHaveBeenCalledTimes(2);
       }
     },
   );
@@ -413,7 +511,9 @@ describe("album workspace browser boundary", () => {
       const recover = await screen.findByRole("button", { name: "Reload saved workspace" });
       expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
       fireEvent.click(recover);
-      if (saved) {
+      if (saved && kind === "template") {
+        await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change template" })).toBeEnabled());
+      } else if (saved) {
         await screen.findByText(/This saved edit starts a new Undo history/);
         expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
       } else {
@@ -425,6 +525,120 @@ describe("album workspace browser boundary", () => {
       expect(built.client.replaceChapterComposition).toHaveBeenCalledTimes(kind === "reorder" ? 1 : 0);
     },
   );
+
+  it("should reverse template geometry through existing commands and track newly generated slots", async () => {
+    const built = buildHistoryBook();
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const alternate = await screen.findByRole("button", { name: "Alternate layout" });
+    await waitFor(() => expect(alternate).toBeEnabled());
+    fireEvent.click(alternate);
+
+    await clickHistory("Undo: Change template");
+    await waitFor(() => {
+      expect(built.spreads().find((spread) => spread.id === vacationPhoto.id)?.templateId).toBe("layout");
+    });
+    await clickHistory("Redo: Change template");
+    await waitFor(() => {
+      expect(built.spreads().find((spread) => spread.id === vacationPhoto.id)?.templateId).toBe("alternate");
+    });
+    expect(built.client.changeSpreadTemplate).toHaveBeenCalledTimes(3);
+  });
+
+  it("should retain acknowledged template history across a missing saved composition and retry only reads", async () => {
+    const built = buildHistoryBook();
+    let hideSpread = false;
+    vi.mocked(built.client.composition).mockImplementation(() =>
+      Promise.resolve(membership(built.spreads().filter((spread) => !hideSpread || spread.id !== vacationPhoto.id))),
+    );
+    const change = vi.mocked(built.client.changeSpreadTemplate).getMockImplementation();
+    if (change === undefined) throw new Error("Missing template command.");
+    vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(async (...args) => {
+      await change(...args);
+      hideSpread = true;
+    });
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+    const alternate = await screen.findByRole("button", { name: "Alternate layout" });
+    await waitFor(() => expect(alternate).toBeEnabled());
+
+    fireEvent.click(alternate);
+
+    await screen.findByText(/The saved template composition could not be read/);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    hideSpread = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry workspace" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change template" })).toBeEnabled());
+    expect(built.client.changeSpreadTemplate).toHaveBeenCalledOnce();
+    await clickHistory("Undo: Change template");
+    await waitFor(() => {
+      expect(built.spreads().find((spread) => spread.id === vacationPhoto.id)?.templateId).toBe("layout");
+    });
+    expect(built.client.changeSpreadTemplate).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["missing", "incompatible"] as const)(
+    "should block an uncertain template with a %s saved composition rather than exposing an older action",
+    async (outcome) => {
+      const built = buildHistoryBook();
+      vi.mocked(built.client.changeSpreadTemplate).mockImplementationOnce(() => {
+        if (outcome === "missing")
+          built.spreads().splice(
+            built.spreads().findIndex((spread) => spread.id === vacationPhoto.id),
+            1,
+          );
+        else {
+          const index = built.spreads().findIndex((spread) => spread.id === vacationPhoto.id);
+          built.spreads().splice(index, 1, { ...vacationPhoto, templateId: "independent-template" });
+        }
+        return Promise.reject(new Error("Lost response"));
+      });
+      window.history.replaceState(null, "", "?part=vacation-photo");
+      render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={events} />);
+      const mara = await screen.findByRole("button", { name: "Mara" });
+      await waitFor(() => expect(mara).toBeEnabled());
+      fireEvent.click(mara);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
+
+      fireEvent.click(screen.getByRole("button", { name: "Alternate layout" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Reload saved workspace" }));
+
+      await within(screen.getByRole("group", { name: "Book edit history" })).findByRole("status");
+      expect(within(screen.getByRole("group", { name: "Book edit history" })).getByRole("status")).toHaveTextContent(
+        "The saved spread differs from both known template outcomes. Review the saved book.",
+      );
+      expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
+      expect(built.client.changeSpreadTemplate).toHaveBeenCalledOnce();
+      expect(built.metadata().authors).toEqual(["Cosmin", "Iacob"]);
+    },
+  );
+
+  it("should reject a retained template confirmation after its spread disappears on authoritative refresh", async () => {
+    const built = buildHistoryBook();
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const liveEvents: AlbumPhotoEvents = {
+      subscribe: (_id, callback) => {
+        receive.mockImplementation(callback);
+        callback({ kind: "subscribed" });
+        return vi.fn();
+      },
+    };
+    vi.mocked(built.client.changeSpreadTemplate).mockRejectedValueOnce(new SpreadOccupiedError(1));
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={built.client} events={liveEvents} />);
+    const alternate = await screen.findByRole("button", { name: "Alternate layout" });
+    await waitFor(() => expect(alternate).toBeEnabled());
+    fireEvent.click(alternate);
+    await screen.findByRole("alertdialog", { name: "Change occupied spread template?" });
+    await built.client.deleteSpread(album.id, vacationPhoto.id, false);
+
+    receive({ kind: "subscribed" });
+    await screen.findByText(/This album part could not be found/);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await screen.findByText("The spread is no longer available.");
+    expect(built.client.changeSpreadTemplate).toHaveBeenCalledOnce();
+  });
 
   it.each(["revert", "replace"] as const)(
     "should record only changed saved authors after a rejected selection is corrected by %s",
