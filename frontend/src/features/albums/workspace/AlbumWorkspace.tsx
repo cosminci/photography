@@ -33,6 +33,7 @@ import type { EditingTarget, WorkspaceEditingSession } from "../../editing/Edito
 import { BrowserAlias } from "../../editing/BrowserAlias";
 import { createBookHistory, type HistoryDirection } from "./BookHistory";
 import { BookHistoryControls } from "./BookHistoryControls";
+import { BookExportControl } from "./BookExportControl";
 import { createContentCompensation } from "./ContentCompensation";
 import { createPlacementCompensation, sameComposition } from "./PlacementCompensation";
 import type { PlacementContext, PlacementEdit, PlacementSnapshot } from "../model/Placement";
@@ -70,6 +71,7 @@ export function AlbumWorkspace(props: {
     | "saveCaption"
     | "chapters"
     | "composition"
+    | "exportBook"
     | keyof GearClient
   >;
   onRefresh: () => Promise<void>;
@@ -911,6 +913,12 @@ export function AlbumWorkspace(props: {
           </a>
         </div>
         <div class="workspace-controls" role="group" aria-label="Workspace controls">
+          <BookExportControl
+            album={props.album.id}
+            year={props.album.year}
+            client={props.client}
+            unavailable={historyReason() ?? contentReason() ?? refreshReason() ?? spreadReadReason() ?? placement.navigationReason()}
+          />
           <Show when={!reader()}>
             <BookHistoryControls
               history={history}

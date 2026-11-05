@@ -1,0 +1,306 @@
+var PhotographyImport = (function () {
+    var label = "photography.bookImport";
+    function fail(message) { throw new Error(message); }
+    function read(file) {
+        file.encoding = "UTF-8";
+        if (!file.open("r")) fail("Cannot open JSON: " + file.fsName + ": " + file.error);
+        try { return PhotographyBook.verify(PhotographyBook.parse(file.read())); }
+        finally { file.close(); }
+    }
+    function commonRoot(paths) {
+        var root = paths[0];
+        for (var i = 1; i < paths.length; i++) {
+            while (paths[i] !== root && paths[i].indexOf(root === "/" ? "/" : root+"/") !== 0) {
+                var separator = root.lastIndexOf("/");
+                root = separator <= 0 ? "/" : root.substring(0, separator);
+            }
+        }
+        return root;
+    }
+    function mapped(paths, names, title) {
+        var root = commonRoot(paths);
+        var picked = Folder.selectDialog(title + "\nSelect the local folder corresponding to:\n" + root, new Folder(root));
+        if (!picked) return null;
+        var files = [];
+        for (var i = 0; i < paths.length; i++) {
+            var file = new File(PhotographyBook.mapOriginal(paths[i], names[i], root, picked.fsName));
+            if (!file.exists) fail("Missing local resource:\n" + paths[i]+"/"+names[i] + "\nMapped to:\n" + file.fsName);
+            files.push(file);
+        }
+        return files;
+    }
+    function resources(book, part) {
+        var paths = [], names = [], i, files, photos = {}, countries = [], flags = {}, seen = {};
+        for (i = 0; i < book.sources.length; i++) {
+            paths.push(book.sources[i].source);
+            names.push(book.sources[i].filename);
+        }
+        files = mapped(paths, names, "Original photographs");
+        if (!files) return null;
+        for (i = 0; i < files.length; i++) photos["$"+book.sources[i].id] = files[i];
+        if (part === "interior") {
+            for (var c = 0; c < book.chapters.length; c++) {
+                for (var k = 0; k < book.chapters[c].countries.length; k++) {
+                    var country = book.chapters[c].countries[k];
+                    if (seen["$"+country.code] && seen["$"+country.code] !== country.flag)
+                        fail("Conflicting flag source for " + country.code);
+                    if (!seen["$"+country.code]) countries.push(country);
+                    seen["$"+country.code] = country.flag;
+                }
+            }
+            countries.sort(function (a,b) { return a.code < b.code ? -1 : a.code > b.code ? 1 : 0; });
+            paths = []; names = [];
+            for (i = 0; i < countries.length; i++) {
+                var path = countries[i].flag, slash = path.lastIndexOf("/");
+                paths.push(slash === 0 ? "/" : path.substring(0,slash));
+                names.push(path.substring(slash+1));
+            }
+            if (countries.length) {
+                files = mapped(paths, names, "Country flags");
+                if (!files) return null;
+                for (i = 0; i < countries.length; i++) flags["$"+countries[i].code] = files[i];
+            }
+        }
+        return {photos:photos,flags:flags,countries:countries};
+    }
+    function fonts(part) {
+        var names = {InkFree:"Ink Free\tRegular", GaramondPremrPro:"Garamond Premier Pro\tRegular", IDDragonXing:"IDDragonXing\tRegular"};
+        var required = part === "cover" ? ["InkFree"] : ["InkFree","GaramondPremrPro","IDDragonXing"], result = {};
+        for (var i = 0; i < required.length; i++) {
+            var key = required[i], font = app.fonts.itemByName(names[key]);
+            if (!font.isValid || font.status !== FontStatus.INSTALLED) fail("Install the required font before import: " + names[key]);
+            result[key] = font;
+        }
+        return result;
+    }
+    // Catalog dimensions are rounded to the nearest 300-DPI pixel.
+    function closeEnough(actual, expected) { return Math.abs(actual-expected) <= 72/300/2; }
+    function compatible(book, part, doc) {
+        if (doc.extractLabel(label)) fail("This document already contains an attempted import. Retry in a fresh template copy.");
+        if (doc.documentPreferences.facingPages) fail("Use the Saal template with one complete spread per InDesign page.");
+        var width = doc.documentPreferences.pageWidth, height = doc.documentPreferences.pageHeight;
+        var preferences = doc.documentPreferences;
+        if (part === "interior") {
+            if (!closeEnough(width,book.interior.widthPt) || !closeEnough(height,book.interior.heightPt) ||
+                doc.pages.length !== book.interior.spreads.length) fail("Interior template geometry or page count does not match this saved book.");
+            for (var s = 0; s < book.interior.spreads.length; s++) {
+                var slots = book.interior.spreads[s].slots;
+                for (var j = 0; j < slots.length; j++) {
+                    var frame = slots[j].frame;
+                    if (frame.xPt < -preferences.documentBleedInsideOrLeftOffset ||
+                        frame.yPt < -preferences.documentBleedTopOffset ||
+                        frame.xPt+frame.widthPt > width+preferences.documentBleedOutsideOrRightOffset ||
+                        frame.yPt+frame.heightPt > height+preferences.documentBleedBottomOffset)
+                        fail("Insufficient template bleed for spread " + book.interior.spreads[s].id + ", slot " + slots[j].id);
+                }
+            }
+        } else {
+            if (doc.pages.length !== 1 ||
+                !closeEnough(width+preferences.documentBleedInsideOrLeftOffset+preferences.documentBleedOutsideOrRightOffset,book.cover.widthPt) ||
+                !closeEnough(height+preferences.documentBleedTopOffset+preferences.documentBleedBottomOffset,book.cover.heightPt))
+                fail("Cover template artwork dimensions do not match this saved book.");
+            var start = book.cover.spineStartPt-preferences.documentBleedInsideOrLeftOffset, end = start+book.cover.spineWidthPt;
+            var foundStart = false, foundEnd = false;
+            var guides = doc.pages.item(0).guides;
+            for (var g = 0; g < guides.length; g++) {
+                var guide = guides.item(g);
+                if (guide.orientation === HorizontalOrVertical.VERTICAL) {
+                    foundStart = foundStart || closeEnough(guide.location,start);
+                    foundEnd = foundEnd || closeEnough(guide.location,end);
+                }
+            }
+            if (!foundStart || !foundEnd) fail("Cover spine guides do not match the saved book's page-dependent spine.");
+        }
+        for (var p = 0; p < doc.pages.length; p++)
+            if (doc.pages.item(p).allPageItems.length) fail("Use a fresh, empty Saal template, not an already populated document.");
+    }
+    function bounds(frame, x, y) { return [frame.yPt+y,frame.xPt+x,frame.yPt+y+frame.heightPt,frame.xPt+x+frame.widthPt]; }
+    function rectangle(page, value, color) {
+        var item = page.rectangles.add({geometricBounds:value,strokeWeight:0});
+        if (color) item.fillColor = color;
+        return item;
+    }
+    function color(doc, name, rgb) {
+        var existing = doc.colors.itemByName(name);
+        return existing.isValid ? existing : doc.colors.add({name:name,model:ColorModel.PROCESS,space:ColorSpace.RGB,colorValue:rgb});
+    }
+    function photograph(page, frame, placement, photo, file, x, y) {
+        var rect = rectangle(page,bounds(frame,x,y));
+        rect.label = "photo:"+photo.id;
+        rect.place(file);
+        var image = rect.images.item(0);
+        var crop = PhotographyBook.crop(photo,{width:frame.widthPt,height:frame.heightPt},placement.transform);
+        if (!crop) fail("Invalid saved crop for photo " + photo.id);
+        if (placement.transform.mirrored) image.flip = Flip.HORIZONTAL;
+        image.geometricBounds = [frame.yPt+y+crop.top,frame.xPt+x+crop.left,frame.yPt+y+crop.top+crop.height,frame.xPt+x+crop.left+crop.width];
+    }
+    function caption(page, frame, text, corner, doc, font) {
+        var right = /right$/.test(corner), top = /^top/.test(corner);
+        var cy = top ? frame.yPt+10 : frame.yPt+frame.heightPt-22;
+        var tf = page.textFrames.add({geometricBounds:[cy,frame.xPt,cy+12,frame.xPt+frame.widthPt]});
+        tf.label = "caption";
+        tf.contents = text;
+        tf.textFramePreferences.insetSpacing = [0,4,0,4];
+        var paragraph = tf.parentStory.paragraphs.item(0);
+        paragraph.appliedFont = font; paragraph.pointSize = 8; paragraph.fillColor = doc.swatches.itemByName("Paper");
+        if (right) paragraph.justification = Justification.RIGHT_ALIGN;
+        tf.textFramePreferences.autoSizingReferencePoint = right ? AutoSizingReferenceEnum.TOP_RIGHT_POINT : AutoSizingReferenceEnum.TOP_LEFT_POINT;
+        tf.textFramePreferences.autoSizingType = AutoSizingTypeEnum.WIDTH_ONLY;
+        tf.recompose();
+        var fb = tf.geometricBounds;
+        if (tf.overflows || fb[1] < frame.xPt-0.1 || fb[3] > frame.xPt+frame.widthPt+0.1)
+            fail("Caption does not fit its saved slot: " + text);
+        var bg = rectangle(page,[fb[0]-2,fb[1],fb[2]-3,fb[3]],color(doc,"captionBg",[0,0,0]));
+        bg.transparencySettings.blendingSettings.opacity = 45;
+        bg.sendBackward();
+    }
+    function editorial(page, spread, text, book, local, doc, availableFonts) {
+        var synopsis = spread.kind === "synopsis", frame = spread.textFrame;
+        var center = frame.xPt+frame.widthPt/2, column = book.interior.widthPt*0.4;
+        var width = synopsis ? column*0.5 : frame.widthPt*0.8;
+        if (synopsis) {
+            var background = rectangle(page,[-3.5,center-column/2,book.interior.heightPt+3.5,center+column/2],color(doc,"synopsisCol",[40,40,40]));
+            background.sendToBack();
+        }
+        var parts = PhotographyBook.parts(text,synopsis ? "synopsis" : "chapter"), content = [];
+        for (var i = 0; i < parts.length; i++) {
+            var role = parts[i].role, key = role === "title" ? "IDDragonXing" : /^synopsis/.test(role) ? "InkFree" : "GaramondPremrPro";
+            content.push(PhotographyBook.printText(parts[i].text,key));
+        }
+        var tf = page.textFrames.add({geometricBounds:[frame.yPt+20,center-width/2,frame.yPt+frame.heightPt-(synopsis ? 120 : 20),center+width/2]});
+        tf.label = "text:"+spread.id;
+        tf.textFramePreferences.verticalJustification = VerticalJustification.CENTER_ALIGN;
+        tf.contents = content.join("\r");
+        for (var p = 0; p < parts.length; p++) {
+            var paragraph = tf.parentStory.paragraphs.item(p), part = parts[p].role;
+            var font = part === "title" ? "IDDragonXing" : /^synopsis/.test(part) ? "InkFree" : "GaramondPremrPro";
+            paragraph.appliedFont = availableFonts[font];
+            paragraph.pointSize = part === "title" || part === "synopsisTitle" ? 30 : synopsis ? 12 : 11;
+            paragraph.justification = Justification.CENTER_ALIGN;
+            if (synopsis) paragraph.fillColor = doc.swatches.itemByName("Paper");
+        }
+        if (tf.overflows) fail("Overset " + (synopsis ? "synopsis" : "chapter") + " text on spread " + spread.id);
+        if (synopsis && local.countries.length) {
+            var startX = center-(local.countries.length*46-4)/2, startY = frame.yPt+frame.heightPt-108;
+            rectangle(page,[startY-8,center-column/2,startY+36,center+column/2],doc.swatches.itemByName("Paper"));
+            for (var c = 0; c < local.countries.length; c++) {
+                var flag = rectangle(page,[startY,startX+c*46,startY+28,startX+c*46+42]);
+                flag.place(local.flags["$"+local.countries[c].code]);
+                flag.fit(FitOptions.FILL_PROPORTIONALLY); flag.fit(FitOptions.CENTER_CONTENT);
+            }
+        }
+    }
+    function coverText(book, doc, font, x) {
+        var title = PhotographyBook.printText(PhotographyBook.coverTitle(book.album),"InkFree"), authors = book.album.authors;
+        var byline = authors.length === 1 ? authors[0] : authors.slice(0,-1).join(", ")+" & "+authors[authors.length-1];
+        var start = book.cover.spineStartPt+book.cover.spineWidthPt+x, tx = start+71, ty = 30;
+        var width = title.length*14;
+        var bg = rectangle(doc.pages.item(0),[ty-4,start,ty+64,tx+width+8],color(doc,"coverTextBg",[0,0,0]));
+        bg.transparencySettings.blendingSettings.opacity = 45;
+        var tf = doc.pages.item(0).textFrames.add({geometricBounds:[ty,tx,ty+60,tx+width]});
+        tf.label = "cover attribution";
+        tf.contents = title+"\r"+PhotographyBook.printText("by "+byline,"InkFree")+"\t"+book.album.year;
+        for (var p = 0; p < 2; p++) {
+            var paragraph = tf.parentStory.paragraphs.item(p);
+            paragraph.appliedFont = font; paragraph.pointSize = p === 0 ? 30 : 12;
+            paragraph.fillColor = doc.swatches.itemByName("Paper"); paragraph.justification = Justification.LEFT_ALIGN;
+        }
+        var tab = tf.parentStory.paragraphs.item(1).tabStops.add();
+        tab.alignment = TabStopAlignment.RIGHT_ALIGN; tab.position = width;
+        tf.recompose();
+        if (tf.overflows || tf.parentStory.lines.lastItem().endHorizontalOffset > tf.geometricBounds[3])
+            fail("Cover attribution/year does not fit. The document is incomplete; do not print it.");
+    }
+    function glyphWarnings(doc) {
+        var profile = app.preflightProfiles.add({name:"Photography import "+doc.id+" "+new Date().getTime()}), process, warnings = [];
+        try {
+            profile.preflightRuleInstances.add("ADBE_MissingGlyph",{flag:PreflightRuleFlag.RETURN_AS_WARNING});
+            process = app.preflightProcesses.add(doc,profile);
+            if (process.waitForProcess(15)) warnings.push("Glyph preflight timed out. Inspect the PDF for missing glyphs.");
+            else {
+                var results = process.aggregatedResults;
+                if (!results || results.length !== 3 || !results[2])
+                    warnings.push("Glyph preflight results are unavailable. Inspect the PDF for missing glyphs.");
+                else if (results[2].length) {
+                    var details = [];
+                    for (var r = 0; r < results[2].length; r++) {
+                        var issue = results[2][r];
+                        details.push((issue[2] ? "Page "+issue[2]+": " : "")+issue[1]);
+                    }
+                    warnings.push("InDesign found unsupported glyphs:\n"+details.join("\n"));
+                }
+            }
+        } finally {
+            if (process && process.isValid) process.remove();
+            if (profile.isValid) profile.remove();
+        }
+        return warnings;
+    }
+    function importBook(book, part, doc, local) {
+        PhotographyBook.verify(book);
+        var availableFonts = fonts(part);
+        var view = doc.viewPreferences, oldX = view.horizontalMeasurementUnits, oldY = view.verticalMeasurementUnits;
+        var oldOrigin = view.rulerOrigin, oldZero = doc.zeroPoint, redraw = app.scriptPreferences.enableRedraw;
+        try {
+            view.horizontalMeasurementUnits = MeasurementUnits.POINTS; view.verticalMeasurementUnits = MeasurementUnits.POINTS;
+            view.rulerOrigin = RulerOrigin.PAGE_ORIGIN; doc.zeroPoint = [0,0];
+            compatible(book,part,doc);
+            doc.insertLabel(label,"incomplete:"+book.album.id+":"+part);
+            app.scriptPreferences.enableRedraw = false;
+            var originals = PhotographyBook.index(book.sources,"sources"), chapters = {}, c;
+            for (c = 0; c < book.chapters.length; c++) chapters["$"+book.chapters[c].opening] = book.chapters[c];
+            if (part === "interior") {
+                for (var s = 0; s < book.interior.spreads.length; s++) {
+                    var spread = book.interior.spreads[s], page = doc.pages.item(s), slots = PhotographyBook.index(spread.slots,"slots");
+                    for (var p = 0; p < spread.placements.length; p++) {
+                        var placement = spread.placements[p], slot = slots["$"+placement.slot], photo = originals["$"+placement.photo];
+                        photograph(page,slot.frame,placement,photo,local.photos["$"+photo.id],0,0);
+                        if (photo.caption) caption(page,slot.captionFrame,photo.caption,placement.captionCorner,doc,availableFonts.GaramondPremrPro);
+                    }
+                    if (spread.kind !== "photos") editorial(page,spread,spread.kind === "synopsis" ? book.album.synopsis :
+                        PhotographyBook.chapterText(chapters["$"+spread.id],book.gear),book,local,doc,availableFonts);
+                }
+            } else {
+                var offX = -doc.documentPreferences.documentBleedInsideOrLeftOffset, offY = -doc.documentPreferences.documentBleedTopOffset;
+                for (c = 0; c < book.cover.placements.length; c++) {
+                    var placed = book.cover.placements[c], original = originals["$"+placed.photo];
+                    photograph(doc.pages.item(0),placed.slot === book.cover.frontSlot ? book.cover.frontFrame : book.cover.backFrame,
+                        placed,original,local.photos["$"+original.id],offX,offY);
+                }
+                coverText(book,doc,availableFonts.InkFree,offX);
+            }
+            doc.recompose();
+            var warnings = glyphWarnings(doc);
+            doc.insertLabel(label,"imported:"+book.album.id+":"+part);
+            return warnings;
+        } finally {
+            try {
+                view.horizontalMeasurementUnits = oldX; view.verticalMeasurementUnits = oldY;
+                view.rulerOrigin = oldOrigin; doc.zeroPoint = oldZero;
+            } finally { app.scriptPreferences.enableRedraw = redraw; }
+        }
+    }
+    function main(part) {
+        var doc;
+        try {
+            var json = File.openDialog("Select the complete album InDesign JSON","JSON:*.json");
+            if (!json) return;
+            var book = read(json), local = resources(book,part);
+            if (!local) return;
+            fonts(part);
+            var template = File.openDialog("Select the empty Saal "+part+" IDML template for "+book.interior.pageCount+" book pages","IDML:*.idml");
+            if (!template) return;
+            if (!/\.idml$/i.test(template.name)) fail("Select an IDML template, not a retained InDesign document.");
+            doc = app.open(template,true,OpenOptions.OPEN_COPY);
+            var warnings = importBook(book,part,doc,local);
+            alert("Imported "+part+" from "+json.name+". Nothing has been saved.\nExport warnings: "+book.warnings.length+
+                "\n"+warnings.join("\n")+"\nInspect the complete output before printing.");
+        } catch (error) {
+            var partial = doc && doc.isValid && doc.extractLabel(label).indexOf("incomplete:") === 0;
+            if (doc && doc.isValid && !partial) doc.close(SaveOptions.NO);
+            alert("Import failed: "+error.message+(partial ? "\nThis copy is incomplete. Do not print it; retry in a fresh template." : "\nNo document content was imported.")+
+                "\nNothing has been saved.");
+        }
+    }
+    return {main:main,importBook:importBook,compatible:compatible,commonRoot:commonRoot};
+})();

@@ -495,6 +495,7 @@ describe("album dashboard and open", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
   return {
+    exportBook: vi.fn().mockRejectedValue(new Error("Unexpected book export")),
     photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
     gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
     chapterGear: vi.fn().mockResolvedValue([]),

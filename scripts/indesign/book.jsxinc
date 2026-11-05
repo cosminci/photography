@@ -1,0 +1,258 @@
+var PhotographyBook = (function () {
+    function parse(source) {
+        var position = 0;
+        function fail() { throw new Error("Invalid print JSON at character " + position); }
+        function space() { while (/[ \t\r\n]/.test(source.charAt(position)) && position < source.length) position++; }
+        function string() {
+            var token = /^"(?:[^"\\\u0000-\u001f]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*"/.exec(source.substring(position));
+            if (!token) fail();
+            position += token[0].length;
+            var escapes = {'"':'"',"\\":"\\","/":"/",b:"\b",f:"\f",n:"\n",r:"\r",t:"\t"};
+            return token[0].substring(1,token[0].length-1).replace(/\\(u[0-9a-fA-F]{4}|["\\\/bfnrt])/g,function (whole,code) {
+                return code.charAt(0) === "u" ? String.fromCharCode(parseInt(code.substring(1),16)) : escapes[code];
+            });
+        }
+        function value(depth) {
+            if (depth > 32) fail();
+            space();
+            var first = source.charAt(position);
+            if (first === '"') return string();
+            if (first === "[" || first === "{") {
+                position++;
+                var array = first === "[", result = array ? [] : {}, close = array ? "]" : "}";
+                space();
+                if (source.charAt(position) === close) { position++; return result; }
+                while (true) {
+                    if (array) result.push(value(depth+1));
+                    else {
+                        space();
+                        var key = string();
+                        if (key === "__proto__" || key === "constructor" || key === "prototype" || Object.prototype.hasOwnProperty.call(result,key)) fail();
+                        space();
+                        if (source.charAt(position++) !== ":") fail();
+                        result[key] = value(depth+1);
+                    }
+                    space();
+                    var separator = source.charAt(position++);
+                    if (separator === close) return result;
+                    if (separator !== ",") fail();
+                }
+            }
+            var literal = /^(true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(source.substring(position));
+            if (!literal) fail();
+            position += literal[0].length;
+            if (literal[0] === "true") return true;
+            if (literal[0] === "false") return false;
+            if (literal[0] === "null") return null;
+            var number = Number(literal[0]);
+            if (!isFinite(number)) fail();
+            return number;
+        }
+        source = source.replace(/^\uFEFF/,"");
+        var result = value(0);
+        space();
+        if (position !== source.length) fail();
+        return result;
+    }
+    function coverTitle(album) {
+        return album.title.replace(new RegExp("\\s+"+album.year+"$"),"");
+    }
+    function printText(text, font) {
+        if (font !== "InkFree" && font !== "IDDragonXing") return text;
+        var groups = [
+            ["A","\u00c0\u00c1\u00c2\u00c3\u00c4\u00c5\u0100\u0102\u0104"],["a","\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5\u0101\u0103\u0105"],
+            ["C","\u00c7\u0106\u0108\u010a\u010c"],["c","\u00e7\u0107\u0109\u010b\u010d"],
+            ["D","\u010e\u0110"],["d","\u010f\u0111"],["E","\u00c8\u00c9\u00ca\u00cb\u0112\u0114\u0116\u0118\u011a"],["e","\u00e8\u00e9\u00ea\u00eb\u0113\u0115\u0117\u0119\u011b"],
+            ["G","\u011c\u011e\u0120\u0122"],["g","\u011d\u011f\u0121\u0123"],["H","\u0124\u0126"],["h","\u0125\u0127"],
+            ["I","\u00cc\u00cd\u00ce\u00cf\u0128\u012a\u012c\u012e\u0130"],["i","\u00ec\u00ed\u00ee\u00ef\u0129\u012b\u012d\u012f"],
+            ["J","\u0134"],["j","\u0135"],["K","\u0136"],["k","\u0137"],["L","\u0139\u013b\u013d\u0141"],["l","\u013a\u013c\u013e\u0142"],
+            ["N","\u00d1\u0143\u0145\u0147"],["n","\u00f1\u0144\u0146\u0148"],["O","\u00d2\u00d3\u00d4\u00d5\u00d6\u014c\u014e\u0150"],["o","\u00f2\u00f3\u00f4\u00f5\u00f6\u014d\u014f\u0151"],
+            ["R","\u0154\u0156\u0158"],["r","\u0155\u0157\u0159"],["S","\u015a\u015c\u015e\u0160\u0218"],["s","\u015b\u015d\u015f\u0161\u0219"],
+            ["T","\u0162\u0164\u021a"],["t","\u0163\u0165\u021b"],["U","\u00d9\u00da\u00db\u00dc\u0168\u016a\u016c\u016e\u0170\u0172"],["u","\u00f9\u00fa\u00fb\u00fc\u0169\u016b\u016d\u016f\u0171\u0173"],
+            ["W","\u0174"],["w","\u0175"],["Y","\u00dd\u0176\u0178"],["y","\u00fd\u00ff\u0177"],["Z","\u0179\u017b\u017d"],["z","\u017a\u017c\u017e"],
+            ["A","\u1e00\u1ea0\u1ea2\u1ea4\u1ea6\u1ea8\u1eaa\u1eac\u1eae\u1eb0\u1eb2\u1eb4\u1eb6"],
+            ["B","\u1e02\u1e04\u1e06"],["C","\u1e08"],["D","\u1e0a\u1e0c\u1e0e\u1e10\u1e12"],
+            ["E","\u1e14\u1e16\u1e18\u1e1a\u1e1c\u1eb8\u1eba\u1ebc\u1ebe\u1ec0\u1ec2\u1ec4\u1ec6"],
+            ["F","\u1e1e"],["G","\u1e20"],["H","\u1e22\u1e24\u1e26\u1e28\u1e2a"],["I","\u1e2c\u1e2e\u1ec8\u1eca"],
+            ["K","\u1e30\u1e32\u1e34"],["L","\u1e36\u1e38\u1e3a\u1e3c"],["M","\u1e3e\u1e40\u1e42"],["N","\u1e44\u1e46\u1e48\u1e4a"],
+            ["O","\u01a0\u1e4c\u1e4e\u1e50\u1e52\u1ecc\u1ece\u1ed0\u1ed2\u1ed4\u1ed6\u1ed8\u1eda\u1edc\u1ede\u1ee0\u1ee2"],
+            ["P","\u1e54\u1e56"],["R","\u1e58\u1e5a\u1e5c\u1e5e"],["S","\u1e60\u1e62\u1e64\u1e66\u1e68"],["T","\u1e6a\u1e6c\u1e6e\u1e70"],
+            ["U","\u01af\u1e72\u1e74\u1e76\u1e78\u1e7a\u1ee4\u1ee6\u1ee8\u1eea\u1eec\u1eee\u1ef0"],["V","\u1e7c\u1e7e"],
+            ["W","\u1e80\u1e82\u1e84\u1e86\u1e88"],["X","\u1e8a\u1e8c"],["Y","\u1e8e\u1ef2\u1ef4\u1ef6\u1ef8"],["Z","\u1e90\u1e92\u1e94"],
+            ["a","\u1e01\u1ea1\u1ea3\u1ea5\u1ea7\u1ea9\u1eab\u1ead\u1eaf\u1eb1\u1eb3\u1eb5\u1eb7"],
+            ["b","\u1e03\u1e05\u1e07"],["c","\u1e09"],["d","\u1e0b\u1e0d\u1e0f\u1e11\u1e13"],
+            ["e","\u1e15\u1e17\u1e19\u1e1b\u1e1d\u1eb9\u1ebb\u1ebd\u1ebf\u1ec1\u1ec3\u1ec5\u1ec7"],
+            ["f","\u1e1f"],["g","\u1e21"],["h","\u1e23\u1e25\u1e27\u1e29\u1e2b\u1e96"],["i","\u1e2d\u1e2f\u1ec9\u1ecb"],
+            ["k","\u1e31\u1e33\u1e35"],["l","\u1e37\u1e39\u1e3b\u1e3d"],["m","\u1e3f\u1e41\u1e43"],["n","\u1e45\u1e47\u1e49\u1e4b"],
+            ["o","\u01a1\u1e4d\u1e4f\u1e51\u1e53\u1ecd\u1ecf\u1ed1\u1ed3\u1ed5\u1ed7\u1ed9\u1edb\u1edd\u1edf\u1ee1\u1ee3"],
+            ["p","\u1e55\u1e57"],["r","\u1e59\u1e5b\u1e5d\u1e5f"],["s","\u1e61\u1e63\u1e65\u1e67\u1e69"],["t","\u1e6b\u1e6d\u1e6f\u1e71\u1e97"],
+            ["u","\u01b0\u1e73\u1e75\u1e77\u1e79\u1e7b\u1ee5\u1ee7\u1ee9\u1eeb\u1eed\u1eef\u1ef1"],["v","\u1e7d\u1e7f"],
+            ["w","\u1e81\u1e83\u1e85\u1e87\u1e89\u1e98"],["x","\u1e8b\u1e8d"],["y","\u1e8f\u1e99\u1ef3\u1ef5\u1ef7\u1ef9"],["z","\u1e91\u1e93\u1e95"]
+        ];
+        for (var i = 0; i < groups.length; i++) text = text.replace(new RegExp("["+groups[i][1]+"]","g"),groups[i][0]);
+        return text.replace(/[\u0300-\u036f]/g,"");
+    }
+    function mapOriginal(source, filename, root, local) {
+        function valid(path) { return path.charAt(0) === "/" && !/[\\\u0000]/.test(path) && !/(^|\/)\.\.?($|\/)|\/\//.test(path); }
+        root = root.replace(/\/+$/,"") || "/";
+        local = local.replace(/\/+$/,"") || "/";
+        var prefix = root === "/" ? "/" : root + "/";
+        if (!valid(source) || !valid(root) || !valid(local) || !filename || /[\/\\\u0000]/.test(filename) || filename === "." || filename === ".." ||
+            (source !== root && source.indexOf(prefix) !== 0)) throw new Error("Invalid original source mapping: " + source + "/" + filename);
+        var relative = source === root ? "" : source.substring(prefix.length);
+        return (local === "/" ? "" : local) + "/" + (relative ? relative + "/" : "") + filename;
+    }
+    function crop(photo, slot, transform) {
+        return PhotographyCrop.crop(photo,slot,{x:transform.xPt,y:transform.yPt,zoom:transform.zoom,mirrored:transform.mirrored});
+    }
+    function need(condition, message) {
+        if (!condition) throw new Error("Invalid print book: " + message);
+    }
+    function array(value) { return Object.prototype.toString.call(value) === "[object Array]"; }
+    function text(value) { return typeof value === "string" && value.length > 0; }
+    function finite(value) { return typeof value === "number" && isFinite(value); }
+    function index(items, owner) {
+        need(array(items), owner + " must be an array");
+        var result = {};
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            need(item && text(item.id) && !result["$"+item.id], owner + " has an absent or duplicate identity");
+            result["$"+item.id] = item;
+        }
+        return result;
+    }
+    function frame(value, owner) {
+        need(value && finite(value.xPt) && finite(value.yPt) && finite(value.widthPt) && finite(value.heightPt) &&
+            value.widthPt > 0 && value.heightPt > 0, owner + " has an invalid point frame");
+    }
+    function verify(book) {
+        need(book && book.formatVersion === 1, "unsupported formatVersion");
+        need(book.album && text(book.album.id) && text(book.album.title) && text(book.album.synopsis) &&
+            finite(book.album.year) && array(book.album.authors) && book.album.authors.length > 0, "missing album content");
+        for (var a = 0; a < book.album.authors.length; a++) need(text(book.album.authors[a]), "missing author");
+        var photos = index(book.sources, "sources");
+        for (var p = 0; p < book.sources.length; p++) {
+            var photo = book.sources[p];
+            need(text(photo.source) && text(photo.filename) && finite(photo.width) && photo.width > 0 &&
+                finite(photo.height) && photo.height > 0 && (photo.caption === null || typeof photo.caption === "string"), "invalid source " + photo.id);
+            mapOriginal(photo.source, photo.filename, "/", "/");
+        }
+        function placements(values, slots, owner, captions) {
+            need(array(values) && values.length === slots.length, owner + " has incomplete placements");
+            var available = index(slots, owner + " slots"), seen = {};
+            for (var i = 0; i < values.length; i++) {
+                var placed = values[i];
+                need(placed && available["$"+placed.slot] && !seen["$"+placed.slot] && photos["$"+placed.photo], owner + " has an invalid placement");
+                seen["$"+placed.slot] = true;
+                var transform = placed.transform;
+                need(transform && finite(transform.xPt) && finite(transform.yPt) && finite(transform.zoom) &&
+                    transform.zoom >= 1 && transform.zoom <= 5 && typeof transform.mirrored === "boolean", owner + " has invalid framing");
+                need(!captions || /^(top_left|top_right|bottom_left|bottom_right)$/.test(placed.captionCorner), owner + " has an invalid caption corner");
+            }
+        }
+        var interior = book.interior;
+        need(interior && finite(interior.widthPt) && interior.widthPt > 0 && finite(interior.heightPt) && interior.heightPt > 0, "missing interior dimensions");
+        var spreads = index(interior.spreads, "spreads");
+        need(interior.spreads.length > 0 && interior.spreads.length <= 65 && interior.pageCount === interior.spreads.length * 2, "invalid interior page count");
+        for (var s = 0; s < interior.spreads.length; s++) {
+            var spread = interior.spreads[s];
+            need(/^(synopsis|chapter_opening|photos)$/.test(spread.kind) && (spread.kind !== "synopsis" || s === 0), "invalid spread kind/order " + spread.id);
+            if (spread.kind !== "photos") frame(spread.textFrame, "spread " + spread.id);
+            need(array(spread.slots) && (spread.kind !== "photos" || spread.slots.length > 0), "invalid spread slots " + spread.id);
+            for (var j = 0; j < spread.slots.length; j++) {
+                frame(spread.slots[j].frame, "slot " + spread.slots[j].id);
+                frame(spread.slots[j].captionFrame, "caption " + spread.slots[j].id);
+            }
+            placements(spread.placements, spread.slots, "spread " + spread.id, true);
+        }
+        need(interior.spreads[0].kind === "synopsis", "missing synopsis spread");
+        var chapters = index(book.chapters, "chapters"), openings = {};
+        need(book.gear && array(book.gear.cameras) && array(book.gear.lenses), "missing gear catalog");
+        index(book.gear.cameras, "cameras");
+        index(book.gear.lenses, "lenses");
+        for (var c = 0; c < book.chapters.length; c++) {
+            var chapter = book.chapters[c];
+            need(text(chapter.name) && text(chapter.description) && spreads["$"+chapter.opening] &&
+                spreads["$"+chapter.opening].kind === "chapter_opening" && !openings["$"+chapter.opening], "invalid chapter " + chapter.id);
+            openings["$"+chapter.opening] = chapters["$"+chapter.id];
+            need(array(chapter.countries) && array(chapter.gear), "missing chapter references " + chapter.id);
+            for (var k = 0; k < chapter.countries.length; k++) {
+                var country = chapter.countries[k];
+                need(country && text(country.code) && text(country.name) && text(country.flag), "invalid country in chapter " + chapter.id);
+            }
+            period(chapter);
+            try { PhotographyGear.describeGear(chapter.gear, book.gear); }
+            catch (error) { throw new Error("Invalid print book: chapter " + chapter.id + " gear: " + error.message); }
+        }
+        for (var o = 0; o < interior.spreads.length; o++)
+            need(interior.spreads[o].kind !== "chapter_opening" || openings["$"+interior.spreads[o].id], "missing chapter owner");
+        var cover = book.cover;
+        need(cover && finite(cover.widthPt) && cover.widthPt > 0 && finite(cover.heightPt) && cover.heightPt > 0 &&
+            finite(cover.spineStartPt) && cover.spineStartPt >= 0 && finite(cover.spineWidthPt) && cover.spineWidthPt > 0 &&
+            cover.spineStartPt + cover.spineWidthPt < cover.widthPt && /^(front|back)$/.test(cover.spineOwner), "invalid cover dimensions");
+        frame(cover.frontFrame, "front cover");
+        frame(cover.backFrame, "back cover");
+        placements(cover.placements, [{id:cover.frontSlot},{id:cover.backSlot}], "cover", false);
+        need(array(book.warnings), "missing export warnings");
+        return book;
+    }
+    function period(chapter) {
+        need(text(chapter.firstDay) && /^\d{4}-\d{2}-\d{2}$/.test(chapter.firstDay) &&
+            finite(chapter.days) && chapter.days > 0 && chapter.days === Math.floor(chapter.days), "invalid chapter period " + chapter.id);
+        var date = chapter.firstDay.split("-");
+        var start = new Date(Date.UTC(Number(date[0]), Number(date[1])-1, Number(date[2])));
+        need(start.getUTCFullYear() === Number(date[0]) && start.getUTCMonth()+1 === Number(date[1]) &&
+            start.getUTCDate() === Number(date[2]), "invalid chapter date " + chapter.id);
+        var end = new Date(start.getTime() + (chapter.days-1)*86400000);
+        var months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+        if (start.getUTCMonth() === 0 && start.getUTCDate() === 1 && end.getUTCMonth() === 11 && end.getUTCDate() === 31 &&
+            start.getUTCFullYear() === end.getUTCFullYear()) return String(start.getUTCFullYear());
+        var first = months[start.getUTCMonth()], last = months[end.getUTCMonth()];
+        if (start.getUTCFullYear() !== end.getUTCFullYear()) return first+" "+start.getUTCFullYear()+" - "+last+" "+end.getUTCFullYear();
+        return first + (first === last ? "" : " - "+last) + " " + start.getUTCFullYear();
+    }
+    function chapterText(chapter, catalog) {
+        var gear = PhotographyGear.describeGear(chapter.gear, catalog);
+        return chapter.name + "\n\n" + chapter.description + "\n\n" + period(chapter) + (gear ? "\n"+gear : "");
+    }
+    function parts(text, role) {
+        var lines = text.split(/\r?\n/), result = [];
+        function startsJingle(i) { return i >= 0 && i+1 < lines.length && lines[i] !== "" && lines[i+1] !== ""; }
+        function separator(kind, next) {
+            result.push({text:"",role:kind});
+            if (startsJingle(next)) result.push({text:"",role:kind});
+        }
+        if (role === "synopsis") {
+            var first = (lines[0] || "").replace(/^\s+|\s+$/g,""), start = first.toLowerCase() === "synopsis" ? 1 : 0;
+            result.push({text:start ? lines[0] : "Synopsis",role:"synopsisTitle"});
+            while (start < lines.length && lines[start] === "") start++;
+            result.push({text:"",role:"synopsisBody"});
+            result.push({text:"",role:"synopsisBody"});
+            var blank = false;
+            for (var i = start; i < lines.length; i++) {
+                if (lines[i] === "") blank = true;
+                else {
+                    if (blank) { separator("synopsisBody",i); blank = false; }
+                    result.push({text:lines[i],role:"synopsisBody"});
+                }
+            }
+            return result;
+        }
+        if (lines.length <= 1) return [{text:text,role:"title"}];
+        var lastEmpty = -1;
+        for (var j = lines.length-1; j >= 2; j--) if (lines[j] === "") { lastEmpty = j; break; }
+        result.push({text:lines[0],role:"title"});
+        for (var k = 1; k < lines.length; k++) {
+            if (lastEmpty > 0 && k === lastEmpty) {
+                result.push({text:"",role:"body"}); result.push({text:"",role:"body"});
+            } else if (lastEmpty > 0 && k > lastEmpty) result.push({text:lines[k],role:"gear"});
+            else if (lines[k] === "") {
+                var next = k+1;
+                while (next < lines.length && lines[next] === "") next++;
+                separator("body",next);
+            } else result.push({text:lines[k],role:"body"});
+        }
+        return result;
+    }
+    return {parse:parse,coverTitle:coverTitle,printText:printText,mapOriginal:mapOriginal,crop:crop,verify:verify,index:index,parts:parts,chapterText:chapterText};
+})();

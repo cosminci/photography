@@ -125,6 +125,36 @@ const nativeMethods = {
 const nativeScroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 describe("album workspace browser boundary", () => {
+  it("should export saved content while another editor owns the spread without saving drafts or replacing browser history", async () => {
+    const exportBook = vi.fn().mockResolvedValue({ content: '{"formatVersion":1}', warnings: [] });
+    const client = buildClient({ exportBook });
+    const select = vi.fn().mockResolvedValue(false);
+    const session = { ...editingSession, select, targetReason: () => "Mara is editing this spread.", owner: () => "Mara" };
+    const download = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:saved-book");
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    window.history.replaceState(null, "", "?part=vacation-photo");
+    render(() => <AlbumOpen session={session} id={album.id} client={client} events={events} />);
+    const button = await screen.findByRole("button", { name: "Export for InDesign" });
+    await screen.findAllByText("Mara is editing this spread.");
+    const selections = select.mock.calls.length;
+    const location = window.location.href;
+
+    fireEvent.click(button);
+    await screen.findByText("Saved book exported. Use the same JSON for the interior and cover.");
+
+    expect(exportBook).toHaveBeenCalledExactlyOnceWith(album.id);
+    expect(select).toHaveBeenCalledTimes(selections);
+    expect(client.saveSynopsis).not.toHaveBeenCalled();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+    expect(window.location.href).toBe(location);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
+    expect(download).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledExactlyOnceWith("blob:saved-book");
+    download.mockRestore();
+    vi.restoreAllMocks();
+  });
+
   it.each(["lost-selection", "lost-retry"] as const)("should fence synopsis compensation during %s without writing", async (access) => {
     const built = buildHistoryBook();
     const [lossRevision, setLossRevision] = createSignal(0);
@@ -3694,6 +3724,7 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.synopsis);
     expect(screen.getByRole("group", { name: "Synopsis composition" })).toHaveTextContent(album.title);
     expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
+      "Export for InDesign",
       "Undo",
       "Redo",
       "Edit your name",
@@ -4382,6 +4413,7 @@ describe("album workspace browser boundary", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = workspace): AlbumClient {
   return {
+    exportBook: vi.fn().mockRejectedValue(new Error("Unexpected book export")),
     photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
     gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
     chapterGear: vi.fn().mockResolvedValue([]),

@@ -8,6 +8,7 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     strictPort: true,
+    fs: { allow: [import.meta.dirname, `${import.meta.dirname}/../scripts/indesign`] },
     proxy: {
       "/api": backend,
       "/health": backend,

@@ -12,6 +12,7 @@ export function parseChangedPaths(raw: string): readonly string[] {
 export function findComponentsForPath(path: string): readonly Component[] {
   if (path.startsWith("backend/")) return ["backend"];
   if (path.startsWith("frontend/")) return ["frontend"];
+  if (path.startsWith("scripts/indesign/")) return ["frontend"];
   if (
     path === "dagger.json" ||
     path === ".mise.toml" ||

@@ -13,6 +13,8 @@ describe("findComponentsForPath", () => {
   it.each([
     ["backend/build.sbt", ["backend"]],
     ["frontend/index.html", ["frontend"]],
+    ["scripts/indesign/crop.js", ["frontend"]],
+    ["scripts/indesign/place-spreads.jsx", ["frontend"]],
   ] as const)("should select the owning component for %s", (path, components) => {
     expect(Selection.findComponentsForPath(path)).toEqual(components);
   });

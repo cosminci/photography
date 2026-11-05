@@ -32,6 +32,7 @@ export function AlbumOpen(props: {
     | "rename"
     | "saveDescription"
     | "saveCaption"
+    | "exportBook"
     | keyof GearClient
   >;
   events: AlbumPhotoEvents;
