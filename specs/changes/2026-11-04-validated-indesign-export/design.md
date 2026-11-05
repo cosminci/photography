@@ -10,15 +10,15 @@
 
 | Existing owner | Evolution and retained guarantee |
 | --- | --- |
-| `AlbumRepository` and its SQLite aggregate assembly | Evolve acquisition to supply the complete saved book within one read transaction, reusing existing assembly rather than adding a parallel exporter reader. Existing lightweight reads retain their distinct purposes. |
-| `CoverRepository`, `PhotoRepository` and selected catalog reads | Compose their transaction-capable reads into that acquisition; preserve current identity, ordering, selection and failure semantics. The export consumer receives saved facts together. |
+| `AlbumRepository` and its SQLite aggregate assembly | Expose existing aggregate acquisition for composition within a caller-owned transaction, reusing existing assembly rather than adding a parallel exporter reader. Existing lightweight reads retain their distinct purposes. |
+| `CoverRepository`, `PhotoRepository` and selected catalog reads | Supply transaction-capable reads to the export use case; preserve current identity, ordering, selection and failure semantics. Each adapter retains its own external representation responsibility. |
 | `PhotoStorage.readOriginal` | Reuse original decoding, content identity and stability checks for every print-referenced photograph after releasing the database snapshot; a transaction does not freeze files. |
 | `Spread`, `SlotBox`, `PhotoTransform`, `CoverDimensions` and editorial presentation | Reuse geometry and selected content for one print projection; evolve genuinely shared presentation rules instead of copying legacy selection or geometry policy. |
-| New export operation | Coordinate saved acquisition, complete validation and publication of a versioned print-only representation. Return scoped blocking/nonblocking issues distinctly from acquisition or delivery failure; acquire no editing grant and write no album state. |
+| `BookExport` | Compose album, cover, photo and catalog reads through the existing `Transaction` capability, constructing its saved-book input within one read transaction. Release that transaction before original-file validation; return scoped blocking/nonblocking issues distinctly from acquisition or delivery failure, with no editing grant or album write. |
 | Existing workspace | Add the export action and its pending/issues/retry lifecycle alongside existing saves; export neither commits local drafts nor resets history. |
 | Existing ExtendScript entrypoints | Consume the same representation with explicit file/root selection and native preflight, retaining placement and typography behavior. Share only common decoding, source resolution and resource knowledge. |
 
-SQLite supplies the coherent saved acquisition; HTTP supplies the download or explicit issues. Source checks remain filesystem guarantees, while each importer owns local availability and actual composition.
+The use case owns coherent saved acquisition; SQLite supplies transactional reads and HTTP supplies the download or explicit issues. Source checks remain filesystem guarantees, while each importer owns local availability and actual composition.
 
 The representation contains book identity/page count, referenced originals, ordered interior content, cover content and necessary print resources. It carries no session, restoration payload or backend history.
 

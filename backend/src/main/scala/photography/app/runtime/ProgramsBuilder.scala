@@ -121,8 +121,7 @@ object ProgramsBuilder:
           coverPlacements = CoverManager.make(coverRepository, placements),
           editorSessions = sessions,
           editingAccess = EditingAccess.make(sessions, membership, photoTargets),
-          bookExport =
-            BookExport.make(SqliteAlbumRepository.makeBookRead(sqlite, albumRepository, coverRepository, photoRepository, gearRepository), storage)
+          bookExport = BookExport.make(albumRepository, coverRepository, photoRepository, gearRepository, storage)
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =

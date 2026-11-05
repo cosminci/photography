@@ -11,9 +11,8 @@ import photography.adapters.http.Routes.Route
 import photography.domain.album.*
 import photography.domain.gear.*
 import photography.domain.layout.*
-import photography.ports.album.AlbumRepository.SavedBook
 import photography.usecases.album.BookExport
-import photography.usecases.album.BookExport.{Code, Issue, Severity, Target}
+import photography.usecases.album.BookExport.{Code, Issue, SavedBook, Severity, Target}
 import java.util.UUID
 
 object BookExportApi:

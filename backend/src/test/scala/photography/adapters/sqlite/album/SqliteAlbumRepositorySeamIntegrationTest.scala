@@ -1,11 +1,5 @@
 package photography.adapters.sqlite.album
 import photography.adapters.sqlite.chapter.SqliteChapterRepository
-import photography.adapters.sqlite.cover.SqliteCoverRepository
-import photography.adapters.sqlite.gear.SqliteGearRepository
-import photography.adapters.sqlite.photo.SqlitePhotoRepository
-import photography.ports.album.AlbumRepository
-import photography.ports.cover.CoverRepository
-import photography.ports.gear.GearRepository
 import photography.domain.gear.CameraSelection
 
 import photography.adapters.sqlite.FlywayMigrator
@@ -19,7 +13,6 @@ import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
 import org.typelevel.doobie.*
-import org.typelevel.doobie.free.connection
 import org.typelevel.doobie.implicits.*
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
@@ -33,7 +26,6 @@ import java.time.{Instant, LocalDate}
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
-import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
   private given Logger[IO]             = Slf4jLogger.getLogger[IO]
@@ -44,75 +36,6 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
                                       (SELECT count(*) FROM spread_photo_slot) + (SELECT count(*) FROM spread_text_slot) +
                                       (SELECT count(*) FROM spread_photo_slot_bleed) +
                                       (SELECT count(*) FROM cover) + (SELECT count(*) FROM cover_slot)""".query[Long].unique
-
-  test("should acquire the saved book and cover together without changing album content"):
-    buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val catalog    = SqliteGearRepository.make[IO](xa)
-      val books      = SqliteAlbumRepository.makeBookRead[IO](xa, repository, SqliteCoverRepository.make, SqlitePhotoRepository.make, catalog)
-      val album      = buildAlbum(index = 1).copy(synopsis = "Retained Hội An")
-      val cover      = buildCover(album)
-
-      for
-        _               <- repository.create(album, cover)
-        expectedCover   <- SqliteCoverRepository.make.read(album.id).transact(xa)
-        expectedCatalog <- catalog.readCatalog
-        found           <- books.readBook(album.id)
-        retained        <- repository.get(album.id)
-        missing         <- books.readBook(AlbumId(buildUuid(index = 999)))
-        _               <- sql"DROP TABLE camera".update.run.transact(xa)
-        failed          <- books.readBook(album.id)
-      yield
-        (found, expectedCover, expectedCatalog) match
-          case (BookResult.Found(book), CoverRepository.ReadResult.Found(composition), GearRepository.CatalogReadResult.Found(gear)) =>
-            assertEquals(book, SavedBook(album, composition, photos = Vector.empty[Photo], gear))
-          case other => fail(s"Expected one complete saved book, obtained $other")
-        assertEquals(retained, GetResult.Found(album))
-        assertEquals(missing, BookResult.NotFound)
-        assertEquals(failed, BookResult.Failed(Failure.DatabaseFailure))
-
-  test("should retain one saved-book snapshot while another connection commits content cover and catalog changes"):
-    buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val catalog    = SqliteGearRepository.make[IO](xa)
-      val started    = new CountDownLatch(1)
-      val committed  = new CountDownLatch(1)
-      val album      = buildAlbum(index = 1).copy(synopsis = "Original")
-      val snapshot   = new AlbumRepository.AggregateRead[ConnectionIO]:
-        override def readAlbum(id: AlbumId): ConnectionIO[GetResult] =
-          repository.readAlbum(id).flatTap: _ =>
-            connection.delay(started.countDown()) >>
-              connection.delay(committed.await(10L, TimeUnit.SECONDS))
-                .ensure(new IllegalStateException("Writer did not finish"))(identity).void
-      val books   = SqliteAlbumRepository.makeBookRead[IO](xa, snapshot, SqliteCoverRepository.make, SqlitePhotoRepository.make, catalog)
-      val changed =
-        sql"UPDATE album SET synopsis = 'Changed' WHERE id = ${album.id.value}".update.run >>
-          sql"UPDATE cover SET spine_owner = 'back' WHERE album_id = ${album.id.value}".update.run >>
-          sql"UPDATE camera SET friendly_name = 'Changed camera'".update.run
-      val writer =
-        (IO.blocking(started.await(10L, TimeUnit.SECONDS))
-          .ensure(new IllegalStateException("Reader did not start"))(identity) >> changed.transact(xa))
-          .guarantee(IO.blocking(committed.countDown()))
-
-      for
-        _               <- xa.rawTrans.apply(sql"PRAGMA journal_mode = WAL".query[String].unique)
-        _               <- repository.create(album, buildCover(album))
-        expectedCatalog <- catalog.readCatalog
-        result          <- books.readBook(album.id).both(writer)
-        current         <- repository.get(album.id)
-        currentCover    <- SqliteCoverRepository.make.read(album.id).transact(xa)
-      yield
-        val (found, _) = result
-        (found, expectedCatalog) match
-          case (BookResult.Found(book), GearRepository.CatalogReadResult.Found(gear)) =>
-            assertEquals(book.album, album)
-            assertEquals(book.cover.cover.spineOwner, SpineOwner.Front)
-            assertEquals(book.gear, gear)
-          case other => fail(s"Expected the original coherent snapshot, obtained $other")
-        assertEquals(current, GetResult.Found(album.copy(synopsis = "Changed")))
-        currentCover match
-          case CoverRepository.ReadResult.Found(composition) => assertEquals(composition.cover.spineOwner, SpineOwner.Back)
-          case other                                         => fail(s"Expected changed cover, obtained $other")
 
   test("should read metadata and ordered chapters without acquiring unrelated Cover or spread geometry"):
     buildTransactor.use: xa =>

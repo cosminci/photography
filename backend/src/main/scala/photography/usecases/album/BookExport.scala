@@ -1,29 +1,68 @@
 package photography.usecases.album
 
-import cats.MonadThrow
+import cats.{Monad, MonadThrow}
 import cats.syntax.all.*
 import org.typelevel.log4cats.Logger
 import photography.domain.album.*
 import photography.domain.layout.*
+import photography.domain.gear.GearCatalog
+import photography.capabilities.Transaction
 import photography.ports.album.AlbumRepository
-import photography.ports.album.AlbumRepository.SavedBook
-import photography.ports.photo.PhotoStorage
+import photography.ports.cover.CoverRepository
+import photography.ports.gear.GearRepository
+import photography.ports.photo.{PhotoRepository, PhotoStorage}
+import photography.syntax.EitherSyntax.*
 
 trait BookExport[F[_]]:
   def exportBook(album: AlbumId): F[BookExport.Result]
 
 object BookExport:
-  def make[F[_]: MonadThrow: Logger](books: AlbumRepository.BookRead[F], originals: PhotoStorage[F]): BookExport[F] =
-    new LiveBookExport(books, originals)
+  def make[F[_]: MonadThrow: Logger, Db[_]: Monad](
+      albums: AlbumRepository.AggregateRead[Db],
+      covers: CoverRepository[Db],
+      photos: PhotoRepository[Db],
+      gear: GearRepository.CatalogRead[Db],
+      originals: PhotoStorage[F]
+  )(using Transaction[Db, F]): BookExport[F] = new LiveBookExport(albums, covers, photos, gear, originals)
 
-  final private class LiveBookExport[F[_]: MonadThrow: Logger](books: AlbumRepository.BookRead[F], originals: PhotoStorage[F])
-      extends BookExport[F]:
+  final private class LiveBookExport[F[_]: MonadThrow: Logger, Db[_]: Monad](
+      albums: AlbumRepository.AggregateRead[Db],
+      covers: CoverRepository[Db],
+      photos: PhotoRepository[Db],
+      gear: GearRepository.CatalogRead[Db],
+      originals: PhotoStorage[F]
+  )(using Transaction[Db, F]) extends BookExport[F]:
     override def exportBook(album: AlbumId): F[Result] =
-      books.readBook(album).flatMap {
-        case AlbumRepository.BookResult.NotFound    => Result.NotFound.pure[F]
-        case AlbumRepository.BookResult.Failed(_)   => Result.Failed.pure[F]
-        case AlbumRepository.BookResult.Found(book) => validate(book)
+      Transaction[Db, F].run(readBook(album)).flatMap {
+        case Left(ReadFailure.NotFound)    => Result.NotFound.pure[F]
+        case Left(ReadFailure.Unavailable) =>
+          Logger[F].error(s"Saved book acquisition failed for ${album.value}").as(Result.Failed)
+        case Right(book) => validate(book)
       }.handleErrorWith(error => Logger[F].error(error)(s"Book export failed for ${album.value}").as(Result.Failed))
+
+    private def readBook(album: AlbumId) =
+      albums.readAlbum(album).flatMap:
+        case AlbumRepository.GetResult.NotFound     => ReadFailure.NotFound.asLeft[SavedBook].pure[Db]
+        case AlbumRepository.GetResult.Failed(_)    => ReadFailure.Unavailable.asLeft[SavedBook].pure[Db]
+        case AlbumRepository.GetResult.Found(saved) => loadBook(saved).value
+
+    private def loadBook(album: Album) =
+      for
+        cover <- covers.read(album.id).map {
+          case CoverRepository.ReadResult.Found(composition) => composition.asRight[ReadFailure]
+          case CoverRepository.ReadResult.NotFound           => ReadFailure.Unavailable.asLeft[CoverRepository.Composition]
+        }.eitherT
+        inventory <- album.chapters.traverse(chapter =>
+          photos.listChapter(chapter.id).map {
+            case PhotoRepository.ListResult.Listed(values) => values.asRight[ReadFailure]
+            case PhotoRepository.ListResult.Failed         => ReadFailure.Unavailable.asLeft[Vector[Photo]]
+          }.eitherT
+        )
+        catalog <- gear.readSavedCatalog.map {
+          case GearRepository.CatalogReadResult.Found(value) => value.asRight[ReadFailure]
+          case GearRepository.CatalogReadResult.Failed       => ReadFailure.Unavailable.asLeft[GearCatalog]
+        }.eitherT
+      yield SavedBook(album, cover, inventory.flatten, catalog)
 
     private def validate(book: SavedBook) =
       val references = book.album.collectSpreads.toList.flatMap(_.placements.map(_.photo)).toVector ++ book.cover.placements.map(_.photo)
@@ -103,6 +142,11 @@ object BookExport:
           case PhotoStorage.ReadResult.Unstable    => Code.OriginalUnstable.some
           case PhotoStorage.ReadResult.Failed      => Code.OriginalUnavailable.some
         maybeCode.map(code => Issue(code, Severity.Blocking, Target.Photo(photo.id))).toList.toVector
+
+    private enum ReadFailure:
+      case NotFound, Unavailable
+
+  final case class SavedBook(album: Album, cover: CoverRepository.Composition, photos: Vector[Photo], gear: GearCatalog)
 
   enum Result:
     case Ready(book: SavedBook, warnings: Vector[Issue])

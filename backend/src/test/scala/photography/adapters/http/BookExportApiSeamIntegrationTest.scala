@@ -14,7 +14,6 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.domain.album.*
 import photography.domain.gear.*
 import photography.domain.layout.*
-import photography.ports.album.AlbumRepository.SavedBook
 import photography.ports.cover.CoverRepository
 import photography.usecases.album.BookExport
 import photography.usecases.album.BookExport.*
