@@ -15,6 +15,7 @@ describe("saved-book InDesign export", () => {
 
     expect(screen.getByRole("button", { name: "Export for InDesign" })).toBeDisabled();
     expect(screen.getByRole("button")).toHaveAccessibleDescription(/Wait for the saved edit/);
+    expect(screen.getByRole("button")).toHaveAttribute("title", "Wait for the saved edit.");
     expect(exportBook).not.toHaveBeenCalled();
     expect(screen.queryByText("Exports saved content only; unsaved drafts stay in the editor.")).not.toBeInTheDocument();
   });
@@ -39,10 +40,12 @@ describe("saved-book InDesign export", () => {
     fireEvent.click(screen.getByRole("button"));
     fireEvent.click(screen.getByRole("button"));
     expect(screen.getByRole("button")).toBeDisabled();
+    expect(screen.getByRole("button")).toHaveAttribute("aria-busy", "true");
     expect(screen.getByRole("status")).toHaveTextContent("Validating");
     finish({ content: '{"formatVersion":1,"interior":{},"cover":{}}', warnings: [] });
 
     await waitFor(() => expect(screen.getByRole("button")).toBeEnabled());
+    expect(screen.getByRole("button")).toHaveAttribute("aria-busy", "false");
     expect(exportBook).toHaveBeenCalledExactlyOnceWith("book");
     expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(expect.any(Blob));
     expect(click).toHaveBeenCalledOnce();

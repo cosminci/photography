@@ -65,7 +65,7 @@ export function BookExportControl(props: {
       tabIndex={-1}
       classList={{ "visually-hidden": message() === undefined }}
     >
-      <Show when={reason() ?? message()}>{(text) => <p class="control-help">{text()}</p>}</Show>
+      <Show when={reason() ?? message()}>{(text) => <p>{text()}</p>}</Show>
       <Show when={issues().length > 0}>
         <ul>
           <For each={issues()}>
@@ -87,7 +87,8 @@ export function BookExportControl(props: {
         }}
         type="button"
         aria-label="Export for InDesign"
-        title="Export for InDesign"
+        title={reason() ?? "Export for InDesign"}
+        aria-busy={pending()}
         disabled={reason() !== undefined}
         aria-describedby={feedback}
         onClick={() => void exportBook()}
