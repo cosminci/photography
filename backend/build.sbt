@@ -59,6 +59,7 @@ lazy val root = (project in file("."))
       "org.xerial"               % "sqlite-jdbc"               % "3.53.4.0",
       "com.drewnoakes"           % "metadata-extractor"        % "2.22.0",
       "com.twelvemonkeys.common" % "common-image"              % "3.15.3",
+      "com.networknt"            % "json-schema-validator"     % "3.0.9",
       "org.http4s"              %% "http4s-dsl"                % "0.23.38",
       "org.http4s"              %% "http4s-circe"              % "0.23.38",
       "org.http4s"              %% "http4s-ember-server"       % "0.23.38",
