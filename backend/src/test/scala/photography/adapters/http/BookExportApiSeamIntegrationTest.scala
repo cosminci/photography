@@ -3,6 +3,7 @@ package photography.adapters.http
 import cats.effect.IO
 import cats.data.{NonEmptyList, NonEmptyVector}
 import cats.syntax.all.*
+import com.networknt.schema.{ExecutionConfig, InputFormat, SchemaLocation, SchemaRegistry, SpecificationVersion}
 import io.circe.{DecodingFailure, Json}
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.*
@@ -20,13 +21,15 @@ import photography.usecases.album.BookExport.*
 import java.util.UUID
 import java.time.{Instant, LocalDate}
 import java.nio.file.Path
+import scala.jdk.CollectionConverters.*
 
 final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO] = Slf4jLogger.getLogger[IO]
-  private val album        = AlbumId(new UUID(0L, 1L))
-  private val path         = s"/api/albums/${album.value}/indesign-export"
-  private val spread       = SpreadId(new UUID(0L, 2L))
-  private val slot         = PhotoSpreadSlotId(new UUID(0L, 3L))
+  private given Logger[IO]     = Slf4jLogger.getLogger[IO]
+  private val album            = AlbumId(new UUID(0L, 1L))
+  private val path             = s"/api/albums/${album.value}/indesign-export"
+  private val spread           = SpreadId(new UUID(0L, 2L))
+  private val slot             = PhotoSpreadSlotId(new UUID(0L, 3L))
+  private val validationConfig = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
 
   test("should download one versioned complete book with exact authored characters and no saved-session payload"):
     val book    = buildBook
@@ -63,6 +66,36 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
         response.headers.get(org.typelevel.ci.CIString("Content-Disposition")).map(_.head.value),
         """attachment; filename="album-2025-indesign.json"""".some
       )
+      val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+        .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+      assertEquals(
+        schema.validate(body.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(validationConfig)).asScala.toVector,
+        Vector.empty
+      )
+
+  test("should enforce structure, nested constraints and UUID/date formats on the actual HTTP handoff"):
+    for
+      response <- read(Result.Ready(buildBook, warnings = Vector.empty[Issue]), path)
+      body     <- response.as[Json]
+    yield
+      val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+        .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+      val mutations = Vector(
+        "missing cover"  -> body.mapObject(_.remove("cover")).some,
+        "extra property" -> body.mapObject(_.add("obsolete", Json.True)).some,
+        "invalid UUID"   -> body.hcursor.downField("album").downField("id").withFocus(_ => Json.fromString("not-a-uuid")).top,
+        "invalid date"   -> body.hcursor.downField("chapters").downN(0).downField("firstDay").withFocus(_ => Json.fromString("2025-02-30")).top,
+        "invalid frame"  -> body.hcursor.downField("cover").downField("frontFrame").downField("widthPt").withFocus(_ => Json.fromInt(0)).top
+      )
+      mutations.foreach { case (scenario, maybeJson) =>
+        val json   = maybeJson.getOrElse(fail(s"Mutation failed: $scenario"))
+        val errors = schema.validate(
+          json.noSpaces,
+          InputFormat.JSON,
+          context => context.setExecutionConfig(validationConfig)
+        )
+        assert(!errors.isEmpty, scenario)
+      }
 
   test("should fail explicitly instead of emitting a partial book when ready geometry cannot be projected"):
     val original = buildBook
@@ -81,6 +114,30 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(response.status, Status.InternalServerError)
       assertEquals(body, Json.obj("code" -> Json.fromString("service_failure")))
       assertEquals(response.headers.get(org.typelevel.ci.CIString("Content-Disposition")), None)
+
+  test("should reject generated output that disagrees with the handoff schema without offering a download"):
+    val original     = buildBook
+    val warning      = Issue(Code.LowResolution, Severity.Blocking, Target.Album)
+    val extendedDate = original.copy(album =
+      original.album.copy(chapters =
+        original.album.chapters.map(chapter => chapter.copy(period = VisitPeriod(LocalDate.of(10000, 1, 1), days = 1L)))
+      )
+    )
+    val results = Vector(
+      "blocking warning" -> Result.Ready(original, Vector(warning)),
+      "non-RFC3339 date" -> Result.Ready(extendedDate, warnings = Vector.empty[Issue])
+    )
+
+    results.traverse_ { case (scenario, result) =>
+      for
+        response <- read(result, path)
+        body     <- response.as[Json]
+      yield
+        assertEquals(response.status, Status.InternalServerError, scenario)
+        assertEquals(body, Json.obj("code" -> Json.fromString("service_failure")), scenario)
+        assertEquals(response.headers.get(org.typelevel.ci.CIString("Content-Disposition")), None, scenario)
+        assertEquals(response.headers.get(org.typelevel.ci.CIString("Cache-Control")).map(_.head.value), "no-store".some, scenario)
+    }
 
   test("should report complete scoped blocking issues without returning a printable artifact or acquiring editing access"):
     val issue    = Issue(Code.EmptyPhotoSlot, Severity.Blocking, Target.Slot(spread, slot))
@@ -122,7 +179,8 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
       override def exportBook(id: AlbumId): IO[Result] = fail("Invalid IDs must not trigger acquisition")
 
     for
-      response <- PublicRoutes(BookExportApi.make(forbidden)).orNotFound.run(Request[IO](
+      api      <- BookExportApi.make(forbidden)
+      response <- PublicRoutes(api).orNotFound.run(Request[IO](
         Method.GET,
         Uri.unsafeFromString("/api/albums/1-1-1-1-1/indesign-export")
       ))
@@ -199,7 +257,7 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
   private def read(result: Result, path: String) =
     val exports = new BookExport[IO]:
       override def exportBook(id: AlbumId): IO[Result] = IO(assertEquals(id, album)).as(result)
-    PublicRoutes(BookExportApi.make(exports)).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString(path)))
+    BookExportApi.make(exports).flatMap(api => PublicRoutes(api).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString(path))))
 
   private def buildBook =
     val box            = SlotBox(x = 1.0, y = 1.0, width = 90.0, height = 90.0)

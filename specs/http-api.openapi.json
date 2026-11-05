@@ -19,7 +19,7 @@
             "headers": {
               "Content-Disposition": { "schema": { "type": "string" }, "description": "attachment; filename=\"album-<year>-indesign.json\"" }
             },
-            "content": { "application/json": { "schema": { "$ref": "./indesign-book.schema.json" } } }
+            "content": { "application/json": { "schema": { "$ref": "../backend/src/main/resources/indesign-book.schema.json" } } }
           },
           "422": {
             "description": "Scoped blockers; no printable artifact is returned.",
@@ -27,7 +27,7 @@
               "type": "object", "required": ["code", "issues"], "additionalProperties": false,
               "properties": {
                 "code": { "const": "export_blocked" },
-                "issues": { "type": "array", "minItems": 1, "items": { "$ref": "./indesign-book.schema.json#/$defs/Issue" } }
+                "issues": { "type": "array", "minItems": 1, "items": { "$ref": "../backend/src/main/resources/indesign-book.schema.json#/$defs/Issue" } }
               }
             } } }
           },

@@ -19,6 +19,8 @@
 
 No new reader interfaces or cross-repository transaction are introduced for export. The use case owns composition and print readiness, HTTP owns the JSON projection, and each importer owns local availability and actual composition.
 
+The HTTP projection validates its complete serialized output against the packaged Draft 2020-12 application schema before returning an attachment. NetworkNT loads the schema once at adapter construction and enforces UUID/date formats; schema disagreement is a logged service failure, not an album-readiness issue. OpenAPI references the same authoritative resource.
+
 The representation contains book identity/page count, referenced originals, ordered interior content, cover content and necessary print resources. It carries no session, restoration payload or backend history.
 
 ## Review boundaries

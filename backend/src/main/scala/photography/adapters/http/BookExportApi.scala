@@ -2,6 +2,7 @@ package photography.adapters.http
 
 import cats.effect.Async
 import cats.syntax.all.*
+import com.networknt.schema.{ExecutionConfig, InputFormat, Schema, SchemaLocation, SchemaRegistry, SpecificationVersion}
 import io.circe.Json
 import org.http4s.{Request, Response}
 import org.http4s.circe.CirceEntityCodec.*
@@ -14,11 +15,19 @@ import photography.domain.layout.*
 import photography.usecases.album.BookExport
 import photography.usecases.album.BookExport.{Code, Issue, SavedBook, Severity, Target}
 import java.util.UUID
+import scala.jdk.CollectionConverters.*
 
 object BookExportApi:
-  def make[F[_]: Async: Logger](exports: BookExport[F]): Routes[F] = new LiveBookExportApi(exports)
+  def make[F[_]: Async: Logger](exports: BookExport[F]): F[Routes[F]] =
+    Async[F].blocking:
+      val registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+      val schema   = registry.getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+      schema.initializeValidators()
+      new LiveBookExportApi(exports, schema)
 
-  final private class LiveBookExportApi[F[_]: Async: Logger](exports: BookExport[F]) extends Routes[F] with Http4sDsl[F]:
+  final private class LiveBookExportApi[F[_]: Async: Logger](exports: BookExport[F], schema: Schema) extends Routes[F] with Http4sDsl[F]:
+    private val validationConfig = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
       case GET -> Root / "api" / "albums" / CanonicalId(id) / "indesign-export" => Route.public(exportBook(AlbumId(id)))
       case GET -> Root / "api" / "albums" / _ / "indesign-export"               =>
@@ -33,7 +42,19 @@ object BookExportApi:
               Logger[F].error(s"Book export projection failed for ${album.value}: $error") *>
                 InternalServerError(Json.obj("code" -> text("service_failure")))
             case Right(encoded) =>
-              Ok(encoded).map(_.putHeaders("Content-Disposition" -> s"""attachment; filename="album-${book.album.year}-indesign.json""""))
+              Async[F].blocking:
+                schema.validate(
+                  encoded.noSpaces,
+                  InputFormat.JSON,
+                  context => context.setExecutionConfig(validationConfig)
+                )
+                  .asScala.toVector
+              .flatMap: errors =>
+                if errors.isEmpty then
+                  Ok(encoded).map(_.putHeaders("Content-Disposition" -> s"""attachment; filename="album-${book.album.year}-indesign.json""""))
+                else
+                  Logger[F].error(s"Book export schema validation failed for ${album.value}: ${errors.mkString("; ")}") *>
+                    InternalServerError(Json.obj("code" -> text("service_failure")))
         case BookExport.Result.Blocked(issues) =>
           UnprocessableContent(Json.obj("code" -> text("export_blocked"), "issues" -> Json.fromValues(issues.map(encodeIssue))))
         case BookExport.Result.NotFound => NotFound(Json.obj("code" -> text("album_not_found")))
