@@ -16,6 +16,7 @@ describe("saved-book InDesign export", () => {
     expect(screen.getByRole("button", { name: "Export for InDesign" })).toBeDisabled();
     expect(screen.getByRole("button")).toHaveAccessibleDescription(/Wait for the saved edit/);
     expect(exportBook).not.toHaveBeenCalled();
+    expect(screen.queryByText("Exports saved content only; unsaved drafts stay in the editor.")).not.toBeInTheDocument();
   });
 
   it("should prevent duplicate pending export and download one JSON for interior and cover", async () => {

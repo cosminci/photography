@@ -92,12 +92,6 @@ p {
 .album-content:not([hidden]) {
   display: contents;
 }
-.catalog-opening {
-  position: absolute;
-  top: 0;
-  right: 0;
-  font-size: 12px;
-}
 .session-feedback {
   width: min(640px, calc(100% - 40px));
   margin: 20px auto;

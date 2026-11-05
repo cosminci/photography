@@ -173,7 +173,8 @@ describe("saved composition previews", () => {
       photo: vi.fn().mockImplementationOnce(response).mockResolvedValue(photo),
     };
     render(() => <AlbumCoverPreview album={album} client={client} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading cover preview");
+    expect(screen.getByRole("status", { name: "Loading cover preview" })).toBeEmptyDOMElement();
+    expect(screen.queryByText("Loading cover preview…")).not.toBeInTheDocument();
     acknowledge(cover);
     expect(await screen.findByRole("alert")).toHaveTextContent("Cover preview could not be loaded");
     expect(screen.queryByText("No front-cover photograph")).not.toBeInTheDocument();

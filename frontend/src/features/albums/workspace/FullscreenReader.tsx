@@ -113,7 +113,7 @@ export function FullscreenReader(props: {
           status = element;
         }}
         id={reasonId}
-        class="control-help"
+        class="visually-hidden"
         tabindex="-1"
       >
         {entryReason()}

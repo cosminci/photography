@@ -1,8 +1,15 @@
 import { For, Show, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import { BookExportBlocked, type BookExportClient, type ExportIssue } from "../model/BookExport";
 import { describeFailure } from "../model/Presentation";
 
-export function BookExportControl(props: { album: string; year: number; client: BookExportClient; unavailable: string | undefined }) {
+export function BookExportControl(props: {
+  album: string;
+  year: number;
+  client: BookExportClient;
+  unavailable: string | undefined;
+  feedbackMount?: HTMLDivElement | undefined;
+}) {
   const feedback = createUniqueId();
   const [pending, setPending] = createSignal(false);
   const [message, setMessage] = createSignal<string>();
@@ -47,42 +54,54 @@ export function BookExportControl(props: { album: string; year: number; client: 
       }
     }
   }
+  const output = (
+    <div
+      ref={(element) => {
+        status = element;
+      }}
+      id={feedback}
+      role="status"
+      aria-live="polite"
+      tabIndex={-1}
+      classList={{ "visually-hidden": message() === undefined }}
+    >
+      <Show when={reason() ?? message()}>{(text) => <p class="control-help">{text()}</p>}</Show>
+      <Show when={issues().length > 0}>
+        <ul>
+          <For each={issues()}>
+            {(issue) => (
+              <li>
+                {issue.severity}: {issue.code.replaceAll("_", " ")} - {Object.values(issue.target).join(" / ")}
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  );
   return (
-    <div class="book-export">
+    <div class="reader-entry-control">
       <button
         ref={(element) => {
           button = element;
         }}
         type="button"
+        aria-label="Export for InDesign"
+        title="Export for InDesign"
         disabled={reason() !== undefined}
         aria-describedby={feedback}
         onClick={() => void exportBook()}
       >
-        Export for InDesign
+        <svg class="reader-entry-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="2" y="2" width="20" height="20" rx="2" />
+          <text x="5" y="17" stroke="none" fill="currentColor" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+            Id
+          </text>
+        </svg>
       </button>
-      <div
-        ref={(element) => {
-          status = element;
-        }}
-        id={feedback}
-        role="status"
-        aria-live="polite"
-        tabIndex={-1}
-      >
-        <Show when={reason() ?? message()}>{(text) => <p class="control-help">{text()}</p>}</Show>
-        <p class="control-help">Exports saved content only; unsaved drafts stay in the editor.</p>
-        <Show when={issues().length > 0}>
-          <ul>
-            <For each={issues()}>
-              {(issue) => (
-                <li>
-                  {issue.severity}: {issue.code.replaceAll("_", " ")} - {Object.values(issue.target).join(" / ")}
-                </li>
-              )}
-            </For>
-          </ul>
-        </Show>
-      </div>
+      <Show when={props.feedbackMount} fallback={output}>
+        {(mount) => <Portal mount={mount()}>{output}</Portal>}
+      </Show>
     </div>
   );
 }

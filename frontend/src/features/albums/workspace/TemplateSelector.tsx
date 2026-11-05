@@ -48,13 +48,8 @@ export function TemplateSelector(props: {
     setCategory(applied === undefined ? categories()[0] : templateCategory(applied));
   });
   return (
-    <section class="template-selector" aria-label="Spread template selector">
+    <section class="template-selector" aria-label="Spread template selector" aria-busy={loading()}>
       <h2>Spread template selector</h2>
-      <Show when={loading()}>
-        <p role="status" class="control-help">
-          Loading templates…
-        </p>
-      </Show>
       <Show when={error()}>
         {(message) => (
           <p role="alert">

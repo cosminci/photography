@@ -122,6 +122,7 @@ export function AlbumWorkspace(props: {
   const [refreshing, setRefreshing] = createSignal(false);
   const [refreshAfterSave, setRefreshAfterSave] = createSignal(false);
   const [readerEntry, setReaderEntry] = createSignal<HTMLDivElement>();
+  const [exportFeedback, setExportFeedback] = createSignal<HTMLDivElement>();
   const [spreadPending, setSpreadPending] = createSignal(false);
   const [spreadError, setSpreadError] = createSignal<string>();
   const [failedAction, setFailedAction] = createSignal<SpreadAction>();
@@ -913,12 +914,6 @@ export function AlbumWorkspace(props: {
           </a>
         </div>
         <div class="workspace-controls" role="group" aria-label="Workspace controls">
-          <BookExportControl
-            album={props.album.id}
-            year={props.album.year}
-            client={props.client}
-            unavailable={historyReason() ?? contentReason() ?? refreshReason() ?? spreadReadReason() ?? placement.navigationReason()}
-          />
           <Show when={!reader()}>
             <BookHistoryControls
               history={history}
@@ -950,6 +945,13 @@ export function AlbumWorkspace(props: {
             )}
           </Show>
           <div ref={setReaderEntry} />
+          <BookExportControl
+            album={props.album.id}
+            year={props.album.year}
+            client={props.client}
+            unavailable={historyReason() ?? contentReason() ?? refreshReason() ?? spreadReadReason() ?? placement.navigationReason()}
+            feedbackMount={exportFeedback()}
+          />
           <div class="workspace-mode" role="group" aria-label="Canvas view">
             <button
               type="button"
@@ -976,14 +978,20 @@ export function AlbumWorkspace(props: {
           </div>
         </div>
       </header>
+      <div ref={setExportFeedback} />
       <Show when={refreshing()}>
-        <p role="status" class="control-help">
+        <p role="status" class="visually-hidden">
           Refreshing saved workspace…
         </p>
       </Show>
       <Show when={!reader() && ownershipReason()}>
         {(reason) => (
-          <p id="editing-ownership-reason" role="status" class="control-help">
+          <p
+            id="editing-ownership-reason"
+            role="status"
+            class="control-help"
+            classList={{ "visually-hidden": props.session.targetPending() || ownershipLoading() }}
+          >
             {reason()}
           </p>
         )}
@@ -1044,7 +1052,12 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={navigationReason()}>
         {(message) => (
-          <p id="photo-navigation-reason" class="control-help" role="status">
+          <p
+            id="photo-navigation-reason"
+            class="control-help"
+            role="status"
+            classList={{ "visually-hidden": placement.loading() || placement.saving() }}
+          >
             {message()}
           </p>
         )}
@@ -1194,7 +1207,7 @@ export function AlbumWorkspace(props: {
                 }}
               >
                 <Show when={gearLoading()}>
-                  <p role="status" class="control-help">
+                  <p role="status" class="visually-hidden">
                     Loading saved chapter gear.
                   </p>
                 </Show>

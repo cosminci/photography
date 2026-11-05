@@ -57,6 +57,7 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
       <main
         class="page"
         tabIndex={-1}
+        aria-busy={opening()}
         ref={(element) => {
           page = element;
         }}
@@ -65,11 +66,6 @@ export function App(props: { client: AlbumClient; events: AlbumPhotoEvents; sess
           <div class="catalog-content" inert={opening()} aria-busy={opening()}>
             <AlbumDashboard client={props.client} />
           </div>
-        </Show>
-        <Show when={opening()}>
-          <p role="status" aria-label="Opening album" class="catalog-opening">
-            Opening album…
-          </p>
         </Show>
         <Show when={id()}>
           {(albumId) => (

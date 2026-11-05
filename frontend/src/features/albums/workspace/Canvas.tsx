@@ -219,9 +219,10 @@ export function CoverCanvas(props: { title: string; year: number; authors: reado
       class="cover-canvas"
       role={props.editing !== undefined && !props.editing.reader ? "group" : "img"}
       aria-label={`Cover: back on the left; front on the right. ${props.title}. ${getCoverCredits(props.authors)}`}
+      aria-busy={composition() === undefined}
       style={{ "aspect-ratio": composition() === undefined ? coverAspectRatio : undefined }}
     >
-      <Show when={composition()} fallback={<p role="status">Loading cover…</p>}>
+      <Show when={composition()}>
         {(cover) => (
           <CoverSurface
             geometry={cover().geometry}
