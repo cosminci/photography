@@ -120,22 +120,6 @@ final class BookExportComponentTest extends CatsEffectSuite:
 
       exporter.exportBook(album.id).map(result => assertEquals(result, Result.Ready(saved, warnings = Vector.empty[Issue])))
 
-  test("should block an opening text frame outside either physical spread boundary"):
-    Vector(
-      SlotBox(x = 99.0, y = 1.0, width = 2.0, height = 10.0),
-      SlotBox(x = 1.0, y = 99.0, width = 10.0, height = 2.0)
-    ).traverse_ { invalid =>
-      Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-        val saved    = book.copy(album = album.copy(opening = opening.copy(textSlot = textSlot.copy(box = invalid))))
-        val exporter = buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
-        exporter.exportBook(album.id).map(result =>
-          assertEquals(
-            result,
-            Result.Blocked(Vector(Issue(Code.InvalidGeometry, Severity.Blocking, Target.Spread(opening.id))))
-          )
-        )
-    }
-
   test("should return explicit acquisition outcomes without reading originals"):
     val found     = AlbumRepository.GetResult.Found(album)
     val cover     = CoverRepository.ReadResult.Found(book.cover)
@@ -152,6 +136,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
       ),
       (album = found, cover = CoverRepository.ReadResult.NotFound, photos = inventory, gear = catalog, expected = Result.Failed),
       (album = found, cover = cover, photos = PhotoRepository.ListResult.Failed, gear = catalog, expected = Result.Failed),
+      (album = found, cover = cover, photos = PhotoRepository.ListResult.Listed(Vector.empty), gear = catalog, expected = Result.Failed),
       (album = found, cover = cover, photos = inventory, gear = GearRepository.CatalogReadResult.Failed, expected = Result.Failed)
     )
 
@@ -209,22 +194,13 @@ final class BookExportComponentTest extends CatsEffectSuite:
         exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
     }
 
-  test("should identify empty invalid or unresolved interior photo slots rather than publishing partial content"):
-    val missing    = album.copy(opening = opening.copy(placements = Vector.empty[SpreadPlacement]))
-    val unresolved = album.copy(opening = opening.copy(placements = Vector(placed.copy(photo = PhotoId(new UUID(9L, 9L))))))
-    val invalid    = album.copy(opening = opening.copy(placements = Vector(placed.copy(transform = transform.copy(zoom = 6.0)))))
-    val brokenBox  = photoSlot.copy(box = SlotBox(x = 40.0, y = 50.0, width = 20.0, height = 60.0), bleed = Set.empty[SpreadEdge])
-    val malformed  = album.copy(opening = opening.copy(photoSlots = Vector(brokenBox)))
-    val cases      =
-      Vector(missing -> Code.EmptyPhotoSlot, unresolved -> Code.MissingPhoto, invalid -> Code.InvalidFraming, malformed -> Code.InvalidGeometry)
+  test("should identify empty interior photo slots before publishing"):
+    Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
+      val saved    = book.copy(album = album.copy(opening = opening.copy(placements = Vector.empty[SpreadPlacement])))
+      val exporter = buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
+      val expected = Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, Target.Slot(opening.id, photoSlot.id)))
 
-    cases.traverse_ { case (saved, code) =>
-      Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-        val exporter = buildExporter(calls, book.copy(album = saved), PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
-        val expected = Vector(Issue(code, Severity.Blocking, Target.Slot(opening.id, photoSlot.id)))
-
-        exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
-    }
+      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
 
   test("should reread saved state and originals on retry while leaving unused collection photos unchecked"):
     Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
@@ -237,7 +213,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
         second <- exporter.exportBook(album.id)
         reads  <- calls.get
       yield
-        assertEquals(first, Result.Ready(saved, warnings = Vector.empty[Issue]))
+        assertEquals(first, Result.Ready(book, warnings = Vector.empty[Issue]))
         assertEquals(second, first)
         assertEquals(reads, photos.map(_.original) ++ photos.map(_.original))
 
@@ -247,44 +223,6 @@ final class BookExportComponentTest extends CatsEffectSuite:
         buildExporter(calls, book, IO.raiseError[PhotoStorage.ReadResult](new IllegalStateException("Source unavailable")))
 
       exporter.exportBook(album.id).map(result => assertEquals(result, Result.Failed))
-
-  test("should block a cover whose page count does not describe the saved interior"):
-    Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-      val mismatched = book.copy(cover = book.cover.copy(dimensions = CoverDimensions.forSpreads(3, cats.data.NonEmptyVector.one(specification))))
-      val exporter   = buildExporter(calls, mismatched, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
-      val expected   = Vector(Issue(Code.InvalidPageCount, Severity.Blocking, Target.Album))
-
-      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
-
-  test("should release the saved-state transaction before checking originals and fail explicitly if acquisition throws"):
-    Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-      Ref.of[IO, Boolean](false).flatMap: reading =>
-        given Transaction[IO, IO] with
-          override def run[A](program: IO[A]): IO[A]     = reading.set(true) >> program.guarantee(reading.set(false))
-          override def resolve[A](program: IO[A]): IO[A] = fail("Export must not resolve writes")
-        val read        = reading.get.flatMap(active => IO(assertEquals(active, false))).as(PhotoStorage.ReadResult.Read(content, metadata))
-        val exporter    = buildExporter(calls, book, read)
-        val unavailable = new AlbumRepository.AggregateRead[IO]:
-          override def readAlbum(id: AlbumId): IO[AlbumRepository.GetResult] =
-            IO.raiseError[AlbumRepository.GetResult](new IllegalStateException("Database unavailable"))
-        val failed = BookExport.make(
-          unavailable,
-          buildCovers(CoverRepository.ReadResult.Found(book.cover)),
-          buildPhotos(PhotoRepository.ListResult.Listed(book.photos)),
-          buildGear(GearRepository.CatalogReadResult.Found(book.gear)),
-          buildStorage(calls, read)
-        )
-
-        for
-          ready     <- exporter.exportBook(album.id)
-          failure   <- failed.exportBook(album.id)
-          retained  <- reading.get
-          originals <- calls.get
-        yield
-          assertEquals(ready, Result.Ready(book, warnings = Vector.empty[Issue]))
-          assertEquals(failure, Result.Failed)
-          assertEquals(retained, false)
-          assertEquals(originals, photos.map(_.original))
 
   private def buildExporter(calls: Ref[IO, Vector[OriginalPhotoLocation]], saved: SavedBook, read: IO[PhotoStorage.ReadResult])(using
       Transaction[IO, IO]
@@ -297,8 +235,14 @@ final class BookExportComponentTest extends CatsEffectSuite:
       buildStorage(calls, read)
     )
 
-  private def buildAlbums(response: AlbumRepository.GetResult) = new AlbumRepository.AggregateRead[IO]:
-    override def readAlbum(id: AlbumId): IO[AlbumRepository.GetResult] = IO(assertEquals(id, album.id)).as(response)
+  private def buildAlbums(response: AlbumRepository.GetResult) = new AlbumRepository[IO]:
+    override def get(id: AlbumId): IO[AlbumRepository.GetResult]                                        = IO(assertEquals(id, album.id)).as(response)
+    override def list(offset: Int, limit: Int): IO[AlbumRepository.ListResult]                          = fail("Read the requested album")
+    override def create(album: Album, cover: Cover): IO[AlbumRepository.CreateResult]                   = fail("Read-only export")
+    override def rename(id: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult]               = fail("Read-only export")
+    override def saveSynopsis(id: AlbumId, text: String): IO[AlbumRepository.SaveSynopsisResult]        = fail("Read-only export")
+    override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumRepository.SaveAuthorsResult] = fail("Read-only export")
+    override def delete(id: AlbumId): IO[AlbumRepository.DeleteResult]                                  = fail("Read-only export")
 
   private def buildCovers(response: CoverRepository.ReadResult) = new CoverRepository[IO]:
     override def read(id: AlbumId): IO[CoverRepository.ReadResult] = IO(assertEquals(id, album.id)).as(response)
@@ -315,8 +259,14 @@ final class BookExportComponentTest extends CatsEffectSuite:
     override def completeWrite(id: PhotoWriteIntentId): IO[PhotoRepository.CompleteWriteResult]                       = fail("Read-only export")
     override def listUnfinishedWrites: IO[PhotoRepository.ListUnfinishedWritesResult]                                 = fail("Read-only export")
 
-  private def buildGear(response: GearRepository.CatalogReadResult) = new GearRepository.CatalogRead[IO]:
-    override def readSavedCatalog: IO[GearRepository.CatalogReadResult] = response.pure[IO]
+  private def buildGear(response: GearRepository.CatalogReadResult) = new GearRepository[IO]:
+    override def readCatalog: IO[GearRepository.CatalogReadResult]                   = response.pure[IO]
+    override def createCamera(camera: Camera): IO[GearRepository.CameraCreateResult] = fail("Read-only export")
+    override def updateCamera(camera: Camera): IO[GearRepository.CameraUpdateResult] = fail("Read-only export")
+    override def deleteCamera(id: CameraId): IO[GearRepository.CameraDeleteResult]   = fail("Read-only export")
+    override def createLens(lens: Lens): IO[GearRepository.LensCreateResult]         = fail("Read-only export")
+    override def updateLens(lens: Lens): IO[GearRepository.LensUpdateResult]         = fail("Read-only export")
+    override def deleteLens(id: LensId): IO[GearRepository.LensDeleteResult]         = fail("Read-only export")
 
   private def buildStorage(calls: Ref[IO, Vector[OriginalPhotoLocation]], read: IO[PhotoStorage.ReadResult]) =
     new PhotoStorage[IO]:

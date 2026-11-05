@@ -122,12 +122,11 @@
     "Issue": {
       "type": "object", "required": ["code", "severity", "target"], "additionalProperties": false,
       "properties": {
-        "code": { "enum": ["empty_synopsis", "empty_description", "empty_photo_slot", "missing_photo", "invalid_page_count", "invalid_geometry", "invalid_framing", "low_resolution", "original_changed", "original_undecodable", "original_unstable", "original_unavailable"] },
+        "code": { "enum": ["empty_synopsis", "empty_description", "empty_photo_slot", "low_resolution", "original_changed", "original_undecodable", "original_unstable", "original_unavailable"] },
         "severity": { "enum": ["blocking", "warning"] },
         "target": { "oneOf": [
           { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "album" } } },
           { "type": "object", "required": ["kind", "chapter"], "additionalProperties": false, "properties": { "kind": { "const": "chapter" }, "chapter": { "$ref": "#/$defs/Id" } } },
-          { "type": "object", "required": ["kind", "spread"], "additionalProperties": false, "properties": { "kind": { "const": "spread" }, "spread": { "$ref": "#/$defs/Id" } } },
           { "type": "object", "required": ["kind", "spread", "slot"], "additionalProperties": false, "properties": { "kind": { "const": "slot" }, "spread": { "$ref": "#/$defs/Id" }, "slot": { "$ref": "#/$defs/Id" } } },
           { "type": "object", "required": ["kind", "slot"], "additionalProperties": false, "properties": { "kind": { "const": "cover" }, "slot": { "$ref": "#/$defs/Id" } } },
           { "type": "object", "required": ["kind", "photo"], "additionalProperties": false, "properties": { "kind": { "const": "photo" }, "photo": { "$ref": "#/$defs/Id" } } }

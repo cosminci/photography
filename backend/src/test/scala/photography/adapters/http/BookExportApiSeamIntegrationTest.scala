@@ -136,10 +136,6 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
       Code.EmptySynopsis       -> "empty_synopsis",
       Code.EmptyDescription    -> "empty_description",
       Code.EmptyPhotoSlot      -> "empty_photo_slot",
-      Code.MissingPhoto        -> "missing_photo",
-      Code.InvalidPageCount    -> "invalid_page_count",
-      Code.InvalidGeometry     -> "invalid_geometry",
-      Code.InvalidFraming      -> "invalid_framing",
       Code.LowResolution       -> "low_resolution",
       Code.OriginalChanged     -> "original_changed",
       Code.OriginalUndecodable -> "original_undecodable",
@@ -147,8 +143,7 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
       Code.OriginalUnavailable -> "original_unavailable"
     )
     val targets = Vector(
-      Target.Album          -> Json.obj("kind" -> Json.fromString("album")),
-      Target.Spread(spread) -> Json.obj("kind" -> Json.fromString("spread"), "spread" -> Json.fromString(spread.value.toString)),
+      Target.Album                                -> Json.obj("kind" -> Json.fromString("album")),
       Target.Chapter(ChapterId(new UUID(0L, 7L))) ->
         Json.obj("kind" -> Json.fromString("chapter"), "chapter" -> Json.fromString(new UUID(0L, 7L).toString)),
       Target.CoverSlot(CoverSlotId(new UUID(0L, 10L))) ->

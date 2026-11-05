@@ -43,7 +43,6 @@ object BookExportApi:
     private def noStore(response: Response[F]) = response.putHeaders("Cache-Control" -> "no-store")
 
     private def encodeBook(book: SavedBook, warnings: Vector[Issue]) =
-      val references = book.album.collectSpreads.toList.flatMap(_.placements.map(_.photo)).toVector ++ book.cover.placements.map(_.photo)
       book.album.collectSpreads.toList.traverse(encodeSpread).map: spreads =>
         Json.obj(
           "formatVersion" -> Json.fromInt(1),
@@ -54,7 +53,7 @@ object BookExportApi:
             "synopsis" -> text(book.album.synopsis),
             "authors"  -> Json.fromValues(Author.values.toVector.filter(book.album.authors.contains).map(encodeAuthor))
           ),
-          "sources"  -> Json.fromValues(book.photos.filter(photo => references.contains(photo.id)).map(encodePhoto)),
+          "sources"  -> Json.fromValues(book.photos.map(encodePhoto)),
           "interior" -> Json.obj(
             "widthPt"   -> number(InteriorDimensions.width),
             "heightPt"  -> number(InteriorDimensions.height),
@@ -180,7 +179,6 @@ object BookExportApi:
       val scope = issue.target match
         case Target.Album              => Json.obj("kind" -> text("album"))
         case Target.Chapter(chapter)   => Json.obj("kind" -> text("chapter"), "chapter" -> text(chapter.value.toString))
-        case Target.Spread(spread)     => Json.obj("kind" -> text("spread"), "spread" -> text(spread.value.toString))
         case Target.Slot(spread, slot) =>
           Json.obj("kind" -> text("slot"), "spread" -> text(spread.value.toString), "slot" -> text(slot.value.toString))
         case Target.CoverSlot(slot) => Json.obj("kind" -> text("cover"), "slot" -> text(slot.value.toString))
@@ -192,10 +190,6 @@ object BookExportApi:
         case Code.EmptySynopsis       => "empty_synopsis"
         case Code.EmptyDescription    => "empty_description"
         case Code.EmptyPhotoSlot      => "empty_photo_slot"
-        case Code.MissingPhoto        => "missing_photo"
-        case Code.InvalidPageCount    => "invalid_page_count"
-        case Code.InvalidGeometry     => "invalid_geometry"
-        case Code.InvalidFraming      => "invalid_framing"
         case Code.LowResolution       => "low_resolution"
         case Code.OriginalChanged     => "original_changed"
         case Code.OriginalUndecodable => "original_undecodable"

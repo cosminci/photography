@@ -28,14 +28,14 @@ object SqliteAlbumRepository:
       transactor: Transactor[F],
       composition: AlbumCompositionRepository[ConnectionIO],
       chapters: ChapterRepository[ConnectionIO]
-  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] & AggregateRead[ConnectionIO] =
+  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] =
     new LiveSqliteAlbumRepository(transactor, composition, chapters)
 
   final private class LiveSqliteAlbumRepository[F[_]: Async: Logger](
       transactor: Transactor[F],
       albumComposition: AlbumCompositionRepository[ConnectionIO],
       chapterRepository: ChapterRepository[ConnectionIO]
-  ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F] with AggregateRead[ConnectionIO]:
+  ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
     override def metadata(album: AlbumId): F[MetadataResult] =
       val query = sql"""SELECT year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms
                         FROM album WHERE id = ${album.value}"""
@@ -75,10 +75,7 @@ object SqliteAlbumRepository:
       execute(query, CreateResult.Failed(_))
 
     override def get(id: AlbumId): F[GetResult] =
-      execute(readAlbum(id), GetResult.Failed(_))
-
-    override def readAlbum(album: AlbumId): ConnectionIO[GetResult] =
-      load(album.value).map(_.fold[GetResult](GetResult.NotFound)(GetResult.Found(_)))
+      execute(load(id.value).map(_.fold[GetResult](GetResult.NotFound)(GetResult.Found(_))), GetResult.Failed(_))
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       val update = sql"UPDATE album SET title = $title WHERE id = ${id.value}"

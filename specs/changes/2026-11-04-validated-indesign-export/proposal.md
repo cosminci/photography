@@ -10,9 +10,9 @@ Export the complete saved book as one validated JSON, then use the existing InDe
 
 ## Contracts
 
-Each export acquires one coherent saved book, including its composition, editorial content, referenced photographs and selected reference data. Validation completes before a downloadable file is published; later edits belong to a subsequent export.
+Each export reads saved composition, editorial content, referenced photographs and selected reference data through their existing owners. These reads do not share a cross-repository snapshot; validation completes before a downloadable file is published.
 
-The backend establishes saved-state consistency, original availability and identity, physical geometry and effective image resolution. InDesign establishes local resources, template compatibility, fonts, glyphs and actual text composition.
+Export trusts repository validity guarantees and reuses authoritative geometry for print-readiness checks, original availability and identity, and effective image resolution. InDesign establishes local resources, template compatibility, fonts, glyphs and actual text composition.
 
 The same JSON supplies both import scripts. It carries print content and explicit physical placement, retaining original identity and exact source-relative paths rather than relying on filenames alone.
 
@@ -26,7 +26,7 @@ The [implementation design](design.md) defines responsibility changes separately
 
 | ID | Observable outcome |
 | --- | --- |
-| A1 | One export action downloads one JSON containing the complete interior and cover from the same saved-book read. |
+| A1 | One export action downloads one JSON containing the saved interior and cover, without promising isolation from concurrent edits across independently read data. |
 | A2 | Export leaves saved content, browser Undo/Redo and editing ownership unchanged, including when another editor owns a spread. |
 | A3 | Every attempt validates the entire saved book and reports actionable album, chapter, spread, slot or photo issues; blocking issues produce no download. |
 | A4 | Missing, changed, unstable or undecodable referenced originals are reported explicitly; duplicate basenames never substitute another photograph. |
@@ -50,6 +50,6 @@ The [implementation design](design.md) defines responsibility changes separately
 
 | Owner | Enduring delta |
 | --- | --- |
-| specs/design.md — Album model / Architectural decisions | A print-only handoff derives from coherent saved state; backend validation and native composition have distinct authorities. |
+| specs/design.md — Album model / Architectural decisions | A print-only handoff composes existing saved-data reads; repository validity, print readiness and native composition have distinct authorities. |
 | specs/contracts.md — Contract inventory | Link the authoritative export boundary and shared print representation consumed by both scripts. |
 | specs/testing.md — Confidence model | Shipped-script checks establish orchestration; actual InDesign and final-output inspection establish print composition. |

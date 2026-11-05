@@ -16,11 +16,10 @@ import photography.ports.gear.GearRepository.*
 import java.util.UUID
 
 object SqliteGearRepository:
-  def make[F[_]: Async: Logger](transactor: Transactor[F]): GearRepository[F] & CatalogRead[ConnectionIO] =
+  def make[F[_]: Async: Logger](transactor: Transactor[F]): GearRepository[F] =
     new LiveSqliteGearRepository(transactor)
 
-  final private class LiveSqliteGearRepository[F[_]: Async: Logger](transactor: Transactor[F])
-      extends GearRepository[F] with CatalogRead[ConnectionIO]:
+  final private class LiveSqliteGearRepository[F[_]: Async: Logger](transactor: Transactor[F]) extends GearRepository[F]:
     override def createCamera(camera: Camera): F[CameraCreateResult] =
       val (kind, maybeMount, maybeSensor) = encodeKind(camera.kind)
       val insert                          = sql"""INSERT INTO camera (id, code, friendly_name, kind, mount, sensor_format)
@@ -84,19 +83,17 @@ object SqliteGearRepository:
         case _                           => LensDeleteResult.Failed
 
     override def readCatalog: F[CatalogReadResult] =
-      readSavedCatalog.transact(transactor)
-        .handleErrorWith(error => Logger[F].error(error)("SQLite gear catalog read failed").as(CatalogReadResult.Failed))
-
-    override def readSavedCatalog: ConnectionIO[CatalogReadResult] =
       val readCameras = sql"SELECT id, code, friendly_name, kind, mount, sensor_format FROM camera ORDER BY rowid"
         .query[(UUID, String, String, String, Option[String], Option[String])].to[Vector]
       val readLenses =
         sql"SELECT id, code, friendly_name, mount, coverage FROM lens ORDER BY rowid".query[(UUID, String, String, String, String)].to[Vector]
-      for
-        cameras <- readCameras
-        lenses  <- readLenses
-        catalog <- (cameras.traverse(decodeCamera), lenses.traverse(decodeLens)).mapN(GearCatalog.apply).liftTo[ConnectionIO]
-      yield CatalogReadResult.Found(catalog)
+      val query =
+        for
+          cameras <- readCameras
+          lenses  <- readLenses
+          catalog <- (cameras.traverse(decodeCamera), lenses.traverse(decodeLens)).mapN(GearCatalog.apply).liftTo[ConnectionIO]
+        yield CatalogReadResult.Found(catalog): CatalogReadResult
+      query.transact(transactor).handleErrorWith(error => Logger[F].error(error)("SQLite gear catalog read failed").as(CatalogReadResult.Failed))
 
     private def requireApplied(statement: Fragment) =
       statement.update.run.ensure(new IllegalStateException("Expected one applied gear catalog row"))(_ === 1).void

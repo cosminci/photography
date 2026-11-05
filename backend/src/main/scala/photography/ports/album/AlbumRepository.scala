@@ -14,9 +14,6 @@ trait AlbumRepository[F[_]]:
   def delete(id: AlbumId): F[AlbumRepository.DeleteResult]
 
 object AlbumRepository:
-  trait AggregateRead[Db[_]]:
-    def readAlbum(album: AlbumId): Db[GetResult]
-
   trait MetadataRead[F[_]]:
     def metadata(album: AlbumId): F[MetadataResult]
 

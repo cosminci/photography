@@ -11,7 +11,7 @@
       "get": {
         "operationId": "exportSavedBook",
         "summary": "Validate and download one complete saved-book InDesign JSON",
-        "description": "Public read-only operation; acquires no editing grant and changes no album state. Reads interior, cover, references and selected metadata in one SQLite snapshot, then checks each referenced original. All responses are Cache-Control: no-store. Every attempt runs the complete saved-book validation. Native resource availability, glyphs and text fit remain importer responsibilities.",
+        "description": "Public read-only operation; acquires no editing grant and changes no album state. Composes existing repository reads without a cross-repository snapshot, then checks print readiness and each referenced original. Repository output is trusted as domain-valid. All responses are Cache-Control: no-store. Native resource availability, glyphs and text fit remain importer responsibilities.",
         "parameters": [{ "$ref": "#/components/parameters/WorkspaceAlbumId" }],
         "responses": {
           "200": {
