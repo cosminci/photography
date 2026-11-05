@@ -13,6 +13,7 @@ import photography.adapters.http.{AlbumApi, AlbumSpreadApi, AlbumCompositionApi,
 import photography.adapters.filesystem.FileThumbnailStorage
 import photography.adapters.http.{AlbumPhotoEventsApi, ThumbnailApi}
 import photography.adapters.http.PhotoPlacementApi
+import photography.adapters.http.BookExportApi
 import photography.adapters.http.EditorSessionApi
 import photography.adapters.http.ChapterCompositionApi
 import photography.adapters.http.PhotoSourceApi
@@ -63,6 +64,7 @@ object Main extends IOApp.Simple:
       HealthRoutes.routes[IO],
       EditorSessionApi.make(managers.editorSessions),
       AlbumApi.make(managers.albums, managers.metadata),
+      BookExportApi.make(managers.bookExport),
       ChapterApi.make(managers.chapters, managers.chapterMetadata, managers.chapterGear),
       PhotosApi.make(managers.inventories, managers.photos),
       ThumbnailApi.make(thumbnails),

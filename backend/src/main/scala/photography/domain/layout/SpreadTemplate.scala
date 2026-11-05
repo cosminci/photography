@@ -42,8 +42,8 @@ final case class SlotBox(x: PositionOnSpread, y: PositionOnSpread, width: Distan
   private def touchesBottom = y + height >= 100.0 - SlotBox.verticalMargin - SlotBox.tolerance
 
 object SlotBox:
-  private val horizontalMargin = 700.0 / 2381.102
-  private val verticalMargin   = 700.0 / 765.354
+  private val horizontalMargin = 700.0 / InteriorDimensions.width
+  private val verticalMargin   = 700.0 / InteriorDimensions.height
   private val tolerance        = 0.001
 
   private def fromEdges(left: Double, top: Double, right: Double, bottom: Double) =

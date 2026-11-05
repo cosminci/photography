@@ -24,6 +24,10 @@ The representation contains book identity/page count, referenced originals, orde
 
 ## Review boundaries
 
-Validation thresholds, intentional empty content and authored-character policy remain proposal decisions, not implementation defaults. Exact JSON and HTTP representations belong to executable contracts after approval.
+Validation warns below 300 effective DPI and blocks empty photo slots, synopsis and chapter descriptions, while allowing empty captions.
+
+Saved text and the JSON preserve authored characters. Native text composition removes diacritics for Ink Free synopsis/cover text and IDDragonXing chapter headings; Garamond descriptions/captions remain unchanged, and remaining unsupported glyphs warn for manual finishing without font substitution.
 
 Native comparison uses disposable documents and an agreed small scenario and time budget; complete-album proof follows separately. Legacy rendering concerns remain hypotheses until reproduced in the actual consumer.
+
+The approved native probe reproduced backup HEAD's crop-only mirror behavior without image reflection. The maintainer approved true horizontal reflection for new imports to match saved editor mirroring, retaining the other placement and typography behavior and leaving existing documents unchanged.

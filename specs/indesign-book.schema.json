@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Saved-book InDesign handoff, version 1",
+  "type": "object",
+  "required": ["formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "album": {
+      "type": "object", "required": ["id", "title", "year", "synopsis", "authors"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "title": { "type": "string" },
+        "year": { "type": "integer" },
+        "synopsis": { "type": "string", "pattern": "\\S" },
+        "authors": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
+    "sources": {
+      "type": "array", "minItems": 1,
+      "description": "Only referenced originals, identified by photo ID rather than basename; dimensions are EXIF-oriented pixels. Source is the exact absolute source directory.",
+      "items": {
+        "type": "object", "required": ["id", "source", "filename", "hash", "width", "height", "caption"], "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/Id" }, "source": { "type": "string" }, "filename": { "type": "string" },
+          "hash": { "type": "string" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 },
+          "caption": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "interior": {
+      "type": "object", "required": ["widthPt", "heightPt", "pageCount", "spreads"], "additionalProperties": false,
+      "properties": {
+        "widthPt": { "const": 2381.102 }, "heightPt": { "const": 765.354 },
+        "pageCount": { "type": "integer", "minimum": 2, "maximum": 130, "multipleOf": 2 },
+        "spreads": { "type": "array", "minItems": 1, "maxItems": 65, "items": { "$ref": "#/$defs/Spread" } }
+      }
+    },
+    "chapters": {
+      "type": "array", "items": {
+        "type": "object", "required": ["id", "name", "description", "opening", "firstDay", "days", "countries", "gear"], "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/Id" }, "name": { "type": "string" }, "description": { "type": "string", "pattern": "\\S" },
+          "opening": { "$ref": "#/$defs/Id" }, "firstDay": { "type": "string", "format": "date" }, "days": { "type": "integer", "minimum": 1 },
+          "countries": { "type": "array", "items": {
+            "type": "object", "required": ["code", "name", "flag"], "additionalProperties": false,
+            "properties": { "code": { "type": "string" }, "name": { "type": "string" }, "flag": { "type": "string", "description": "Exact configured flag path, mapped independently of photographs." } }
+          } },
+          "gear": { "type": "array", "items": {
+            "type": "object", "required": ["cameraId", "lensIds"], "additionalProperties": false,
+            "properties": { "cameraId": { "$ref": "#/$defs/Id" }, "lensIds": { "type": "array", "items": { "$ref": "#/$defs/Id" } } }
+          } }
+        }
+      }
+    },
+    "cover": {
+      "type": "object",
+      "required": ["widthPt", "heightPt", "spineStartPt", "spineWidthPt", "spineOwner", "frontSlot", "backSlot", "frontFrame", "backFrame", "placements"],
+      "additionalProperties": false,
+      "description": "Cover coordinates start at the outer artwork's top-left, including wrap/bleed. The importer offsets them by the actual template's top/left bleed.",
+      "properties": {
+        "widthPt": { "type": "number", "exclusiveMinimum": 0 }, "heightPt": { "type": "number", "exclusiveMinimum": 0 },
+        "spineStartPt": { "type": "number", "minimum": 0 }, "spineWidthPt": { "type": "number", "exclusiveMinimum": 0 },
+        "spineOwner": { "enum": ["front", "back"] }, "frontSlot": { "$ref": "#/$defs/Id" }, "backSlot": { "$ref": "#/$defs/Id" },
+        "frontFrame": { "$ref": "#/$defs/Frame" }, "backFrame": { "$ref": "#/$defs/Frame" },
+        "placements": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/Placement" } }
+      }
+    },
+    "gear": {
+      "type": "object", "required": ["cameras", "lenses"], "additionalProperties": false,
+      "properties": {
+        "cameras": { "type": "array", "items": { "$ref": "#/$defs/NamedResource" } },
+        "lenses": { "type": "array", "items": { "$ref": "#/$defs/NamedResource" } }
+      }
+    },
+    "warnings": { "type": "array", "items": { "allOf": [{ "$ref": "#/$defs/Issue" }, { "properties": { "severity": { "const": "warning" } } }] } }
+  },
+  "$defs": {
+    "Id": { "type": "string", "format": "uuid" },
+    "NamedResource": {
+      "type": "object", "required": ["id", "name"], "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/Id" }, "name": { "type": "string" } }
+    },
+    "Frame": {
+      "type": "object", "required": ["xPt", "yPt", "widthPt", "heightPt"], "additionalProperties": false,
+      "description": "Points, positive right/down; 72 points per inch. Interior origin is the full spread's trim top-left. Photo frames include selected outward bleed; caption frames retain the domain content margins.",
+      "properties": {
+        "xPt": { "type": "number" }, "yPt": { "type": "number" },
+        "widthPt": { "type": "number", "exclusiveMinimum": 0 }, "heightPt": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "Transform": {
+      "type": "object", "required": ["xPt", "yPt", "zoom", "mirrored"], "additionalProperties": false,
+      "description": "Saved point shifts from the centered fill crop. Mirroring reflects the actual photograph as well as the crop's horizontal shift.",
+      "properties": {
+        "xPt": { "type": "number" }, "yPt": { "type": "number" }, "zoom": { "type": "number", "minimum": 1, "maximum": 5 },
+        "mirrored": { "type": "boolean" }
+      }
+    },
+    "Placement": {
+      "type": "object", "required": ["slot", "photo", "transform"], "additionalProperties": false,
+      "properties": { "slot": { "$ref": "#/$defs/Id" }, "photo": { "$ref": "#/$defs/Id" }, "transform": { "$ref": "#/$defs/Transform" } }
+    },
+    "Spread": {
+      "type": "object", "required": ["id", "kind", "textFrame", "slots", "placements"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" }, "kind": { "enum": ["synopsis", "chapter_opening", "photos"] },
+        "textFrame": { "oneOf": [{ "$ref": "#/$defs/Frame" }, { "type": "null" }] },
+        "slots": { "type": "array", "items": {
+          "type": "object", "required": ["id", "frame", "captionFrame"], "additionalProperties": false,
+          "properties": { "id": { "$ref": "#/$defs/Id" }, "frame": { "$ref": "#/$defs/Frame" }, "captionFrame": { "$ref": "#/$defs/Frame" } }
+        } },
+        "placements": { "type": "array", "items": {
+          "type": "object", "required": ["slot", "photo", "transform", "captionCorner"], "additionalProperties": false,
+          "properties": {
+            "slot": { "$ref": "#/$defs/Id" }, "photo": { "$ref": "#/$defs/Id" }, "transform": { "$ref": "#/$defs/Transform" },
+            "captionCorner": { "enum": ["top_left", "top_right", "bottom_left", "bottom_right"] }
+          }
+        } }
+      }
+    },
+    "Issue": {
+      "type": "object", "required": ["code", "severity", "target"], "additionalProperties": false,
+      "properties": {
+        "code": { "enum": ["empty_synopsis", "empty_description", "empty_photo_slot", "missing_photo", "invalid_page_count", "invalid_geometry", "invalid_framing", "low_resolution", "original_changed", "original_undecodable", "original_unstable", "original_unavailable"] },
+        "severity": { "enum": ["blocking", "warning"] },
+        "target": { "oneOf": [
+          { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "album" } } },
+          { "type": "object", "required": ["kind", "chapter"], "additionalProperties": false, "properties": { "kind": { "const": "chapter" }, "chapter": { "$ref": "#/$defs/Id" } } },
+          { "type": "object", "required": ["kind", "spread"], "additionalProperties": false, "properties": { "kind": { "const": "spread" }, "spread": { "$ref": "#/$defs/Id" } } },
+          { "type": "object", "required": ["kind", "spread", "slot"], "additionalProperties": false, "properties": { "kind": { "const": "slot" }, "spread": { "$ref": "#/$defs/Id" }, "slot": { "$ref": "#/$defs/Id" } } },
+          { "type": "object", "required": ["kind", "slot"], "additionalProperties": false, "properties": { "kind": { "const": "cover" }, "slot": { "$ref": "#/$defs/Id" } } },
+          { "type": "object", "required": ["kind", "photo"], "additionalProperties": false, "properties": { "kind": { "const": "photo" }, "photo": { "$ref": "#/$defs/Id" } } }
+        ] }
+      }
+    }
+  }
+}

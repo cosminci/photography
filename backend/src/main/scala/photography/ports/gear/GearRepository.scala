@@ -12,6 +12,9 @@ trait GearRepository[F[_]]:
   def readCatalog: F[GearRepository.CatalogReadResult]
 
 object GearRepository:
+  trait CatalogRead[Db[_]]:
+    def readSavedCatalog: Db[CatalogReadResult]
+
   enum CameraCreateResult:
     case Created, Conflict, Failed, Uncertain
 

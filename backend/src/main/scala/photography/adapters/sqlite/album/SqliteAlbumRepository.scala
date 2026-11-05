@@ -18,6 +18,9 @@ import photography.domain.gear.*
 import photography.ports.album.{AlbumRepository, AlbumCompositionRepository}
 import photography.ports.album.AlbumRepository.*
 import photography.ports.chapter.ChapterRepository
+import photography.ports.cover.CoverRepository
+import photography.ports.gear.GearRepository
+import photography.ports.photo.PhotoRepository
 
 import java.time.{Instant, ZoneOffset}
 import java.time.temporal.ChronoUnit
@@ -28,14 +31,54 @@ object SqliteAlbumRepository:
       transactor: Transactor[F],
       composition: AlbumCompositionRepository[ConnectionIO],
       chapters: ChapterRepository[ConnectionIO]
-  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] =
+  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] & AggregateRead[ConnectionIO] =
     new LiveSqliteAlbumRepository(transactor, composition, chapters)
+
+  def makeBookRead[F[_]: Async: Logger](
+      transactor: Transactor[F],
+      albums: AggregateRead[ConnectionIO],
+      covers: CoverRepository[ConnectionIO],
+      photos: PhotoRepository[ConnectionIO],
+      gear: GearRepository.CatalogRead[ConnectionIO]
+  ): BookRead[F] = new LiveSqliteBookRead(transactor, albums, covers, photos, gear)
+
+  final private class LiveSqliteBookRead[F[_]: Async: Logger](
+      transactor: Transactor[F],
+      albums: AggregateRead[ConnectionIO],
+      covers: CoverRepository[ConnectionIO],
+      photos: PhotoRepository[ConnectionIO],
+      gear: GearRepository.CatalogRead[ConnectionIO]
+  ) extends BookRead[F]:
+    override def readBook(album: AlbumId): F[BookResult] =
+      val query = albums.readAlbum(album).flatMap:
+        case GetResult.NotFound       => BookResult.NotFound.pure[ConnectionIO]
+        case GetResult.Failed(reason) => BookResult.Failed(reason).pure[ConnectionIO]
+        case GetResult.Found(saved)   => loadBook(saved).map(BookResult.Found(_))
+      query.transact(transactor)
+        .handleErrorWith(error => Logger[F].error(error)(s"Saved book read failed for ${album.value}").as(BookResult.Failed(Failure.DatabaseFailure)))
+
+    private def loadBook(album: Album) =
+      for
+        cover <- covers.read(album.id).flatMap:
+          case CoverRepository.ReadResult.Found(composition) => composition.pure[ConnectionIO]
+          case CoverRepository.ReadResult.NotFound           =>
+            new IllegalStateException("Missing saved cover").raiseError[ConnectionIO, CoverRepository.Composition]
+        inventory <- album.chapters.traverse(chapter =>
+          photos.listChapter(chapter.id).flatMap:
+            case PhotoRepository.ListResult.Listed(values) => values.pure[ConnectionIO]
+            case PhotoRepository.ListResult.Failed         =>
+              new IllegalStateException("Failed saved photo inventory").raiseError[ConnectionIO, Vector[Photo]]
+        )
+        catalog <- gear.readSavedCatalog.flatMap:
+          case GearRepository.CatalogReadResult.Found(value) => value.pure[ConnectionIO]
+          case GearRepository.CatalogReadResult.Failed => new IllegalStateException("Failed saved gear catalog").raiseError[ConnectionIO, GearCatalog]
+      yield SavedBook(album, cover, inventory.flatten, catalog)
 
   final private class LiveSqliteAlbumRepository[F[_]: Async: Logger](
       transactor: Transactor[F],
       albumComposition: AlbumCompositionRepository[ConnectionIO],
       chapterRepository: ChapterRepository[ConnectionIO]
-  ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
+  ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F] with AggregateRead[ConnectionIO]:
     override def metadata(album: AlbumId): F[MetadataResult] =
       val query = sql"""SELECT year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms
                         FROM album WHERE id = ${album.value}"""
@@ -75,7 +118,10 @@ object SqliteAlbumRepository:
       execute(query, CreateResult.Failed(_))
 
     override def get(id: AlbumId): F[GetResult] =
-      execute(load(id.value).map(_.fold[GetResult](GetResult.NotFound)(GetResult.Found(_))), GetResult.Failed(_))
+      execute(readAlbum(id), GetResult.Failed(_))
+
+    override def readAlbum(album: AlbumId): ConnectionIO[GetResult] =
+      load(album.value).map(_.fold[GetResult](GetResult.NotFound)(GetResult.Found(_)))
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       val update = sql"UPDATE album SET title = $title WHERE id = ${id.value}"

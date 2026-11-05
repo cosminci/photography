@@ -19,7 +19,7 @@ import photography.domain.album.*
 import photography.domain.layout.SpreadTemplateId
 import java.util.UUID
 import photography.ports.photo.{PhotoRepository, ThumbnailStorage}
-import photography.usecases.album.{AlbumManager, AlbumPageSize}
+import photography.usecases.album.{AlbumManager, AlbumPageSize, BookExport}
 import photography.usecases.photo.{ChapterPhotoInventory, PhotoManager}
 import photography.ports.album.{AlbumRepository, AlbumCompositionRepository, CountryRepository}
 import photography.usecases.chapter.ChapterMetadataManager
@@ -52,7 +52,8 @@ final case class Programs[F[_]](
     spreads: SpreadManager[F],
     coverPlacements: CoverManager[F],
     editorSessions: EditorSessionManager[F],
-    editingAccess: EditingAccess[F]
+    editingAccess: EditingAccess[F],
+    bookExport: BookExport[F]
 )
 
 trait ProgramsBuilder[F[_]]:
@@ -119,7 +120,9 @@ object ProgramsBuilder:
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
           coverPlacements = CoverManager.make(coverRepository, placements),
           editorSessions = sessions,
-          editingAccess = EditingAccess.make(sessions, membership, photoTargets)
+          editingAccess = EditingAccess.make(sessions, membership, photoTargets),
+          bookExport =
+            BookExport.make(SqliteAlbumRepository.makeBookRead(sqlite, albumRepository, coverRepository, photoRepository, gearRepository), storage)
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =

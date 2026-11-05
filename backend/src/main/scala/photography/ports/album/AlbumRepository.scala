@@ -2,6 +2,8 @@ package photography.ports.album
 
 import photography.domain.album.*
 import photography.domain.layout.Cover
+import photography.domain.gear.GearCatalog
+import photography.ports.cover.CoverRepository
 import java.time.Instant
 
 trait AlbumRepository[F[_]]:
@@ -14,6 +16,19 @@ trait AlbumRepository[F[_]]:
   def delete(id: AlbumId): F[AlbumRepository.DeleteResult]
 
 object AlbumRepository:
+  trait AggregateRead[Db[_]]:
+    def readAlbum(album: AlbumId): Db[GetResult]
+
+  trait BookRead[F[_]]:
+    def readBook(album: AlbumId): F[BookResult]
+
+  final case class SavedBook(album: Album, cover: CoverRepository.Composition, photos: Vector[Photo], gear: GearCatalog)
+
+  enum BookResult:
+    case Found(book: SavedBook)
+    case NotFound
+    case Failed(reason: Failure)
+
   trait MetadataRead[F[_]]:
     def metadata(album: AlbumId): F[MetadataResult]
 

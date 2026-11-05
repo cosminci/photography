@@ -127,6 +127,43 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(wrongKind, ReadResult.Failed)
         assertEquals(incomplete, DiscoveryResult.Failed)
 
+  test("should resolve identical basenames only within their exact saved source without substituting another original"):
+    buildDirectory.use: root =>
+      val coast         = root.resolve("coast")
+      val home          = root.resolve("home")
+      val bytes         = buildJpeg(maybeDate = "2024:02:29 23:59:58".some, orientation = 6, maybeFraction = None)
+      val coastHash     = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(undatedJpeg)).refineUnsafe[Not[Blank]]
+      val homeHash      = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)).refineUnsafe[Not[Blank]]
+      val coastExpected = ReadResult.Read(
+        PhotoContent(undatedJpeg.toVector.refineUnsafe[MinLength[1]]),
+        PhotoMetadata(coastHash, maybeCapturedLocal = None, dimensions = PhotoDimensions(width = 3, height = 2))
+      )
+      val homeExpected = ReadResult.Read(
+        PhotoContent(bytes.toVector.refineUnsafe[MinLength[1]]),
+        PhotoMetadata(
+          homeHash,
+          maybeCapturedLocal = LocalDateTime.of(2024, 2, 29, 23, 59, 58).some,
+          dimensions = PhotoDimensions(width = 2, height = 3)
+        )
+      )
+      val storage = buildStorage(root)
+
+      for
+        _         <- IO.blocking(Files.createDirectory(coast))
+        _         <- IO.blocking(Files.createDirectory(home))
+        _         <- IO.blocking(Files.write(coast.resolve("same.jpg"), undatedJpeg))
+        _         <- IO.blocking(Files.write(home.resolve("same.jpg"), bytes))
+        coastRead <- storage.readOriginal(buildLocation(coast, filename = "same.jpg"))
+        homeRead  <- storage.readOriginal(buildLocation(home, filename = "same.jpg"))
+        _         <- IO.blocking(Files.delete(coast.resolve("same.jpg")))
+        missing   <- storage.readOriginal(buildLocation(coast, filename = "same.jpg"))
+        retained  <- IO.blocking(Files.readAllBytes(home.resolve("same.jpg")).toVector)
+      yield
+        assertEquals(coastRead, coastExpected)
+        assertEquals(homeRead, homeExpected)
+        assertEquals(missing, ReadResult.Failed)
+        assertEquals(retained, bytes.toVector)
+
   test("should preserve EXIF display dimensions and valid fractional local time without timezone conversion"):
     buildDirectory.use: root =>
       val cases = Vector(
