@@ -1,8 +1,11 @@
 package photography.usecases.album
 
-import cats.data.NonEmptyList
+import cats.data.{NonEmptyList, NonEmptyVector}
 import cats.effect.{IO, Ref}
 import cats.syntax.all.*
+import com.networknt.schema.{ExecutionConfig, InputFormat, SchemaLocation, SchemaRegistry, SpecificationVersion}
+import io.circe.{DecodingFailure, Json}
+import io.circe.syntax.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.{Blank, Not}
@@ -24,6 +27,7 @@ import photography.usecases.album.BookExport.*
 import java.time.{Instant, LocalDate}
 import java.nio.file.Path
 import java.util.UUID
+import scala.jdk.CollectionConverters.*
 
 final class BookExportComponentTest extends CatsEffectSuite:
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
@@ -53,13 +57,20 @@ final class BookExportComponentTest extends CatsEffectSuite:
     textSlot,
     Vector(placed.copy(id = SpreadPlacementId(new UUID(0L, 11L)), slot = chapterSlot.id, photo = PhotoId(new UUID(1L, 2L))))
   )
-  private val country = Country(CountryId(new UUID(0L, 12L)), "RO", "Romania", AbsoluteLocation(Path.of("/flags/ro.png")))
+  private val country  = Country(CountryId(new UUID(0L, 12L)), "RO", "Romania", AbsoluteLocation(Path.of("/flags/ro.png")))
+  private val camera   = Camera(CameraId(new UUID(3L, 1L)), "body", "Sony α6000", CameraKind.InterchangeableLens(LensMount.SonyE, SensorFormat.ApsC))
+  private val phone    = Camera(CameraId(new UUID(3L, 2L)), "phone", "Samsung Galaxy S20 FE", CameraKind.FixedLens)
+  private val lens     = Lens(LensId(new UUID(3L, 3L)), "lens", "Sigma 30mm f/2.8 DN Art", LensMount.SonyE, SensorFormat.ApsC)
+  private val selected = Vector(
+    CameraSelection(camera.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id))),
+    CameraSelection(phone.id, CameraUse.FixedLens)
+  )
   private val chapter = Chapter(
     chapterId,
     Destination(DestinationId(new UUID(0L, 13L)), "Hội An", NonEmptyList.one(country)),
     VisitPeriod(LocalDate.of(2025, 1, 1), days = 1L),
     "Retained Ș description",
-    Vector.empty[CameraSelection],
+    selected,
     "/photos/trip",
     chapterOpening,
     Vector.empty[Spread.PhotosOnly]
@@ -74,17 +85,49 @@ final class BookExportComponentTest extends CatsEffectSuite:
     .fold(message => fail(message), identity)
   private val dimensions = CoverDimensions.forSpreads(2, cats.data.NonEmptyVector.one(specification))
   private val book       =
-    SavedBook(album, CoverRepository.Composition(cover, coverPlacements, dimensions), photos, GearCatalog(Vector.empty, Vector.empty))
+    SavedBook(album, CoverRepository.Composition(cover, coverPlacements, dimensions), photos, GearCatalog(Vector(camera, phone), Vector(lens)))
 
   test("should preserve exact saved text and permit empty captions while checking each referenced original"):
     Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-      val exporter = buildExporter(calls, book, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
-
       for
-        result <- exporter.exportBook(album.id)
-        reads  <- calls.get
+        exporter <- buildExporter(calls, book, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
+        result   <- exporter.exportBook(album.id)
+        reads    <- calls.get
       yield
-        assertEquals(result, Result.Ready(book, warnings = Vector.empty[Issue]))
+        result match
+          case Result.Ready(json, filename) =>
+            assertEquals(filename, "album-2025-indesign.json")
+            assertEquals(
+              json.asObject.map(_.keys.toSet),
+              Set("formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings").some
+            )
+            assertEquals(json.hcursor.downField("album").get[String]("synopsis"), album.synopsis.asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("album").get[String]("title"), (album.title: String).asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("album").get[Vector[String]]("authors"), Vector("Cosmin", "Mara", "Iacob").asRight[DecodingFailure])
+            assertEquals(json.hcursor.get[Vector[Json]]("sources").map(_.size), photos.size.asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("sources").downN(0).get[String]("source"), (original.source: String).asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("sources").downN(0).get[String]("filename"), (original.filename: String).asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("sources").downN(0).get[Option[String]]("caption"), none[String].asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("chapters").downN(0).get[String]("description"), chapter.description.asRight[DecodingFailure])
+            assertEquals(
+              json.hcursor.downField("chapters").downN(0).downField("gear").downN(0).get[Vector[String]]("lensIds"),
+              Vector(lens.id.value.toString).asRight[DecodingFailure]
+            )
+            assertEquals(
+              json.hcursor.downField("chapters").downN(0).downField("gear").downN(1).get[Vector[String]]("lensIds"),
+              Vector.empty[String].asRight[DecodingFailure]
+            )
+            assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("cameras").map(_.size), 2.asRight[DecodingFailure])
+            assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("lenses").map(_.size), 1.asRight[DecodingFailure])
+            assertEquals(json.hcursor.get[Vector[Json]]("warnings"), Vector.empty[Json].asRight[DecodingFailure])
+            val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+              .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+            val config = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+            assertEquals(
+              schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).asScala.toVector,
+              Vector.empty
+            )
+          case other => fail(s"Expected validated artifact, got $other")
         assertEquals(reads, photos.map(_.original))
 
   test("should aggregate missing content across the entire book before publishing"):
@@ -101,7 +144,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
         Issue(Code.EmptyPhotoSlot, Severity.Blocking, Target.CoverSlot(cover.back.id))
       )
 
-      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
+      exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Blocked(expected)))
 
   test("should validate photo-only spreads without requiring editorial text"):
     Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
@@ -118,7 +161,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
       )
       val exporter = buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
 
-      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Ready(saved, warnings = Vector.empty[Issue])))
+      exporter.flatMap(_.exportBook(album.id)).map:
+        case Result.Ready(json, filename) =>
+          assertEquals(filename, "album-2025-indesign.json")
+          assertEquals(json.hcursor.downField("interior").get[Long]("pageCount"), 6L.asRight[DecodingFailure])
+          assertEquals(json.hcursor.downField("interior").downField("spreads").downN(2).get[String]("kind"), "photos".asRight[DecodingFailure])
+        case other => fail(s"Expected validated photo spread, got $other")
 
   test("should return explicit acquisition outcomes without reading originals"):
     val found     = AlbumRepository.GetResult.Found(album)
@@ -142,7 +190,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
 
     cases.traverse_ { case (albumRead, coverRead, photoRead, gearRead, expected) =>
       Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-        val exporter = BookExport.make(
+        val buildExport = BookExport.make(
           buildAlbums(albumRead),
           buildCovers(coverRead),
           buildPhotos(photoRead),
@@ -151,8 +199,9 @@ final class BookExportComponentTest extends CatsEffectSuite:
         )
 
         for
-          result <- exporter.exportBook(album.id)
-          reads  <- calls.get
+          exporter <- buildExport
+          result   <- exporter.exportBook(album.id)
+          reads    <- calls.get
         yield
           assertEquals(result, expected)
           assertEquals(reads, Vector.empty[OriginalPhotoLocation])
@@ -174,7 +223,11 @@ final class BookExportComponentTest extends CatsEffectSuite:
           Vector(cover.front.id, cover.back.id).map(slot => Issue(Code.LowResolution, Severity.Warning, Target.CoverSlot(slot)))
         else Vector.empty[Issue]
 
-        exporter.exportBook(album.id).map(result => assertEquals(result, Result.Ready(saved, expected)))
+        exporter.flatMap(_.exportBook(album.id)).map:
+          case Result.Ready(json, filename) =>
+            assertEquals(filename, "album-2025-indesign.json")
+            assertEquals(json.hcursor.get[Vector[Json]]("warnings"), expected.map(_.asJson).asRight[DecodingFailure])
+          case other => fail(s"Expected printable artifact, got $other")
     }
 
   test("should report every unavailable changed unstable or undecodable referenced original"):
@@ -191,7 +244,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
         val exporter = buildExporter(calls, book, response.pure[IO])
         val expected = photos.map(photo => Issue(code, Severity.Blocking, Target.Photo(photo.id)))
 
-        exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
+        exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Blocked(expected)))
     }
 
   test("should identify empty interior photo slots before publishing"):
@@ -200,20 +253,23 @@ final class BookExportComponentTest extends CatsEffectSuite:
       val exporter = buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
       val expected = Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, Target.Slot(opening.id, photoSlot.id)))
 
-      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Blocked(expected)))
+      exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Blocked(expected)))
 
   test("should reread saved state and originals on retry while leaving unused collection photos unchecked"):
     Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
-      val unused   = photos.take(1).map(_.copy(id = PhotoId(new UUID(9L, 9L))))
-      val saved    = book.copy(photos = photos ++ unused)
-      val exporter = buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
-
+      val unused = photos.take(1).map(_.copy(id = PhotoId(new UUID(9L, 9L))))
+      val saved  = book.copy(photos = photos ++ unused)
       for
-        first  <- exporter.exportBook(album.id)
-        second <- exporter.exportBook(album.id)
-        reads  <- calls.get
+        exporter <- buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
+        first    <- exporter.exportBook(album.id)
+        second   <- exporter.exportBook(album.id)
+        reads    <- calls.get
       yield
-        assertEquals(first, Result.Ready(book, warnings = Vector.empty[Issue]))
+        first match
+          case Result.Ready(json, filename) =>
+            assertEquals(filename, "album-2025-indesign.json")
+            assertEquals(json.hcursor.get[Vector[Json]]("sources").map(_.size), photos.size.asRight[DecodingFailure])
+          case other => fail(s"Expected validated artifact, got $other")
         assertEquals(second, first)
         assertEquals(reads, photos.map(_.original) ++ photos.map(_.original))
 
@@ -222,7 +278,121 @@ final class BookExportComponentTest extends CatsEffectSuite:
       val exporter =
         buildExporter(calls, book, IO.raiseError[PhotoStorage.ReadResult](new IllegalStateException("Source unavailable")))
 
-      exporter.exportBook(album.id).map(result => assertEquals(result, Result.Failed))
+      exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Failed))
+
+  test("should fail export when generated JSON violates the handoff date format"):
+    Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
+      val extendedDate = book.copy(album =
+        album.copy(chapters =
+          Vector(chapter.copy(period = VisitPeriod(LocalDate.of(10000, 1, 1), days = 1L)))
+        )
+      )
+      val exporter = buildExporter(calls, extendedDate, PhotoStorage.ReadResult.Read(content, metadata).pure[IO])
+
+      exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Failed))
+
+  test("should retain authoritative frames, mirroring, every caption corner and either cover spine owner"):
+    val corners = Vector(
+      CaptionCorner.TopLeft     -> "top_left",
+      CaptionCorner.TopRight    -> "top_right",
+      CaptionCorner.BottomLeft  -> "bottom_left",
+      CaptionCorner.BottomRight -> "bottom_right"
+    )
+    corners.traverse_ { case (corner, encodedCorner) =>
+      Vector(SpineOwner.Front -> "front", SpineOwner.Back -> "back").traverse_ { case (owner, encodedOwner) =>
+        Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
+          val frame     = photoSlot.copy(box = SlotBox(x = 1.0, y = 1.0, width = 90.0, height = 90.0), bleed = SpreadEdge.values.toSet)
+          val placement = placed.copy(captionCorner = corner, transform = PhotoTransform(Shift(x = 12.0, y = -8.0), mirrored = true, zoom = 1.5))
+          val saved     = book.copy(
+            album = album.copy(opening = opening.copy(photoSlots = Vector(frame), placements = Vector(placement))),
+            cover = book.cover.copy(cover = cover.copy(spineOwner = owner))
+          )
+
+          buildExporter(calls, saved, PhotoStorage.ReadResult.Read(content, metadata).pure[IO]).flatMap(_.exportBook(album.id)).map:
+            case Result.Ready(json, filename) =>
+              assertEquals(filename, "album-2025-indesign.json")
+              assertEquals(json.hcursor.downField("cover").get[String]("spineOwner"), encodedOwner.asRight[DecodingFailure])
+              val slot = json.hcursor.downField("interior").downField("spreads").downN(0).downField("slots").downN(0)
+              Vector("xPt" -> -3.5, "yPt" -> -3.5, "widthPt" -> 2388.102, "heightPt" -> 772.354).foreach { case (key, expected) =>
+                assertEquals(
+                  slot.downField("frame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
+                  true.asRight[DecodingFailure]
+                )
+              }
+              Vector("xPt" -> 23.81102, "yPt" -> 7.65354, "widthPt" -> 2142.9918, "heightPt" -> 688.8186).foreach { case (key, expected) =>
+                assertEquals(
+                  slot.downField("captionFrame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
+                  true.asRight[DecodingFailure]
+                )
+              }
+              val projected = json.hcursor.downField("interior").downField("spreads").downN(0).downField("placements").downN(0)
+              assertEquals(projected.get[String]("captionCorner"), encodedCorner.asRight[DecodingFailure])
+              assertEquals(projected.downField("transform").get[Boolean]("mirrored"), true.asRight[DecodingFailure])
+              assertEquals(projected.downField("transform").get[Double]("xPt"), 12.0.asRight[DecodingFailure])
+              assertEquals(projected.downField("transform").get[Double]("zoom"), 1.5.asRight[DecodingFailure])
+            case other => fail(s"Expected validated print projection, got $other")
+      }
+    }
+
+  test("should preserve each issue code, severity and target in the shared handoff representation"):
+    val codes = Vector(
+      Code.EmptySynopsis       -> "empty_synopsis",
+      Code.EmptyDescription    -> "empty_description",
+      Code.EmptyPhotoSlot      -> "empty_photo_slot",
+      Code.LowResolution       -> "low_resolution",
+      Code.OriginalChanged     -> "original_changed",
+      Code.OriginalUndecodable -> "original_undecodable",
+      Code.OriginalUnstable    -> "original_unstable",
+      Code.OriginalUnavailable -> "original_unavailable"
+    )
+    val targets = Vector(
+      Target.Album                          -> Json.obj("kind" -> Json.fromString("album")),
+      Target.Chapter(chapterId)             -> Json.obj("kind" -> Json.fromString("chapter"), "chapter" -> Json.fromString(chapterId.value.toString)),
+      Target.Slot(opening.id, photoSlot.id) -> Json.obj(
+        "kind"   -> Json.fromString("slot"),
+        "spread" -> Json.fromString(opening.id.value.toString),
+        "slot"   -> Json.fromString(photoSlot.id.value.toString)
+      ),
+      Target.CoverSlot(cover.front.id) -> Json.obj("kind" -> Json.fromString("cover"), "slot" -> Json.fromString(cover.front.id.value.toString)),
+      Target.Photo(placed.photo)       -> Json.obj("kind" -> Json.fromString("photo"), "photo" -> Json.fromString(placed.photo.value.toString))
+    )
+    codes.foreach { case (code, encodedCode) =>
+      targets.foreach { case (target, encodedTarget) =>
+        Vector(Severity.Blocking -> "blocking", Severity.Warning -> "warning").foreach { case (severity, encodedSeverity) =>
+          val issue    = Issue(code, severity, target)
+          val expected = Json.obj("code" -> Json.fromString(encodedCode), "severity" -> Json.fromString(encodedSeverity), "target" -> encodedTarget)
+
+          assertEquals(issue.asJson, expected)
+        }
+      }
+    }
+
+  test("should reject incomplete structure, invalid identities and invalid nested geometry against the packaged handoff schema"):
+    Ref.of[IO, Vector[OriginalPhotoLocation]](Vector.empty).flatMap: calls =>
+      buildExporter(calls, book, PhotoStorage.ReadResult.Read(content, metadata).pure[IO]).flatMap(_.exportBook(album.id)).map:
+        case Result.Ready(json, _) =>
+          val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+            .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+          val config    = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+          val mutations = Vector(
+            "missing cover"  -> json.mapObject(_.remove("cover")).some,
+            "extra property" -> json.mapObject(_.add("obsolete", Json.True)).some,
+            "invalid UUID"   -> json.hcursor.downField("album").downField("id").withFocus(_ => Json.fromString("not-a-uuid")).top,
+            "invalid date"   -> json.hcursor.downField("chapters").downN(0).downField("firstDay").withFocus(_ => Json.fromString("2025-02-30")).top,
+            "invalid frame"  -> json.hcursor.downField("cover").downField("frontFrame").downField("widthPt").withFocus(_ => Json.fromInt(0)).top
+          )
+          mutations.foreach { case (scenario, maybeJson) =>
+            val mutated = maybeJson.getOrElse(fail(s"Mutation failed: $scenario"))
+
+            assert(!schema.validate(mutated.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).isEmpty, scenario)
+          }
+        case other => fail(s"Expected validated artifact, got $other")
+
+  test("should fail projection instead of generating a partial handoff when geometry cannot be converted"):
+    val invalidSlot = photoSlot.copy(box = SlotBox(x = 0.0, y = 0.0, width = 0.001, height = 0.001))
+    val invalid     = book.copy(album = album.copy(opening = opening.copy(photoSlots = Vector(invalidSlot))))
+
+    assert(BookExportJson.encode(invalid, warnings = Vector.empty[Issue]).isLeft)
 
   private def buildExporter(calls: Ref[IO, Vector[OriginalPhotoLocation]], saved: SavedBook, read: IO[PhotoStorage.ReadResult])(using
       Transaction[IO, IO]

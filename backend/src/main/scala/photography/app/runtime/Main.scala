@@ -1,6 +1,6 @@
 package photography.app.runtime
 
-import cats.effect.{IO, IOApp, Resource}
+import cats.effect.{IO, IOApp}
 import cats.syntax.all.*
 import fs2.io.net.Network
 import org.http4s.{HttpApp, HttpRoutes}
@@ -60,28 +60,26 @@ object Main extends IOApp.Simple:
         yield ()
 
   private def buildHttpApp(managers: Programs[IO], thumbnails: ThumbnailStorage[IO], photoRoot: photography.domain.album.PhotoSource) =
-    Resource.eval(BookExportApi.make(managers.bookExport)).flatMap { exportApi =>
-      val definitions: List[Routes[IO]] = List(
-        HealthRoutes.routes[IO],
-        EditorSessionApi.make(managers.editorSessions),
-        AlbumApi.make(managers.albums, managers.metadata),
-        exportApi,
-        ChapterApi.make(managers.chapters, managers.chapterMetadata, managers.chapterGear),
-        PhotosApi.make(managers.inventories, managers.photos),
-        ThumbnailApi.make(thumbnails),
-        AlbumPhotoEventsApi.make(managers.photoEvents),
-        AlbumCompositionApi.make(managers.membership),
-        CountryApi.make(managers.countries),
-        PhotoSourceApi.make(photoRoot),
-        SpreadTemplateApi.make(managers.templates),
-        GearApi.make(managers.gear),
-        ChapterCompositionApi.make(managers.spreads),
-        AlbumSpreadApi.make(managers.spreads),
-        PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
-      )
-      val api = definitions.map(Routes.make(managers.editingAccess)).foldLeft(HttpRoutes.empty[IO])(_ <+> _)
-      StaticSite.make(api, assetRoot = "frontend").map(_.app)
-    }
+    val definitions: List[Routes[IO]] = List(
+      HealthRoutes.routes[IO],
+      EditorSessionApi.make(managers.editorSessions),
+      AlbumApi.make(managers.albums, managers.metadata),
+      BookExportApi.make(managers.bookExport),
+      ChapterApi.make(managers.chapters, managers.chapterMetadata, managers.chapterGear),
+      PhotosApi.make(managers.inventories, managers.photos),
+      ThumbnailApi.make(thumbnails),
+      AlbumPhotoEventsApi.make(managers.photoEvents),
+      AlbumCompositionApi.make(managers.membership),
+      CountryApi.make(managers.countries),
+      PhotoSourceApi.make(photoRoot),
+      SpreadTemplateApi.make(managers.templates),
+      GearApi.make(managers.gear),
+      ChapterCompositionApi.make(managers.spreads),
+      AlbumSpreadApi.make(managers.spreads),
+      PhotoPlacementApi.make(managers.spreads, managers.coverPlacements)
+    )
+    val api = definitions.map(Routes.make(managers.editingAccess)).foldLeft(HttpRoutes.empty[IO])(_ <+> _)
+    StaticSite.make(api, assetRoot = "frontend").map(_.app)
 
   private def buildHttpServer(config: HttpServerConfig, app: HttpApp[IO]) =
     EmberServerBuilder.default[IO].withHost(config.host).withPort(config.port).withIdleTimeout(60.seconds).withHttpApp(app).build

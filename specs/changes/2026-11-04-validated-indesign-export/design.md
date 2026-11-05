@@ -17,9 +17,9 @@
 | Existing workspace | Add the export action and its pending/issues/retry lifecycle alongside existing saves; export neither commits local drafts nor resets history. |
 | Existing ExtendScript entrypoints | Consume the same representation with explicit file/root selection and native preflight, retaining placement and typography behavior. Share only common decoding, source resolution and resource knowledge. |
 
-No new reader interfaces or cross-repository transaction are introduced for export. The use case owns composition and print readiness, HTTP owns the JSON projection, and each importer owns local availability and actual composition.
+No new reader interfaces or cross-repository transaction are introduced for export. The use case owns composition, print readiness and the validated JSON artifact; HTTP only maps its result to a response, and each importer owns local availability and actual composition.
 
-The HTTP projection validates its complete serialized output against the packaged Draft 2020-12 application schema before returning an attachment. NetworkNT loads the schema once at adapter construction and enforces UUID/date formats; schema disagreement is a logged service failure, not an album-readiness issue. OpenAPI references the same authoritative resource.
+The export use case validates its complete serialized output against the packaged Draft 2020-12 application schema before returning a ready artifact. NetworkNT loads the schema once at use-case construction and enforces UUID/date formats; schema disagreement is a logged service failure, not an album-readiness issue. OpenAPI references the same authoritative resource.
 
 The representation contains book identity/page count, referenced originals, ordered interior content, cover content and necessary print resources. It carries no session, restoration payload or backend history.
 

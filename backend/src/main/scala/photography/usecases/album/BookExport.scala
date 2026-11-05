@@ -1,7 +1,9 @@
 package photography.usecases.album
 
-import cats.MonadThrow
+import cats.effect.Async
 import cats.syntax.all.*
+import com.networknt.schema.{ExecutionConfig, InputFormat, SchemaLocation, SchemaRegistry, SpecificationVersion}
+import io.circe.{Encoder, Json}
 import org.typelevel.log4cats.Logger
 import photography.domain.album.*
 import photography.domain.layout.*
@@ -12,26 +14,34 @@ import photography.ports.cover.CoverRepository
 import photography.ports.gear.GearRepository
 import photography.ports.photo.{PhotoRepository, PhotoStorage}
 import photography.syntax.EitherSyntax.*
+import scala.jdk.CollectionConverters.*
 
 trait BookExport[F[_]]:
   def exportBook(album: AlbumId): F[BookExport.Result]
 
 object BookExport:
-  def make[F[_]: MonadThrow: Logger, Db[_]](
+  def make[F[_]: Async: Logger, Db[_]](
       albums: AlbumRepository[F],
       covers: CoverRepository[Db],
       photos: PhotoRepository[Db],
       gear: GearRepository[F],
       originals: PhotoStorage[F]
-  )(using Transaction[Db, F]): BookExport[F] = new LiveBookExport(albums, covers, photos, gear, originals)
+  )(using Transaction[Db, F]): F[BookExport[F]] = Async[F].blocking(new LiveBookExport(albums, covers, photos, gear, originals))
 
-  final private class LiveBookExport[F[_]: MonadThrow: Logger, Db[_]](
+  final private class LiveBookExport[F[_]: Async: Logger, Db[_]](
       albums: AlbumRepository[F],
       covers: CoverRepository[Db],
       photos: PhotoRepository[Db],
       gear: GearRepository[F],
       originals: PhotoStorage[F]
   )(using Transaction[Db, F]) extends BookExport[F]:
+    private val schema =
+      val registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+      val loaded   = registry.getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+      loaded.initializeValidators()
+      loaded
+    private val validationConfig = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+
     override def exportBook(album: AlbumId): F[Result] =
       readBook(album).value.flatMap {
         case Left(Result.Failed) =>
@@ -66,13 +76,25 @@ object BookExport:
         SavedBook(album, cover, inventory.flatten.filter(photo => references.contains(photo.id)), catalog)
 
     private def validate(book: SavedBook) =
-      val readiness = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
+      val readiness  = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
+      val projection = readiness.flatMap(issues => BookExportJson.encode(book, warnings = issues).tupleLeft(issues))
       for
-        printIssues  <- readiness.leftMap(new IllegalStateException(_)).liftTo[F]
-        sourceIssues <- book.photos.traverse(checkOriginal)
-      yield
-        val issues = printIssues ++ sourceIssues.flatten
-        if issues.exists(_.severity === Severity.Blocking) then Result.Blocked(issues) else Result.Ready(book, warnings = issues)
+        (printIssues, json) <- projection.leftMap(new IllegalStateException(_)).liftTo[F]
+        sourceIssues        <- book.photos.traverse(checkOriginal)
+        issues = printIssues ++ sourceIssues.flatten
+        result <-
+          if issues.exists(_.severity === Severity.Blocking) then (Result.Blocked(issues): Result).pure[F]
+          else validateArtifact(json, book.album.year)
+      yield result
+
+    private def validateArtifact(json: Json, year: Int) =
+      for
+        errors <-
+          Async[F].blocking(schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(validationConfig)).asScala.toList)
+        validated <- errors.toNel.toLeft(json).leftMap(errors =>
+          new IllegalStateException(s"Book export schema validation failed: ${errors.toList.mkString("; ")}")
+        ).liftTo[F]
+      yield Result.Ready(validated, filename = s"album-$year-indesign.json"): Result
 
     private def checkContent(book: SavedBook) =
       val synopsis     = Option.when(book.album.synopsis.isBlank)(Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album)).toList.toVector
@@ -126,10 +148,10 @@ object BookExport:
           case PhotoStorage.ReadResult.Failed      => Code.OriginalUnavailable.some
         maybeCode.map(code => Issue(code, Severity.Blocking, Target.Photo(photo.id))).toList.toVector
 
-  final case class SavedBook(album: Album, cover: CoverRepository.Composition, photos: Vector[Photo], gear: GearCatalog)
+  final private[album] case class SavedBook(album: Album, cover: CoverRepository.Composition, photos: Vector[Photo], gear: GearCatalog)
 
   enum Result:
-    case Ready(book: SavedBook, warnings: Vector[Issue])
+    case Ready(json: Json, filename: String)
     case Blocked(issues: Vector[Issue])
     case NotFound, Failed
 
@@ -151,3 +173,6 @@ object BookExport:
     case LowResolution, OriginalChanged, OriginalUndecodable, OriginalUnstable, OriginalUnavailable
 
   final case class Issue(code: Code, severity: Severity, target: Target)
+
+  object Issue:
+    given Encoder[Issue] = Encoder.instance(BookExportJson.encodeIssue)
