@@ -8,7 +8,7 @@ Album Layout Studio organizes chapter photo collections and edits persisted albu
 - [.agents/skills/sdd/SKILL.md](.agents/skills/sdd/SKILL.md) — spec-driven development workflow.
 - [backend/](backend/) — Scala 3 backend and HTTP API built with sbt.
 - [frontend/](frontend/) — application frontend.
-- [InDesign import](scripts/indesign/README.md) — scripts and operator instructions for the saved-book export.
+- [InDesign scripts](scripts/indesign/) — open the empty Saal template, then run `place-spreads.jsx` or `place-cover.jsx` against the same exported JSON.
 - [.dagger/](.dagger/) — affected-component CI checks used by GitHub Actions.
 - [specs/](specs/) — living product design, contracts, testing, and operations context.
 - [ci/specs/](ci/specs/) — living documentation for the CI pipeline.

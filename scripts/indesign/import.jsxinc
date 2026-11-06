@@ -48,7 +48,7 @@ var PhotographyImport = (function () {
                     seen["$"+country.code] = country.flag;
                 }
             }
-            countries.sort(function (a,b) { return a.code < b.code ? -1 : a.code > b.code ? 1 : 0; });
+            countries.sort(function (a,b) { return a.code < b.code ? -1 : (a.code > b.code ? 1 : 0); });
             paths = []; names = [];
             for (i = 0; i < countries.length; i++) {
                 var path = countries[i].flag, slash = path.lastIndexOf("/");
@@ -164,7 +164,7 @@ var PhotographyImport = (function () {
         }
         var parts = PhotographyBook.parts(text,synopsis ? "synopsis" : "chapter"), content = [];
         for (var i = 0; i < parts.length; i++) {
-            var role = parts[i].role, key = role === "title" ? "IDDragonXing" : /^synopsis/.test(role) ? "InkFree" : "GaramondPremrPro";
+            var role = parts[i].role, key = role === "title" ? "IDDragonXing" : (/^synopsis/.test(role) ? "InkFree" : "GaramondPremrPro");
             content.push(PhotographyBook.printText(parts[i].text,key));
         }
         var tf = page.textFrames.add({geometricBounds:[frame.yPt+20,center-width/2,frame.yPt+frame.heightPt-(synopsis ? 120 : 20),center+width/2]});
@@ -173,9 +173,9 @@ var PhotographyImport = (function () {
         tf.contents = content.join("\r");
         for (var p = 0; p < parts.length; p++) {
             var paragraph = tf.parentStory.paragraphs.item(p), part = parts[p].role;
-            var font = part === "title" ? "IDDragonXing" : /^synopsis/.test(part) ? "InkFree" : "GaramondPremrPro";
+            var font = part === "title" ? "IDDragonXing" : (/^synopsis/.test(part) ? "InkFree" : "GaramondPremrPro");
             paragraph.appliedFont = availableFonts[font];
-            paragraph.pointSize = part === "title" || part === "synopsisTitle" ? 30 : synopsis ? 12 : 11;
+            paragraph.pointSize = part === "title" || part === "synopsisTitle" ? 30 : (synopsis ? 12 : 11);
             paragraph.justification = Justification.CENTER_ALIGN;
             if (synopsis) paragraph.fillColor = doc.swatches.itemByName("Paper");
         }
@@ -205,8 +205,12 @@ var PhotographyImport = (function () {
             paragraph.appliedFont = font; paragraph.pointSize = p === 0 ? 30 : 12;
             paragraph.fillColor = doc.swatches.itemByName("Paper"); paragraph.justification = Justification.LEFT_ALIGN;
         }
+        tf.recompose();
+        var heading = tf.parentStory.paragraphs.item(0);
+        if (heading.lines.length !== 1) fail("Cover title does not fit on one line. The document is incomplete; do not print it.");
+        var titleLine = heading.lines.item(0);
         var tab = tf.parentStory.paragraphs.item(1).tabStops.add();
-        tab.alignment = TabStopAlignment.RIGHT_ALIGN; tab.position = width;
+        tab.alignment = TabStopAlignment.RIGHT_ALIGN; tab.position = titleLine.endHorizontalOffset-titleLine.horizontalOffset;
         tf.recompose();
         if (tf.overflows || tf.parentStory.lines.lastItem().endHorizontalOffset > tf.geometricBounds[3])
             fail("Cover attribution/year does not fit. The document is incomplete; do not print it.");
@@ -283,21 +287,18 @@ var PhotographyImport = (function () {
     function main(part) {
         var doc;
         try {
+            if (!app.documents.length) fail("Open the empty Saal "+part+" template first.");
+            doc = app.activeDocument;
             var json = File.openDialog("Select the complete album InDesign JSON","JSON:*.json");
             if (!json) return;
             var book = read(json), local = resources(book,part);
             if (!local) return;
             fonts(part);
-            var template = File.openDialog("Select the empty Saal "+part+" IDML template for "+book.interior.pageCount+" book pages","IDML:*.idml");
-            if (!template) return;
-            if (!/\.idml$/i.test(template.name)) fail("Select an IDML template, not a retained InDesign document.");
-            doc = app.open(template,true,OpenOptions.OPEN_COPY);
             var warnings = importBook(book,part,doc,local);
-            alert("Imported "+part+" from "+json.name+". Nothing has been saved.\nExport warnings: "+book.warnings.length+
-                "\n"+warnings.join("\n")+"\nInspect the complete output before printing.");
+            alert("Imported "+part+" from "+json.name+". Nothing has been saved."+
+                (warnings.length ? "\n"+warnings.join("\n") : "")+"\nInspect the complete output before printing.");
         } catch (error) {
             var partial = doc && doc.isValid && doc.extractLabel(label).indexOf("incomplete:") === 0;
-            if (doc && doc.isValid && !partial) doc.close(SaveOptions.NO);
             alert("Import failed: "+error.message+(partial ? "\nThis copy is incomplete. Do not print it; retry in a fresh template." : "\nNo document content was imported.")+
                 "\nNothing has been saved.");
         }
