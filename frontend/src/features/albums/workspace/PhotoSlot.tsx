@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, createUniqueId, onCleanup } from "solid-js";
 import type { Photo } from "../model/Photo";
 import { captionCorners, type Placement, type PlacementEdit, type PhotoTransform } from "../model/Placement";
 import { PhotoCaption, type CaptionEditing } from "./PhotoCaption";
@@ -29,6 +29,7 @@ export function PhotoSlot(props: {
   ownershipUnavailable?: string | undefined;
   reader: boolean;
   captions?: CaptionEditing | undefined;
+  highlighted?: boolean | undefined;
 }) {
   const reasonId = createUniqueId();
   const reason = createMemo(() => props.unavailable ?? props.session.unavailable());
@@ -48,6 +49,10 @@ export function PhotoSlot(props: {
   });
   let image: HTMLImageElement | undefined;
   let surface!: HTMLButtonElement;
+  let frame!: HTMLDivElement;
+  createEffect(() => {
+    if (props.highlighted === true) frame.focus();
+  });
   let burst: { timer: ReturnType<typeof setTimeout>; id: string; transform: PhotoTransform } | undefined;
   let pan: { x: number; y: number; transform: PhotoTransform; original: PhotoTransform; id: string } | undefined;
   function flush() {
@@ -114,7 +119,18 @@ export function PhotoSlot(props: {
   }
 
   return (
-    <div class="photo-slot" classList={{ "photo-slot-moving": moving() }} role="group" aria-label={props.label}>
+    <div
+      ref={(element) => {
+        frame = element;
+      }}
+      id={`photo-frame-${props.slotId}`}
+      class="photo-slot"
+      classList={{ "photo-slot-moving": moving(), "photo-slot-highlighted": props.highlighted === true }}
+      role="group"
+      aria-label={props.label}
+      aria-current={props.highlighted === true ? "true" : undefined}
+      tabIndex={props.highlighted === true ? -1 : undefined}
+    >
       <button
         ref={(element) => {
           surface = element;

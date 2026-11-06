@@ -19,6 +19,7 @@ import {
   findSpreadNavigation,
   findSpreadPosition,
   findDeletionSelection,
+  findExportDestination,
 } from "../../../src/features/albums/workspace/WorkspaceSelection";
 import { getChapterCapacityReason, spreadActionReasons } from "../../../src/features/albums/workspace/ChapterOutline";
 import { templateCategory } from "../../../src/features/albums/workspace/TemplateSelector";
@@ -30,6 +31,50 @@ import { readSpread } from "../../../src/features/albums/api/PlacementWire";
 import { readPhotoInventory, readScheduling } from "../../../src/features/albums/api/PhotoWire";
 
 describe("chapter detail feedback", () => {
+  it.each([
+    { target: { kind: "album" }, expected: { label: "Album synopsis", part: null, slot: undefined } },
+    { target: { kind: "chapter", chapter: "coast" }, expected: { label: "Coast", part: "coast", slot: undefined } },
+    { target: { kind: "chapter", chapter: "removed" }, expected: undefined },
+    { target: { kind: "slot", spread: "opening", slot: "photo" }, expected: { label: "Spread 1 Slot 1", part: null, slot: "photo" } },
+    { target: { kind: "slot", spread: "chapter-opening", slot: "photo" }, expected: { label: "Spread 2 Slot 1", part: "coast", slot: "photo" } },
+    { target: { kind: "slot", spread: "photos", slot: "second" }, expected: { label: "Spread 3 Slot 2", part: "photos", slot: "second" } },
+    { target: { kind: "slot", spread: "photos", slot: "removed" }, expected: undefined },
+    { target: { kind: "slot", spread: "removed", slot: "photo" }, expected: undefined },
+    { target: { kind: "cover", slot: "front" }, expected: { label: "Cover", part: "cover", slot: "front" } },
+    { target: { kind: "photo", photo: "removed" }, expected: undefined },
+  ])("should resolve export issue $target against current numbered photo slots", ({ target, expected }) => {
+    const layout = {
+      templateId: "template",
+      bleed: { state: "disabled" as const, available: true },
+      slots: [
+        { id: "text", kind: "text" as const, x: 0, y: 0, width: 10, height: 10 },
+        { id: "photo", kind: "photo" as const, x: 10, y: 0, width: 10, height: 10 },
+        { id: "second", kind: "photo" as const, x: 20, y: 0, width: 10, height: 10 },
+      ],
+      placements: [],
+    };
+    const spreads: Spread[] = [
+      { ...layout, id: "opening", kind: "album_start", chapter: null },
+      { ...layout, id: "chapter-opening", kind: "chapter_start", chapter: "coast" },
+      { ...layout, id: "photos", kind: "photos_only", chapter: "coast" },
+    ];
+    const chapters = [
+      {
+        id: "coast",
+        name: "Coast",
+        kind: "home" as const,
+        countries: [],
+        start: "2025-01-01",
+        end: "2025-12-31",
+        sourceFolder: "/photos",
+        description: "",
+      },
+    ];
+    const issue = { code: "low_resolution", severity: "warning" as const, target, message: "Saved diagnostic." };
+
+    expect(findExportDestination({ spreads, chapters }, issue)).toEqual(expected);
+  });
+
   it.each([false, true])(
     "should stop after acknowledged metadata when the editor scope ends before the gear phase with changedGear=%s",
     async (changedGear) => {

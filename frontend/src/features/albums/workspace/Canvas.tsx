@@ -21,6 +21,7 @@ export interface CanvasPhotos {
   readonly captions?: CaptionEditing;
   readonly onEditText?: (opener: HTMLButtonElement) => void;
   readonly textUnavailable?: string | undefined;
+  readonly highlightedSlot?: string | undefined;
 }
 
 export const spreadWidth = 2381.102;
@@ -219,9 +220,10 @@ export function CoverCanvas(props: { title: string; year: number; authors: reado
       class="cover-canvas"
       role={props.editing !== undefined && !props.editing.reader ? "group" : "img"}
       aria-label={`Cover: back on the left; front on the right. ${props.title}. ${getCoverCredits(props.authors)}`}
+      aria-busy={composition() === undefined}
       style={{ "aspect-ratio": composition() === undefined ? coverAspectRatio : undefined }}
     >
-      <Show when={composition()} fallback={<p role="status">Loading cover…</p>}>
+      <Show when={composition()}>
         {(cover) => (
           <CoverSurface
             geometry={cover().geometry}
@@ -304,6 +306,7 @@ function SlotPhoto(props: { slotId: string; label: string; width: number; height
       ownershipUnavailable={props.editing.ownershipUnavailable}
       reader={props.editing.reader}
       captions={props.editing.captions}
+      highlighted={props.editing.highlightedSlot === props.slotId}
     />
   );
 }

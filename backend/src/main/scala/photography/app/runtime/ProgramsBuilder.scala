@@ -101,7 +101,7 @@ object ProgramsBuilder:
         sessions <- Resource.eval(buildSessions(using mutex))
         events   <- Resource.eval(AlbumPhotoEvents.make(albumRepository))
         imports  <- buildImports(events)(using mutex)
-        exports  <- Resource.eval(BookExport.make(albumRepository, coverRepository, photoRepository, gearRepository, storage))
+        exports  <- Resource.eval(BookExport.make(albumRepository, coverRepository, photoRepository, gearRepository))
       yield
         given Mutex[F] = mutex
         val gear       = GearManager.make(gearRepository, chapterRepository)

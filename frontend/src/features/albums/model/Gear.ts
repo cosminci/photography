@@ -1,3 +1,5 @@
+import "../../../../../scripts/indesign/gear.js";
+
 export const gearMounts = [
   { id: "sony_e", name: "Sony E" },
   { id: "nikon_z", name: "Nikon Z" },
@@ -83,46 +85,9 @@ export function sameGear(left: readonly CameraSelection[], right: readonly Camer
 }
 
 export function describeGear(selection: readonly CameraSelection[], catalog: GearCatalog): string {
-  const lines: string[] = [];
-  const galaxyModels: string[] = [];
-  let galaxyLine: number | undefined;
-  for (const use of selection) {
-    const camera = catalog.cameras.find((item) => item.id === use.cameraId);
-    if (camera === undefined) throw new Error("Saved camera is missing from the catalog");
-    const lenses = use.lensIds.map((id) => {
-      const lens = catalog.lenses.find((item) => item.id === id);
-      if (lens === undefined) throw new Error("Saved lens is missing from the catalog");
-      return lens.name;
-    });
-    const galaxy = /^Samsung Galaxy (.+)$/.exec(camera.name)?.[1];
-    if (galaxy !== undefined && lenses.length === 0) {
-      galaxyModels.push(galaxy.replace(/^(S\d+)\s+FE$/, "$1FE"));
-      galaxyLine ??= lines.length;
-      lines[galaxyLine] = `Samsung Galaxy ${galaxyModels.join(" + ")}`;
-    } else lines.push(lenses.length === 0 ? camera.name : `${camera.name} w/ ${describeLenses(lenses)}`);
-  }
-  return lines.join("\n");
+  return PhotographyGear.describeGear(selection, catalog);
 }
 
 export function describeLenses(names: readonly string[]): string {
-  const lines: string[] = [];
-  const groups = new Map<string, { index: number; models: string[] }>();
-  for (const name of names) {
-    const match = /^Sigma (\d+(?:\.\d+)?)mm (.+)$/.exec(name);
-    const model = match?.[1];
-    const suffix = match?.[2];
-    if (model === undefined || suffix === undefined) {
-      lines.push(name);
-      continue;
-    }
-    const group = groups.get(suffix);
-    if (group === undefined) {
-      groups.set(suffix, { index: lines.length, models: [model] });
-      lines.push(name);
-    } else {
-      group.models.push(model);
-      lines[group.index] = `Sigma ${group.models.join(" & ")}mm ${suffix}`;
-    }
-  }
-  return lines.join(" + ");
+  return PhotographyGear.describeLenses(names);
 }

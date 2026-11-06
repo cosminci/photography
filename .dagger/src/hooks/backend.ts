@@ -7,6 +7,7 @@ export function checkBackend(source: Dagger.Directory): Dagger.Container {
     .from(NODE_IMAGE)
     .withMountedCache("/root/.npm", Dagger.dag.cacheVolume("photography-frontend-npm"))
     .withDirectory("/app/frontend", source.directory("frontend"))
+    .withDirectory("/app/scripts/indesign", source.directory("scripts/indesign"))
     .withWorkdir("/app/frontend")
     .withExec(["npm", "ci", "--no-audit", "--no-fund"])
     .withExec(["npm", "run", "build"])

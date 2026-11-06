@@ -5,6 +5,8 @@ import { readArray } from "./Wire";
 import { readPhoto, readPhotoInventory, readScheduling } from "./PhotoWire";
 import { readPlacementSnapshot, readSpread } from "./PlacementWire";
 import { readCamera, readChapterGear, readGearCatalog, readLens } from "./GearWire";
+import { BookExportBlocked } from "../model/BookExport";
+import { readBookDownload, readExportIssues } from "./BookExportWire";
 import type {
   CoverContext,
   CoverSnapshot,
@@ -42,6 +44,7 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     if (!response.ok) {
       const failure: unknown = await response.json();
       const fields = readRecord(failure);
+      if (response.status === 422 && fields["code"] === "export_blocked") throw new BookExportBlocked(readExportIssues(fields["issues"]));
       if (response.status === 409 && fields["code"] === "spread_occupied") {
         const placements = readNumber(fields["placements"]);
         if (!Number.isInteger(placements) || placements < 1) throw new Error("Invalid placement count");
@@ -100,6 +103,7 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
   }
 
   return {
+    exportBook: (id) => request(`/api/albums/${encodeURIComponent(id)}/indesign-export`, "GET", undefined, 200, readBookDownload),
     photo: (id) => request(`/api/photos/${encodeURIComponent(id)}`, "GET", undefined, 200, readPhoto),
     gearCatalog: (signal) => request("/api/gear", "GET", undefined, 200, readGearCatalog, signal),
     chapterGear: (id, chapterId, signal) =>

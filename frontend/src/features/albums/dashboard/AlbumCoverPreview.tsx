@@ -33,11 +33,9 @@ export function AlbumCoverPreview(props: { album: AlbumSummary; client: Pick<Alb
   const savedPreview = createMemo(() => (preview.error === undefined ? preview() : undefined));
   return (
     <>
-      <div class="album-cover-pair">
+      <div class="album-cover-pair" aria-busy={preview.loading}>
         <Show when={preview.loading}>
-          <p class="preview-feedback" role="status">
-            Loading cover preview…
-          </p>
+          <span role="status" aria-label="Loading cover preview" />
         </Show>
         <Show when={!preview.loading}>
           <Show when={savedPreview()}>

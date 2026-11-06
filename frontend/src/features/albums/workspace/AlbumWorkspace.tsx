@@ -16,6 +16,8 @@ import {
   findSelection,
   findSpreadNavigation,
   findSpreadPosition,
+  findExportDestination,
+  type ExportDestination,
 } from "./WorkspaceSelection";
 import "./workspace.css";
 import { TemplateSelector } from "./TemplateSelector";
@@ -33,6 +35,8 @@ import type { EditingTarget, WorkspaceEditingSession } from "../../editing/Edito
 import { BrowserAlias } from "../../editing/BrowserAlias";
 import { createBookHistory, type HistoryDirection } from "./BookHistory";
 import { BookHistoryControls } from "./BookHistoryControls";
+import { BookExportControl } from "./BookExportControl";
+import type { ExportIssue } from "../model/BookExport";
 import { createContentCompensation } from "./ContentCompensation";
 import { createPlacementCompensation, sameComposition } from "./PlacementCompensation";
 import type { PlacementContext, PlacementEdit, PlacementSnapshot } from "../model/Placement";
@@ -70,6 +74,7 @@ export function AlbumWorkspace(props: {
     | "saveCaption"
     | "chapters"
     | "composition"
+    | "exportBook"
     | keyof GearClient
   >;
   onRefresh: () => Promise<void>;
@@ -120,6 +125,8 @@ export function AlbumWorkspace(props: {
   const [refreshing, setRefreshing] = createSignal(false);
   const [refreshAfterSave, setRefreshAfterSave] = createSignal(false);
   const [readerEntry, setReaderEntry] = createSignal<HTMLDivElement>();
+  const [exportFeedback, setExportFeedback] = createSignal<HTMLDivElement>();
+  const [exportSlot, setExportSlot] = createSignal<string>();
   const [spreadPending, setSpreadPending] = createSignal(false);
   const [spreadError, setSpreadError] = createSignal<string>();
   const [failedAction, setFailedAction] = createSignal<SpreadAction>();
@@ -547,6 +554,7 @@ export function AlbumWorkspace(props: {
     get textUnavailable() {
       return contentEditReason();
     },
+    highlightedSlot: exportSlot(),
   }));
   const navigationReason = createMemo(
     () =>
@@ -610,6 +618,7 @@ export function AlbumWorkspace(props: {
     }
     if (window.location.pathname !== workspacePath) return;
     const next = readPart();
+    setExportSlot(undefined);
     void refresh();
     setPart(next);
     if (next !== "cover") setInterior(next);
@@ -664,12 +673,35 @@ export function AlbumWorkspace(props: {
   }
 
   function showSelection(next: string | null) {
+    setExportSlot(undefined);
     const url = new URL(window.location.href);
     if (next === null) url.searchParams.delete("part");
     else url.searchParams.set("part", next);
     if (part() !== next) window.history.pushState(null, "", url);
     setPart(next);
     if (next !== "cover") setInterior(next);
+  }
+
+  function exportIssueLink(issue: ExportIssue) {
+    const destination = findExportDestination(props.workspace, issue);
+    if (destination === undefined) return undefined;
+    const url = new URL(window.location.href);
+    if (destination.part === null) url.searchParams.delete("part");
+    else url.searchParams.set("part", destination.part);
+    url.hash = destination.slot === undefined ? "" : `photo-frame-${destination.slot}`;
+    return {
+      label: destination.label,
+      href: `${url.pathname}${url.search}${url.hash}`,
+      navigate: () => {
+        navigateExportIssue(destination);
+      },
+    };
+  }
+
+  function navigateExportIssue(destination: ExportDestination) {
+    if (navigationReason() !== undefined) return;
+    select(destination.part);
+    setExportSlot(destination.slot);
   }
 
   async function refresh(result?: ChapterSave) {
@@ -942,6 +974,17 @@ export function AlbumWorkspace(props: {
             )}
           </Show>
           <div ref={setReaderEntry} />
+          <BookExportControl
+            album={props.album.id}
+            year={props.album.year}
+            client={props.client}
+            unavailable={historyReason() ?? contentReason() ?? refreshReason() ?? spreadReadReason() ?? placement.navigationReason()}
+            feedbackMount={exportFeedback()}
+            issueLink={exportIssueLink}
+            onDismiss={() => {
+              setExportSlot(undefined);
+            }}
+          />
           <div class="workspace-mode" role="group" aria-label="Canvas view">
             <button
               type="button"
@@ -968,14 +1011,20 @@ export function AlbumWorkspace(props: {
           </div>
         </div>
       </header>
+      <div ref={setExportFeedback} />
       <Show when={refreshing()}>
-        <p role="status" class="control-help">
+        <p role="status" class="visually-hidden">
           Refreshing saved workspace…
         </p>
       </Show>
       <Show when={!reader() && ownershipReason()}>
         {(reason) => (
-          <p id="editing-ownership-reason" role="status" class="control-help">
+          <p
+            id="editing-ownership-reason"
+            role="status"
+            class="control-help"
+            classList={{ "visually-hidden": props.session.targetPending() || ownershipLoading() }}
+          >
             {reason()}
           </p>
         )}
@@ -1036,7 +1085,12 @@ export function AlbumWorkspace(props: {
       </Show>
       <Show when={navigationReason()}>
         {(message) => (
-          <p id="photo-navigation-reason" class="control-help" role="status">
+          <p
+            id="photo-navigation-reason"
+            class="control-help"
+            role="status"
+            classList={{ "visually-hidden": placement.loading() || placement.saving() }}
+          >
             {message()}
           </p>
         )}
@@ -1186,7 +1240,7 @@ export function AlbumWorkspace(props: {
                 }}
               >
                 <Show when={gearLoading()}>
-                  <p role="status" class="control-help">
+                  <p role="status" class="visually-hidden">
                     Loading saved chapter gear.
                   </p>
                 </Show>

@@ -5,8 +5,46 @@ import { AcknowledgedWriteError, AlbumRequestError } from "../../../src/features
 import type { PlacementContext, PlacementEdit } from "../../../src/features/albums/model/Placement";
 import type { Spread } from "../../../src/features/albums/model/Workspace";
 import { buildChapterReorder } from "../../../src/features/albums/workspace/WorkspaceSelection";
+import { BookExportBlocked } from "../../../src/features/albums/model/BookExport";
 
 describe("same-origin album HTTP client", () => {
+  it("should download the complete saved book with one public read and no editing credentials", async () => {
+    const book = { formatVersion: 1, album: { title: "Țară" }, interior: {}, cover: {}, sources: [], chapters: [], gear: {}, warnings: [] };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(book)));
+
+    expect(JSON.parse((await makeHttpAlbumClient(fetcher).exportBook("album/id")).content)).toEqual(book);
+    expect(fetcher.mock.calls).toEqual([["/api/albums/album%2Fid/indesign-export", { method: "GET", headers: { Accept: "application/json" } }]]);
+  });
+
+  it("should retain all print blockers and acquire saved state again on explicit retry", async () => {
+    const issues = [
+      {
+        code: "empty_description",
+        severity: "blocking",
+        target: { kind: "chapter", chapter: "coast" },
+        message: "Coast: chapter description is empty.",
+      },
+    ] as const;
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "export_blocked", issues }), { status: 422 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "album_not_found" }), { status: 404 }));
+    const client = makeHttpAlbumClient(fetcher);
+
+    await expect(client.exportBook("book")).rejects.toEqual(new BookExportBlocked(issues));
+    await expect(client.exportBook("book")).rejects.toBeInstanceOf(AlbumRequestError);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["not JSON", '{"formatVersion":2}', '{"formatVersion":1,"album":null}'])(
+    "should reject malformed print output without treating its read as an acknowledged mutation: %s",
+    async (body) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+
+      await expect(makeHttpAlbumClient(fetcher).exportBook("book")).rejects.not.toBeInstanceOf(AcknowledgedWriteError);
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
   it.each([
     { operation: "create" as const, returnedId: "" },
     { operation: "update" as const, returnedId: "" },

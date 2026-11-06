@@ -101,7 +101,8 @@ describe("album dashboard and open", () => {
     render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
 
-    expect(await screen.findByRole("status", { name: "Opening album" })).toBeVisible();
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("Opening album…")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
     expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
     admit();
@@ -109,12 +110,13 @@ describe("album dashboard and open", () => {
       expect(select).toHaveBeenCalledWith(expect.objectContaining({ kind: "spread" }), false);
     });
     expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
-    expect(screen.getByRole("status", { name: "Opening album" })).toBeVisible();
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
     confirm(true);
 
     expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "false");
   });
 
   it("should reveal retryable opening failures instead of leaving the catalog busy", async () => {
@@ -495,6 +497,7 @@ describe("album dashboard and open", () => {
 
 function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
   return {
+    exportBook: vi.fn().mockRejectedValue(new Error("Unexpected book export")),
     photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
     gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
     chapterGear: vi.fn().mockResolvedValue([]),

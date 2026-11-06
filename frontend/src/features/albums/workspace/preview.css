@@ -46,11 +46,12 @@ button.bleed-toggle[aria-checked="true"] svg {
 button.bleed-toggle:disabled {
   opacity: 0.45;
 }
-.composition-controls label {
+.cover-owner-control {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
 }
 .composition-controls .control-help {
   flex-basis: 100%;

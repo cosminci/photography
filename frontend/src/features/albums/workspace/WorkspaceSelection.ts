@@ -1,4 +1,5 @@
-import type { Spread } from "../model/Workspace";
+import type { Spread, Workspace } from "../model/Workspace";
+import type { ExportIssue } from "../model/BookExport";
 
 export type Selection = { kind: "cover" } | { kind: "spread"; spread: Spread } | { kind: "invalid" };
 
@@ -65,4 +66,33 @@ export function buildChapterReorder(spreads: readonly Spread[], spreadId: string
   spreadIds[index] = adjacent;
   spreadIds[neighbor] = spreadId;
   return { chapter: target.chapter, expectedSpreadIds, spreadIds };
+}
+export interface ExportDestination {
+  readonly label: string;
+  readonly part: string | null;
+  readonly slot: string | undefined;
+}
+
+export function findExportDestination(workspace: Pick<Workspace, "chapters" | "spreads">, issue: ExportIssue): ExportDestination | undefined {
+  const target = issue.target;
+  switch (target["kind"]) {
+    case "album":
+      return { label: "Album synopsis", part: null, slot: undefined };
+    case "chapter": {
+      const chapter = workspace.chapters.find((owner) => owner.id === target["chapter"]);
+      return chapter === undefined ? undefined : { label: chapter.name, part: chapter.id, slot: undefined };
+    }
+    case "slot": {
+      const spreadIndex = workspace.spreads.findIndex((spread) => spread.id === target["spread"]);
+      const spread = workspace.spreads[spreadIndex];
+      const slotIndex = spread?.slots.filter((slot) => slot.kind === "photo").findIndex((slot) => slot.id === target["slot"]) ?? -1;
+      return spread === undefined || slotIndex < 0
+        ? undefined
+        : { label: `Spread ${String(spreadIndex + 1)} Slot ${String(slotIndex + 1)}`, part: getSpreadPart(spread), slot: target["slot"] };
+    }
+    case "cover":
+      return { label: "Cover", part: "cover", slot: target["slot"] };
+    default:
+      return undefined;
+  }
 }

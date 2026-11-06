@@ -120,10 +120,11 @@
       }
     },
     "Issue": {
-      "type": "object", "required": ["code", "severity", "target"], "additionalProperties": false,
+      "type": "object", "required": ["code", "severity", "target", "message"], "additionalProperties": false,
       "properties": {
-        "code": { "enum": ["empty_synopsis", "empty_description", "empty_photo_slot", "low_resolution", "original_changed", "original_undecodable", "original_unstable", "original_unavailable"] },
+        "code": { "enum": ["empty_synopsis", "empty_description", "empty_photo_slot", "low_resolution"] },
         "severity": { "enum": ["blocking", "warning"] },
+        "message": { "type": "string", "minLength": 1 },
         "target": { "oneOf": [
           { "type": "object", "required": ["kind"], "additionalProperties": false, "properties": { "kind": { "const": "album" } } },
           { "type": "object", "required": ["kind", "chapter"], "additionalProperties": false, "properties": { "kind": { "const": "chapter" }, "chapter": { "$ref": "#/$defs/Id" } } },

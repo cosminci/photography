@@ -2,6 +2,7 @@ import type { Chapter, ChapterDetails, Country, Spread, SpreadContext, SpreadTem
 import type { ChapterSave, Photo, PhotoInventory } from "./Photo";
 import type { PlacementClient } from "./Placement";
 import type { GearClient } from "./Gear";
+import type { BookExportClient } from "./BookExport";
 
 export const minimumAlbumYear = 1900;
 export const maximumAlbumYear = 2100;
@@ -29,7 +30,7 @@ export interface AlbumPage {
   readonly totalPages: number;
 }
 
-export interface AlbumClient extends PlacementClient, GearClient {
+export interface AlbumClient extends PlacementClient, GearClient, BookExportClient {
   readonly photo: (id: string) => Promise<Photo>;
   readonly list: (page: number) => Promise<AlbumPage>;
   readonly create: (year: number) => Promise<AlbumSummary>;
