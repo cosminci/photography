@@ -22,7 +22,6 @@ final case class Album(
     chapters: Vector[Chapter]
 ):
   def collectSpreads: NonEmptyList[Spread] = NonEmptyList(opening, chapters.flatMap(chapter => chapter.opening +: chapter.spreads).toList)
-  def collectCountries: Vector[Country]    = chapters.flatMap(_.destination.countries.toList).distinctBy(_.id)
 
 opaque type AlbumId = UUID
 object AlbumId:

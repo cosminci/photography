@@ -1,5 +1,4 @@
 package photography.adapters.sqlite.spread
-
 import photography.adapters.sqlite.album.SqliteAlbumCompositionRepository
 
 import photography.adapters.sqlite.FlywayMigrator
@@ -21,6 +20,7 @@ import photography.app.config.SqliteConfig
 import photography.domain.album.*
 import photography.domain.layout.*
 import photography.ports.album.AlbumRepository
+import photography.ports.album.AlbumCompositionRepository.{SpreadResult, Located}
 import photography.ports.chapter.ChapterRepository
 import photography.ports.spread.SpreadTemplateRepository
 
@@ -52,25 +52,35 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       val cause       = new IllegalStateException("Lost commit acknowledgement")
       val interrupted = Transactor.after.set(xa, xa.strategy.after >> cause.raiseError[ConnectionIO, Unit])
       for
-        opening    <- seedChapter(xa)
-        photo      <- buildPhotoSpread(xa, index = 5L, layout = defaultLayout)
-        _          <- (spreads.insert(chapterId, photo) >> spreads.reorder(chapterId, order = NonEmptyList.of(opening.id, photo.id))).transact(xa)
-        _          <- placePhoto(xa, photo.photoSlots.head.id, index = 1L)
-        before     <- readChapter(xa).map(_.spreads)
-        replaced   <- retemplate(xa, photo)
-        _          <- spreads.replace(replaced).transact(xa)
-        after      <- readChapter(xa).map(_.spreads)
-        _          <- spreads.remove(photo.id).transact(xa)
-        removed    <- readChapter(xa).map(_.spreads)
-        photos     <- photoRows.transact(xa)
-        placements <- placementRows.transact(xa)
+        opening       <- seedChapter(xa)
+        albumTemplate <- loadAlbumTemplate(xa)
+        albumOpening = buildAlbum(albumTemplate).opening
+        _        <- spreads.replace(albumOpening).transact(xa)
+        _        <- spreads.replace(opening).transact(xa)
+        photo    <- buildPhotoSpread(xa, index = 5L, layout = defaultLayout)
+        _        <- (spreads.insert(chapterId, photo) >> spreads.reorder(chapterId, order = NonEmptyList.of(opening.id, photo.id))).transact(xa)
+        _        <- placePhoto(xa, photo.photoSlots.head.id, index = 1L)
+        before   <- readSpreads(xa)
+        replaced <- retemplate(xa, photo)
+        _        <- spreads.replace(replaced).transact(xa)
+        after    <- readSpreads(xa)
+        _        <- CaptionCorner.values.toVector.traverse_ { corner =>
+          val changed = replaced.copy(placements = replaced.placements.map(_.copy(captionCorner = corner)))
+          (spreads.replace(changed) >> composition.findSpread(albumId, changed.id)).transact(xa).map(actual =>
+            assertEquals(actual, SpreadResult.Found(Located.Photo(chapterId, changed)))
+          )
+        }
+        _               <- spreads.remove(photo.id).transact(xa)
+        removed         <- readSpreads(xa)
+        photos          <- photoRows.transact(xa)
+        placements      <- placementRows.transact(xa)
         uncertainInsert <- (spreads.insert(chapterId, photo) >> spreads.reorder(chapterId, NonEmptyList.of(opening.id, photo.id)))
           .transact(interrupted).attempt
-        inserted         <- readChapter(xa).map(_.spreads)
+        inserted         <- readSpreads(xa)
         uncertainReplace <- spreads.replace(replaced).transact(interrupted).attempt
-        committed        <- readChapter(xa).map(_.spreads)
+        committed        <- readSpreads(xa)
         uncertainRemove  <- spreads.remove(photo.id).transact(interrupted).attempt
-        finalSpreads     <- readChapter(xa).map(_.spreads)
+        finalSpreads     <- readSpreads(xa)
       yield
         val beforeSpreads = before
         val afterSpreads  = after
@@ -78,13 +88,12 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(afterSpreads.map(_.template), Vector(singleLayout))
         assertEquals(afterSpreads.flatMap(_.placements).map(_.transform), Vector(identity))
         assertEquals(afterSpreads.flatMap(_.placements).map(_.slot), afterSpreads.flatMap(_.photoSlots.toList).map(_.id))
+        val commitFailures = Vector(uncertainInsert.swap.toOption, uncertainReplace.swap.toOption, uncertainRemove.swap.toOption)
+
         assertEquals(removed, Vector.empty[Spread.PhotosOnly])
         assertEquals(photos, 1L)
         assertEquals(placements, 0L)
-        assertEquals(
-          Vector(uncertainInsert.swap.toOption, uncertainReplace.swap.toOption, uncertainRemove.swap.toOption),
-          Vector.fill(3)(Some(cause))
-        )
+        assertEquals(commitFailures, Vector.fill(3)(cause.some))
         assertEquals(inserted, Vector(photo))
         assertEquals(committed, Vector(replaced))
         assertEquals(finalSpreads, Vector.empty[Spread.PhotosOnly])
@@ -121,7 +130,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         maybeAfter <- composition.findSpread(albumId, photo.id).transact(xa)
       yield
         assert(failed.isLeft)
-        assertEquals(maybeAfter.map(_.spread), maybeBefore.map(_.spread))
+        assertEquals(maybeAfter, maybeBefore)
 
   test("should distinguish absent chapter ownership from malformed persisted chapter ordering"):
     buildTransactor.use: xa =>
@@ -136,15 +145,19 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(maybeForeign, none[NonEmptyList[SpreadId]])
         assert(malformed.isLeft)
 
-  private def readChapter(xa: Transactor[IO]) =
-    SqliteAlbumRepository.make[IO](xa, composition, SqliteChapterRepository.make).get(albumId).map:
-      case AlbumRepository.GetResult.Found(album) =>
-        album.chapters.find(_.id.value === chapterId.value).getOrElse(fail("Missing persisted chapter"))
-      case other => fail(s"Expected persisted album, obtained $other")
+  private def readSpreads(xa: Transactor[IO]) =
+    composition.findChapterOrder(albumId, chapterId).flatMap:
+      case Some(order) => order.tail.traverse { id =>
+          composition.findSpread(albumId, id).map:
+            case SpreadResult.Found(Located.Photo(_, value)) => value
+            case other                                       => fail(s"Expected saved photo spread, got $other")
+        }.map(_.toVector)
+      case None => fail("Missing chapter order")
+    .transact(xa)
 
   private def seedChapter(xa: Transactor[IO]) =
     val insertCountry = sql"INSERT INTO country VALUES (${country.id.value}, 'XX', 'Test country', '/flags/xx.svg')".update.run.transact(xa)
-    val repository    = SqliteAlbumRepository.make[IO](xa, composition, SqliteChapterRepository.make)
+    val repository    = SqliteAlbumRepository.make[IO](xa)
     val cover         = Cover(albumId, SpineOwner.Front, CoverSlot(CoverSlotId(new UUID(1L, 12L))), CoverSlot(CoverSlotId(new UUID(1L, 13L))))
     for
       _            <- insertCountry
@@ -218,7 +231,7 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       case SpreadTemplateRepository.ListPhotosOnlyTemplatesResult.Listed(values) =>
         values.find(_.id.value === singleLayout.value) match
           case Some(template) =>
-            val slot = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(5L, 900L)), template.photoSlots.head, bleed = Set.empty[SpreadEdge])
+            val slot = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(5L, 900L)), template.photoSlots.head, bleed = SpreadEdge.values.toSet)
             val kept = SpreadPlacement(placementId, slot.id, photoId, identity, CaptionCorner.TopRight)
             Spread.PhotosOnly(photo.id, singleLayout, photoSlots = NonEmptyList.one(slot), placements = Vector(kept)).pure[IO]
           case None => IO.raiseError[Spread.PhotosOnly](new IllegalStateException("Missing single layout"))

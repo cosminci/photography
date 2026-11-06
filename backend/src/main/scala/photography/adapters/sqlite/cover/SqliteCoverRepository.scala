@@ -2,21 +2,22 @@ package photography.adapters.sqlite.cover
 
 import cats.data.NonEmptyVector
 import cats.syntax.all.*
-import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.numeric.GreaterEqual
-import org.typelevel.doobie.ConnectionIO
+import org.typelevel.doobie.{ConnectionIO, Read}
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
-import photography.domain.album.{AlbumId, PhotoId}
+import photography.adapters.sqlite.SqliteAlbumQueries
+import photography.domain.album.{AlbumId, PhotoId, InteriorSpreadCount}
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
-import photography.ports.cover.CoverRepository.{Composition, ReadResult, ReplaceResult, SetSpineOwnerResult}
+import photography.ports.cover.CoverRepository.{Stored, ReadResult, ReplaceResult, SetSpineOwnerResult}
 import java.util.UUID
 
 object SqliteCoverRepository:
   def make: CoverRepository[ConnectionIO] = new LiveSqliteCoverRepository
 
   final private class LiveSqliteCoverRepository extends CoverRepository[ConnectionIO]:
+    private given Read[CoverSpecification] = Read[(Int, Int, Int, Int)].emap(CoverSpecification.from.tupled)
+
     override def read(album: AlbumId): ConnectionIO[ReadResult] =
       sql"SELECT spine_owner FROM cover WHERE album_id = ${album.value}".query[String].option.flatMap:
         case None        => ReadResult.NotFound.pure[ConnectionIO]
@@ -25,8 +26,10 @@ object SqliteCoverRepository:
             slots      <- sql"SELECT id, side FROM cover_slot WHERE album_id = ${album.value} ORDER BY side".query[(UUID, String)].to[Vector]
             cover      <- decodeCover(album, spine, slots = slots).liftTo[ConnectionIO]
             placements <- loadPlacements(album)
-            dimensions <- loadDimensions(album)
-          yield ReadResult.Found(Composition(cover, placements = placements, dimensions = dimensions))
+            inputs     <- loadSizing(album)
+          yield
+            val (spreads, specifications) = inputs
+            ReadResult.Found(Stored(cover, placements, spreads, specifications))
 
     override def replace(album: AlbumId, placements: Vector[CoverPlacement]): ConnectionIO[ReplaceResult] =
       val exists = sql"SELECT EXISTS(SELECT 1 FROM cover WHERE album_id = ${album.value})".query[Boolean].unique
@@ -42,18 +45,14 @@ object SqliteCoverRepository:
       sql"UPDATE cover SET spine_owner = $encoded WHERE album_id = ${album.value}".update.run.map: changed =>
         if changed === 0 then SetSpineOwnerResult.NotFound else SetSpineOwnerResult.Updated
 
-    private def loadDimensions(album: AlbumId) =
-      val count = sql"""SELECT COUNT(*) FROM spread s LEFT JOIN chapter c ON c.id = s.chapter_id
-                        WHERE s.album_id = ${album.value} OR c.album_id = ${album.value}""".query[Int].unique.flatMap: count =>
-        count.refineEither[GreaterEqual[0]].leftMap(new IllegalArgumentException(_)).liftTo[ConnectionIO]
-      val catalog = sql"SELECT page_limit, width_pixels, height_pixels, spine_pixels FROM cover_specification"
-        .query[(Int, Int, Int, Int)].to[Vector]
+    private def loadSizing(album: AlbumId) =
+      val count   = SqliteAlbumQueries.interiorSpreadCount(album).query[InteriorSpreadCount].unique
+      val catalog = sql"SELECT page_limit, width_pixels, height_pixels, spine_pixels FROM cover_specification".query[CoverSpecification].to[Vector]
       for
         spreads        <- count
-        rows           <- catalog
-        specifications <- rows.traverse(CoverSpecification.from.tupled).leftMap(new IllegalArgumentException(_)).liftTo[ConnectionIO]
+        specifications <- catalog
         nonempty <- NonEmptyVector.fromVector(specifications).toRight(new IllegalStateException("Missing cover specifications")).liftTo[ConnectionIO]
-      yield CoverDimensions.forSpreads(spreads, nonempty)
+      yield (spreads, nonempty)
 
     private def loadPlacements(album: AlbumId) =
       sql"""SELECT p.id, p.cover_slot_id, p.photo_id, p.shift_x, p.shift_y, p.mirrored, p.zoom
@@ -76,7 +75,9 @@ object SqliteCoverRepository:
       val maybeOwner = spine match
         case "front" => SpineOwner.Front.some
         case "back"  => SpineOwner.Back.some
-        case _       => none[SpineOwner]
+        // $COVERAGE-OFF$
+        case _ => none[SpineOwner]
+        // $COVERAGE-ON$
       val maybeCover =
         for
           owner <- maybeOwner

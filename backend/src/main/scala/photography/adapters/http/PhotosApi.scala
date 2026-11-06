@@ -81,7 +81,7 @@ object PhotosApi:
         "photos"         -> Json.arr(inventory.photos.map(encodePhoto)*),
         "placedPhotoIds" -> Json.arr(inventory.placed.toVector.sortBy(_.value.toString).map(photo => Json.fromString(photo.value.toString))*),
         "counts"         -> Json.obj("unplaced" -> Json.fromInt(inventory.countUnplaced), "total" -> Json.fromInt(inventory.total)),
-        "processing"     -> encodeProcessing(snapshot.execution)
+        "processing"     -> encodeProcessing(snapshot)
       )
 
     private def encodePhoto(photo: Photo) =
@@ -101,31 +101,28 @@ object PhotosApi:
         )
       )
 
-    private def encodeProcessing(execution: ChapterPhotoImport.ExecutionOutcome) =
-      val (state, unsupported, issues) = execution.status match
-        case ChapterPhotoImport.Status.Idle             => ("idle", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Queued           => ("queued", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Running          => ("running", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.LaunchFailed     => ("failed", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Uncertain        => ("failed", 0, Vector.empty[PhotoManager.Issue])
-        case ChapterPhotoImport.Status.Finished(result) =>
-          val failed = result.issues.exists(issue => !isSkipped(issue))
-          (if failed then "failed" else "completed", result.unsupportedCount: Int, result.issues)
+    private def encodeProcessing(snapshot: ChapterPhotos) =
+      val execution = snapshot.execution
+      val state     = snapshot.processingState match
+        case ChapterPhotoInventory.ProcessingState.Idle      => "idle"
+        case ChapterPhotoInventory.ProcessingState.Queued    => "queued"
+        case ChapterPhotoInventory.ProcessingState.Running   => "running"
+        case ChapterPhotoInventory.ProcessingState.Completed => "completed"
+        case ChapterPhotoInventory.ProcessingState.Failed    => "failed"
+      val issues = execution.status match
+        case ChapterPhotoImport.Status.Finished(result) => result.issues
+        case _                                          => Vector.empty[PhotoManager.Issue]
       val scheduling = execution.status match
         case ChapterPhotoImport.Status.LaunchFailed => Vector(encodeIssue(stage = "scheduling", code = "scheduling_failed", maybeFilename = None))
         case ChapterPhotoImport.Status.Uncertain    => Vector(encodeIssue(stage = "persistence", code = "persistence_failed", maybeFilename = None))
         case _                                      => Vector.empty[Json]
       val failures = issues.map(encodeImportIssue) ++ execution.retirementIssues.map(encodeRetirementIssue) ++ scheduling
       Json.obj(
-        "state"            -> Json.fromString(if execution.retirementIssues.nonEmpty then "failed" else state),
-        "unsupportedCount" -> Json.fromInt(unsupported),
-        "skippedCount"     -> Json.fromInt(issues.count(isSkipped)),
+        "state"            -> Json.fromString(state),
+        "unsupportedCount" -> Json.fromInt(snapshot.unsupportedCount),
+        "skippedCount"     -> Json.fromInt(snapshot.skippedCount),
         "issues"           -> Json.arr(failures*)
       )
-
-    private def isSkipped(issue: PhotoManager.Issue) = issue match
-      case _: PhotoManager.Issue.Undecodable | _: PhotoManager.Issue.Unstable => true
-      case _                                                                  => false
 
     private def encodeImportIssue(issue: PhotoManager.Issue) = issue match
       case PhotoManager.Issue.Discovery             => encodeIssue(stage = "discovery", code = "unreadable_source", maybeFilename = None)

@@ -15,11 +15,13 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.domain.album.*
 import photography.domain.gear.*
 import photography.domain.layout.*
-import photography.ports.album.AlbumRepository
 import photography.capabilities.Transaction
-import photography.ports.cover.CoverRepository
+import photography.usecases.cover.CoverManager
 import photography.ports.gear.GearRepository
 import photography.ports.photo.PhotoRepository
+import photography.ports.album.{AlbumRepository, AlbumCompositionRepository}
+import photography.ports.album.AlbumCompositionRepository.{Located, Member, SpreadResult, CompositionResult}
+import photography.ports.chapter.ChapterRepository
 import photography.usecases.album.BookExport.*
 
 import java.time.{Instant, LocalDate}
@@ -72,7 +74,8 @@ final class BookExportComponentTest extends CatsEffectSuite:
     Vector.empty[Spread.PhotosOnly]
   )
   private val album = Album(AlbumId(new UUID(0L, 1L)), 2025, "Retained Hội An", "Synopsis Ș", Author.all, Instant.EPOCH, opening, Vector(chapter))
-  private val cover = Cover(album.id, SpineOwner.Front, CoverSlot(CoverSlotId(new UUID(0L, 14L))), CoverSlot(CoverSlotId(new UUID(0L, 15L))))
+  private val albumMetadata = AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
+  private val cover         = Cover(album.id, SpineOwner.Front, CoverSlot(CoverSlotId(new UUID(0L, 14L))), CoverSlot(CoverSlotId(new UUID(0L, 15L))))
   private val coverPlacements = Vector(
     CoverPlacement(CoverPlacementId(new UUID(0L, 16L)), cover.front.id, PhotoId(new UUID(1L, 3L)), transform),
     CoverPlacement(CoverPlacementId(new UUID(0L, 17L)), cover.back.id, PhotoId(new UUID(1L, 4L)), transform)
@@ -81,7 +84,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
     .fold(message => fail(message), identity)
   private val dimensions = CoverDimensions.forSpreads(2, cats.data.NonEmptyVector.one(specification))
   private val book       =
-    SavedBook(album, CoverRepository.Composition(cover, coverPlacements, dimensions), photos, GearCatalog(Vector(camera, phone), Vector(lens)))
+    SavedBook(album, CoverManager.Composition(cover, coverPlacements, dimensions), photos, GearCatalog(Vector(camera, phone), Vector(lens)))
 
   test("should preserve exact saved text and permit empty captions without reading original files"):
     Ref.of[IO, Vector[AlbumId]](Vector.empty).flatMap: calls =>
@@ -92,11 +95,17 @@ final class BookExportComponentTest extends CatsEffectSuite:
       yield
         result match
           case Result.Ready(json, filename) =>
+            val expectedSections = Set("formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings")
+            val chapterGear      = json.hcursor.downField("chapters").downN(0).downField("gear")
+            val selectedLenses   = chapterGear.downN(0).get[Vector[String]]("lensIds")
+            val fixedLenses      = chapterGear.downN(1).get[Vector[String]]("lensIds")
+            val schema           = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+              .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+            val config           = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+            val schemaViolations = schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).asScala.toVector
+
             assertEquals(filename, "album-2025-indesign.json")
-            assertEquals(
-              json.asObject.map(_.keys.toSet),
-              Set("formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings").some
-            )
+            assertEquals(json.asObject.map(_.keys.toSet), expectedSections.some)
             assertEquals(json.hcursor.downField("album").get[String]("synopsis"), album.synopsis.asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("album").get[String]("title"), (album.title: String).asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("album").get[Vector[String]]("authors"), Vector("Cosmin", "Mara", "Iacob").asRight[DecodingFailure])
@@ -105,24 +114,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
             assertEquals(json.hcursor.downField("sources").downN(0).get[String]("filename"), (original.filename: String).asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("sources").downN(0).get[Option[String]]("caption"), none[String].asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("chapters").downN(0).get[String]("description"), chapter.description.asRight[DecodingFailure])
-            assertEquals(
-              json.hcursor.downField("chapters").downN(0).downField("gear").downN(0).get[Vector[String]]("lensIds"),
-              Vector(lens.id.value.toString).asRight[DecodingFailure]
-            )
-            assertEquals(
-              json.hcursor.downField("chapters").downN(0).downField("gear").downN(1).get[Vector[String]]("lensIds"),
-              Vector.empty[String].asRight[DecodingFailure]
-            )
+            assertEquals(selectedLenses, Vector(lens.id.value.toString).asRight[DecodingFailure])
+            assertEquals(fixedLenses, Vector.empty[String].asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("cameras").map(_.size), 2.asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("lenses").map(_.size), 1.asRight[DecodingFailure])
             assertEquals(json.hcursor.get[Vector[Json]]("warnings"), Vector.empty[Json].asRight[DecodingFailure])
-            val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
-              .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
-            val config = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
-            assertEquals(
-              schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).asScala.toVector,
-              Vector.empty
-            )
+            assertEquals(schemaViolations, Vector.empty)
           case other => fail(s"Expected validated artifact, got $other")
         assertEquals(reads, Vector(album.id))
 
@@ -142,7 +139,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
 
       exporter.flatMap(_.exportBook(album.id)).map(result => assertEquals(result, Result.Blocked(expected)))
 
-  test("should validate photo-only spreads without requiring editorial text"):
+  test("should preserve saved chapter and spread order with their own text, gear and photographs"):
     Ref.of[IO, Vector[AlbumId]](Vector.empty).flatMap: calls =>
       val slot   = photoSlot.copy(id = PhotoSpreadSlotId(new UUID(0L, 19L)))
       val spread = Spread.PhotosOnly(
@@ -151,34 +148,69 @@ final class BookExportComponentTest extends CatsEffectSuite:
         NonEmptyList.one(slot),
         Vector(placed.copy(id = SpreadPlacementId(new UUID(0L, 20L)), slot = slot.id))
       )
+      val nextChapterId = ChapterId(new UUID(0L, 24L))
+      val nextPhotos    = Vector(5, 6, 7).map(index =>
+        Photo(PhotoId(new UUID(1L, index.toLong)), nextChapterId, original, metadata, thumbnail, maybeCaption = None)
+      )
+      val nextSlot   = slot.copy(id = PhotoSpreadSlotId(new UUID(0L, 26L)))
+      val nextSpread = spread.copy(
+        id = SpreadId(new UUID(0L, 23L)),
+        photoSlots = NonEmptyList.one(nextSlot),
+        placements = Vector(placed.copy(id = SpreadPlacementId(new UUID(0L, 27L)), slot = nextSlot.id, photo = PhotoId(new UUID(1L, 6L))))
+      )
+      val lastSlot   = slot.copy(id = PhotoSpreadSlotId(new UUID(0L, 28L)))
+      val lastSpread = spread.copy(
+        photoSlots = NonEmptyList.one(lastSlot),
+        placements = Vector(placed.copy(id = SpreadPlacementId(new UUID(0L, 29L)), slot = lastSlot.id, photo = PhotoId(new UUID(1L, 7L))))
+      )
+      val nextOpeningSlot = chapterSlot.copy(id = PhotoSpreadSlotId(new UUID(0L, 30L)))
+      val nextChapter     = chapter.copy(
+        id = nextChapterId,
+        destination = chapter.destination.copy(name = "Coast"),
+        description = "Coast description",
+        gear = Vector(CameraSelection(phone.id, CameraUse.FixedLens)),
+        opening = chapterOpening.copy(
+          id = SpreadId(new UUID(0L, 25L)),
+          photoSlots = Vector(nextOpeningSlot),
+          textSlot = textSlot.copy(id = TextSpreadSlotId(new UUID(0L, 31L))),
+          placements = Vector(placed.copy(id = SpreadPlacementId(new UUID(0L, 32L)), slot = nextOpeningSlot.id, photo = PhotoId(new UUID(1L, 5L))))
+        ),
+        spreads = Vector(nextSpread, lastSpread)
+      )
+      val orderedChapters =
+        Vector(nextChapter, chapter.copy(gear = Vector(CameraSelection(camera.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id))))))
       val saved = book.copy(
-        album = album.copy(chapters = Vector(chapter.copy(spreads = Vector(spread)))),
-        cover = book.cover.copy(dimensions = CoverDimensions.forSpreads(3, cats.data.NonEmptyVector.one(specification)))
+        album = album.copy(chapters = orderedChapters),
+        photos = nextPhotos ++ photos,
+        cover = book.cover.copy(dimensions = CoverDimensions.forSpreads(5, cats.data.NonEmptyVector.one(specification)))
       )
       val exporter = buildExporter(calls, saved)
+      val expected = BookExportJson.encode(saved, warnings = Vector.empty[Issue]).fold(message => fail(message), identity)
 
       exporter.flatMap(_.exportBook(album.id)).map:
         case Result.Ready(json, filename) =>
           assertEquals(filename, "album-2025-indesign.json")
-          assertEquals(json.hcursor.downField("interior").get[Long]("pageCount"), 6L.asRight[DecodingFailure])
+          assertEquals(json, expected)
+          assertEquals(json.hcursor.downField("interior").get[Long]("pageCount"), 10L.asRight[DecodingFailure])
           assertEquals(json.hcursor.downField("interior").downField("spreads").downN(2).get[String]("kind"), "photos".asRight[DecodingFailure])
         case other => fail(s"Expected validated photo spread, got $other")
 
   test("should return explicit acquisition outcomes without reading originals"):
-    val found     = AlbumRepository.GetResult.Found(album)
-    val cover     = CoverRepository.ReadResult.Found(book.cover)
+    val found     = AlbumRepository.MetadataResult.Found(albumMetadata)
+    val cover     = CoverManager.ReadResult.Found(book.cover)
     val inventory = PhotoRepository.ListResult.Listed(book.photos)
     val catalog   = GearRepository.CatalogReadResult.Found(book.gear)
     val cases     = Vector(
-      (album = AlbumRepository.GetResult.NotFound, cover = cover, photos = inventory, gear = catalog, expected = Result.NotFound),
+      (album = AlbumRepository.MetadataResult.NotFound, cover = cover, photos = inventory, gear = catalog, expected = Result.NotFound),
       (
-        album = AlbumRepository.GetResult.Failed(AlbumRepository.Failure.DatabaseFailure),
+        album = AlbumRepository.MetadataResult.Failed(AlbumRepository.Failure.DatabaseFailure),
         cover = cover,
         photos = inventory,
         gear = catalog,
         expected = Result.Failed
       ),
-      (album = found, cover = CoverRepository.ReadResult.NotFound, photos = inventory, gear = catalog, expected = Result.Failed),
+      (album = found, cover = CoverManager.ReadResult.CoverNotFound, photos = inventory, gear = catalog, expected = Result.Failed),
+      (album = found, cover = CoverManager.ReadResult.Failed, photos = inventory, gear = catalog, expected = Result.Failed),
       (album = found, cover = cover, photos = PhotoRepository.ListResult.Failed, gear = catalog, expected = Result.Failed),
       (album = found, cover = cover, photos = PhotoRepository.ListResult.Listed(Vector.empty), gear = catalog, expected = Result.Failed),
       (album = found, cover = cover, photos = inventory, gear = GearRepository.CatalogReadResult.Failed, expected = Result.Failed)
@@ -188,6 +220,8 @@ final class BookExportComponentTest extends CatsEffectSuite:
       Ref.of[IO, Vector[AlbumId]](Vector.empty).flatMap: calls =>
         val buildExport = BookExport.make(
           buildAlbums(albumRead, calls.update(_ :+ album.id)),
+          buildComposition(album),
+          buildChapters(album),
           buildCovers(coverRead),
           buildPhotos(photoRead),
           buildGear(gearRead)
@@ -200,6 +234,74 @@ final class BookExportComponentTest extends CatsEffectSuite:
         yield
           assertEquals(result, expected)
           assertEquals(reads, Vector(album.id))
+    }
+
+  test("should fail export when saved chapter metadata is unavailable"):
+    Vector(
+      AlbumRepository.ChaptersResult.AlbumNotFound,
+      AlbumRepository.ChaptersResult.Failed(AlbumRepository.Failure.DatabaseFailure)
+    ).traverse_ { response =>
+      for
+        exporter <- BookExport.make(
+          buildAlbums(AlbumRepository.MetadataResult.Found(albumMetadata), IO.unit, maybeChapters = response.some),
+          buildComposition(album),
+          buildChapters(album),
+          buildCovers(CoverManager.ReadResult.Found(book.cover)),
+          buildPhotos(PhotoRepository.ListResult.Listed(book.photos)),
+          buildGear(GearRepository.CatalogReadResult.Found(book.gear))
+        )
+        result <- exporter.exportBook(album.id)
+      yield assertEquals(result, Result.Failed)
+    }
+
+  test("should fail export when saved membership or spread geometry is unavailable"):
+    val cases = Vector(
+      (membership = CompositionResult.AlbumNotFound, spread = SpreadResult.NotFound),
+      (membership = CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable), spread = SpreadResult.NotFound),
+      (membership = CompositionResult.Found(NonEmptyList.one(Member(opening.id, maybeChapter = None))), spread = SpreadResult.NotFound)
+    )
+    cases.traverse_ { case (membership, spread) =>
+      for
+        exporter <- BookExport.make(
+          buildAlbums(AlbumRepository.MetadataResult.Found(albumMetadata), IO.unit),
+          buildComposition(album, maybeMembership = membership.some, maybeSpread = spread.some),
+          buildChapters(album),
+          buildCovers(CoverManager.ReadResult.Found(book.cover)),
+          buildPhotos(PhotoRepository.ListResult.Listed(book.photos)),
+          buildGear(GearRepository.CatalogReadResult.Found(book.gear))
+        )
+        result <- exporter.exportBook(album.id)
+      yield assertEquals(result, Result.Failed)
+    }
+
+  test("should reject incoherent saved openings and unavailable chapter gear"):
+    val complete = Vector[Located](Located.AlbumOpening(opening), Located.ChapterOpening(chapterId, chapterOpening))
+    val cases    = Vector(
+      (members = Vector[Located](Located.ChapterOpening(chapterId, chapterOpening)), gear = ChapterRepository.GearReadResult.Found(selected)),
+      (
+        members = Vector[Located](Located.AlbumOpening(opening), Located.AlbumOpening(opening.copy(id = chapterOpening.id))),
+        gear = ChapterRepository.GearReadResult.Found(selected)
+      ),
+      (members = Vector[Located](Located.AlbumOpening(opening)), gear = ChapterRepository.GearReadResult.Found(selected)),
+      (
+        members = complete :+ Located.ChapterOpening(chapterId, chapterOpening.copy(id = SpreadId(new UUID(8L, 1L)))),
+        gear = ChapterRepository.GearReadResult.Found(selected)
+      ),
+      (members = complete, gear = ChapterRepository.GearReadResult.NotFound),
+      (members = complete, gear = ChapterRepository.GearReadResult.Failed)
+    )
+    cases.traverse_ { case (members, gearRead) =>
+      for
+        exporter <- BookExport.make(
+          buildAlbums(AlbumRepository.MetadataResult.Found(albumMetadata), IO.unit),
+          buildComposition(album, maybeLocated = members.some),
+          buildChapters(album, maybeGear = gearRead.some),
+          buildCovers(CoverManager.ReadResult.Found(book.cover)),
+          buildPhotos(PhotoRepository.ListResult.Listed(book.photos)),
+          buildGear(GearRepository.CatalogReadResult.Found(book.gear))
+        )
+        result <- exporter.exportBook(album.id)
+      yield assertEquals(result, Result.Failed)
     }
 
   test("should warn strictly below 300 effective DPI without blocking the complete book"):
@@ -288,10 +390,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
     Ref.of[IO, Vector[AlbumId]](Vector.empty).flatMap: calls =>
       val exporter = BookExport.make(
         buildAlbums(
-          AlbumRepository.GetResult.Found(album),
+          AlbumRepository.MetadataResult.Found(albumMetadata),
           calls.update(_ :+ album.id) >> IO.raiseError[Unit](new IllegalStateException("Album unavailable"))
         ),
-        buildCovers(CoverRepository.ReadResult.Found(book.cover)),
+        buildComposition(album),
+        buildChapters(album),
+        buildCovers(CoverManager.ReadResult.Found(book.cover)),
         buildPhotos(PhotoRepository.ListResult.Listed(book.photos)),
         buildGear(GearRepository.CatalogReadResult.Found(book.gear))
       )
@@ -332,16 +436,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
               assertEquals(json.hcursor.downField("cover").get[String]("spineOwner"), encodedOwner.asRight[DecodingFailure])
               val slot = json.hcursor.downField("interior").downField("spreads").downN(0).downField("slots").downN(0)
               Vector("xPt" -> -3.5, "yPt" -> -3.5, "widthPt" -> 2388.102, "heightPt" -> 772.354).foreach { case (key, expected) =>
-                assertEquals(
-                  slot.downField("frame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
-                  true.asRight[DecodingFailure]
-                )
+                val matchesFrame = slot.downField("frame").get[Double](key).map(value => math.abs(value - expected) < 0.000001)
+                assertEquals(matchesFrame, true.asRight[DecodingFailure])
               }
               Vector("xPt" -> 23.81102, "yPt" -> 7.65354, "widthPt" -> 2142.9918, "heightPt" -> 688.8186).foreach { case (key, expected) =>
-                assertEquals(
-                  slot.downField("captionFrame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
-                  true.asRight[DecodingFailure]
-                )
+                val matchesCaptionFrame = slot.downField("captionFrame").get[Double](key).map(value => math.abs(value - expected) < 0.000001)
+                assertEquals(matchesCaptionFrame, true.asRight[DecodingFailure])
               }
               val projected = json.hcursor.downField("interior").downField("spreads").downN(0).downField("placements").downN(0)
               assertEquals(projected.get[String]("captionCorner"), encodedCorner.asRight[DecodingFailure])
@@ -417,35 +517,96 @@ final class BookExportComponentTest extends CatsEffectSuite:
       Transaction[IO, IO]
   ) =
     BookExport.make(
-      buildAlbums(AlbumRepository.GetResult.Found(saved.album), calls.update(_ :+ saved.album.id)),
-      buildCovers(CoverRepository.ReadResult.Found(saved.cover)),
-      buildPhotos(PhotoRepository.ListResult.Listed(saved.photos)),
+      buildAlbums(
+        AlbumRepository.MetadataResult.Found(AlbumRepository.Metadata(
+          saved.album.id,
+          saved.album.year,
+          saved.album.title,
+          saved.album.synopsis,
+          saved.album.authors,
+          saved.album.createdAt
+        )),
+        calls.update(_ :+ saved.album.id),
+        saved.album
+      ),
+      buildComposition(saved.album),
+      buildChapters(saved.album),
+      buildCovers(CoverManager.ReadResult.Found(saved.cover)),
+      buildPhotos(PhotoRepository.ListResult.Listed(saved.photos), saved.album.chapters.map(_.id)),
       buildGear(GearRepository.CatalogReadResult.Found(saved.gear))
     )
 
-  private def buildAlbums(response: AlbumRepository.GetResult, onRead: IO[Unit]) = new AlbumRepository[IO]:
-    override def get(id: AlbumId): IO[AlbumRepository.GetResult]                          = (onRead >> IO(assertEquals(id, album.id))).as(response)
-    override def list(offset: Int, limit: Int): IO[AlbumRepository.ListResult]            = fail("Read the requested album")
-    override def create(album: Album, cover: Cover): IO[AlbumRepository.CreateResult]     = fail("Read-only export")
-    override def rename(id: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult] = fail("Read-only export")
-    override def saveSynopsis(id: AlbumId, text: String): IO[AlbumRepository.SaveSynopsisResult]        = fail("Read-only export")
-    override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumRepository.SaveAuthorsResult] = fail("Read-only export")
-    override def delete(id: AlbumId): IO[AlbumRepository.DeleteResult]                                  = fail("Read-only export")
+  // scalafix:off DisableSyntax.defaultArgs
+  private def buildAlbums(
+      response: AlbumRepository.MetadataResult,
+      onRead: IO[Unit],
+      saved: Album = album,
+      maybeChapters: Option[AlbumRepository.ChaptersResult] = None
+  ) =
+    new AlbumRepository.MetadataRead[IO] with AlbumRepository.ChapterRead[IO]:
+      override def metadata(id: AlbumId): IO[AlbumRepository.MetadataResult] = (onRead >> IO(assertEquals(id, album.id))).as(response)
+      override def chapters(id: AlbumId): IO[AlbumRepository.ChaptersResult] =
+        maybeChapters.getOrElse(AlbumRepository.ChaptersResult.Found(saved.chapters.map(chapter =>
+          AlbumRepository.ChapterMetadata(chapter.id, chapter.destination, chapter.period, chapter.sourceFolder, chapter.description)
+        ))).pure[IO]
 
-  private def buildCovers(response: CoverRepository.ReadResult) = new CoverRepository[IO]:
-    override def read(id: AlbumId): IO[CoverRepository.ReadResult] = IO(assertEquals(id, album.id)).as(response)
-    override def replace(id: AlbumId, placements: Vector[CoverPlacement]): IO[CoverRepository.ReplaceResult] = fail("Read-only export")
-    override def setSpineOwner(id: AlbumId, owner: SpineOwner): IO[CoverRepository.SetSpineOwnerResult]      = fail("Read-only export")
+  private def buildComposition(
+      saved: Album,
+      maybeMembership: Option[CompositionResult] = None,
+      maybeSpread: Option[SpreadResult] = None,
+      maybeLocated: Option[Vector[Located]] = None
+  ) =
+    val located = maybeLocated.getOrElse(Vector[Located](Located.AlbumOpening(saved.opening)) ++ saved.chapters.flatMap(chapter =>
+      Vector[Located](Located.ChapterOpening(chapter.id, chapter.opening)) ++ chapter.spreads.map(Located.Photo(chapter.id, _))
+    ))
+    new AlbumCompositionRepository[IO] with AlbumCompositionRepository.MembershipRead[IO]:
+      override def composition(id: AlbumId): IO[CompositionResult] =
+        maybeMembership.getOrElse(CompositionResult.Found(NonEmptyList.fromList(located.map(value =>
+          Member(value.spread.id, maybeChapter = None)
+        ).toList).getOrElse(fail("Expected members")))).pure[IO]
+      override def findSpread(id: AlbumId, spread: SpreadId): IO[SpreadResult] =
+        maybeSpread.getOrElse(
+          located.find(_.spread.id.value === spread.value).fold[SpreadResult](SpreadResult.NotFound)(SpreadResult.Found(_))
+        ).pure[IO]
+      override def hasAlbum(id: AlbumId): IO[Boolean]                                                    = fail("Export reads metadata")
+      override def countInteriorSpreads(id: AlbumId): IO[Int]                                            = fail("Export acquires geometry")
+      override def findChapterOrder(id: AlbumId, chapter: ChapterId): IO[Option[NonEmptyList[SpreadId]]] = fail("Export acquires membership")
 
-  private def buildPhotos(response: PhotoRepository.ListResult) = new PhotoRepository[IO]:
-    override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] = IO(assertEquals(id, chapterId)).as(response)
-    override def find(id: PhotoId): IO[PhotoRepository.FindResult]          = fail("Acquire chapter inventory")
+  private def buildChapters(saved: Album, maybeGear: Option[ChapterRepository.GearReadResult] = None) = new ChapterRepository[IO]:
+    override def readGear(id: AlbumId, chapter: ChapterId): IO[ChapterRepository.GearReadResult] =
+      maybeGear.getOrElse(
+        saved.chapters.find(_.id.value === chapter.value).fold[ChapterRepository.GearReadResult](ChapterRepository.GearReadResult.NotFound)(value =>
+          ChapterRepository.GearReadResult.Found(value.gear)
+        )
+      ).pure[IO]
+    override def readSelections: IO[ChapterRepository.SelectionsReadResult] = fail("Export reads chapter gear")
+    override def replaceGear(id: AlbumId, chapter: ChapterId, selection: GearSelection): IO[ChapterRepository.GearWriteResult] = fail("Read-only")
+    override def saveDescription(id: AlbumId, chapter: ChapterId, text: String): IO[ChapterRepository.SaveDescriptionResult]   = fail("Read-only")
+    override def findSource(chapter: ChapterId): IO[ChapterRepository.SourceResult] = fail("Export reads chapter metadata")
+    override def create(id: AlbumId, chapter: ChapterRepository.NewChapter, order: NonEmptyList[ChapterId]): IO[ChapterRepository.CreateResult] =
+      fail("Read-only")
+    override def update(command: ChapterRepository.Update): IO[ChapterRepository.UpdateResult] = fail("Read-only")
+  // scalafix:on DisableSyntax.defaultArgs
+
+  private def buildCovers(response: CoverManager.ReadResult) = new CoverManager[IO]:
+    override def read(id: AlbumId): IO[CoverManager.ReadResult]                                      = IO(assertEquals(id, album.id)).as(response)
+    override def edit(id: AlbumId, request: CoverManager.Edit): IO[CoverManager.Result]              = fail("Read-only export")
+    override def setSpineOwner(id: AlbumId, owner: SpineOwner): IO[CoverManager.SetSpineOwnerResult] = fail("Read-only export")
+
+  // scalafix:off DisableSyntax.defaultArgs
+  private def buildPhotos(response: PhotoRepository.ListResult, chapters: Vector[ChapterId] = Vector(chapterId)) = new PhotoRepository[IO]:
+    override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] =
+      IO(assert(chapters.contains(id))).as(response match
+        case PhotoRepository.ListResult.Listed(values) => PhotoRepository.ListResult.Listed(values.filter(_.chapter.value === id.value))
+        case PhotoRepository.ListResult.Failed         => PhotoRepository.ListResult.Failed)
+    override def find(id: PhotoId): IO[PhotoRepository.FindResult] = fail("Acquire chapter inventory")
     override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): IO[PhotoRepository.SaveCaptionResult] = fail("Read-only export")
     override def save(photo: Photo): IO[PhotoRepository.WriteResult]                                                  = fail("Read-only export")
     override def remove(id: PhotoId): IO[PhotoRepository.WriteResult]                                                 = fail("Read-only export")
     override def recordWrite(intent: PhotoWriteIntent): IO[PhotoRepository.RecordWriteResult]                         = fail("Read-only export")
     override def completeWrite(id: PhotoWriteIntentId): IO[PhotoRepository.CompleteWriteResult]                       = fail("Read-only export")
     override def listUnfinishedWrites: IO[PhotoRepository.ListUnfinishedWritesResult]                                 = fail("Read-only export")
+  // scalafix:on DisableSyntax.defaultArgs
 
   private def buildGear(response: GearRepository.CatalogReadResult) = new GearRepository[IO]:
     override def readCatalog: IO[GearRepository.CatalogReadResult]                   = response.pure[IO]

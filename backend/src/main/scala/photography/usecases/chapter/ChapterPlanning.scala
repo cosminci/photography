@@ -10,6 +10,7 @@ import photography.capabilities.IdGenerator
 import photography.domain.album.*
 import photography.domain.layout.*
 import photography.ports.chapter.ChapterRepository
+import photography.ports.album.AlbumRepository.ChapterMetadata
 import photography.usecases.chapter.ChapterMetadataManager.Period
 import photography.usecases.chapter.ChapterPlanning.*
 import photography.ports.spread.SpreadTemplateRepository.ListChapterStartTemplatesResult
@@ -18,14 +19,21 @@ import java.time.{LocalDate, Year}
 trait ChapterPlanning[F[_]]:
   def planCreation(
       year: AlbumYear,
-      chapters: Vector[Chapter],
+      chapters: Vector[ChapterMetadata],
       spreadCount: Int,
       name: DestinationName,
       period: Period,
       folder: PhotoSource
   ): CreationResult
-  def planUpdate(year: AlbumYear, chapters: Vector[Chapter], id: ChapterId, name: DestinationName, period: Period, folder: PhotoSource): UpdateResult
-  def orderChapters(chapters: Vector[Chapter], id: ChapterId, isHome: Boolean, period: VisitPeriod): NonEmptyList[ChapterId]
+  def planUpdate(
+      year: AlbumYear,
+      chapters: Vector[ChapterMetadata],
+      id: ChapterId,
+      name: DestinationName,
+      period: Period,
+      folder: PhotoSource
+  ): UpdateResult
+  def orderChapters(chapters: Vector[ChapterMetadata], id: ChapterId, isHome: Boolean, period: VisitPeriod): NonEmptyList[ChapterId]
   def buildChapter(name: DestinationName, countries: NonEmptyList[CountryId], period: VisitPeriod, source: PhotoSource): F[BuildResult]
 
 object ChapterPlanning:
@@ -34,7 +42,7 @@ object ChapterPlanning:
   final private class LiveChapterPlanning[F[_]: Monad: IdGenerator](templates: SpreadTemplateRepository[F]) extends ChapterPlanning[F]:
     override def planCreation(
         year: AlbumYear,
-        chapters: Vector[Chapter],
+        chapters: Vector[ChapterMetadata],
         spreadCount: Int,
         name: DestinationName,
         period: Period,
@@ -48,7 +56,7 @@ object ChapterPlanning:
 
     override def planUpdate(
         year: AlbumYear,
-        chapters: Vector[Chapter],
+        chapters: Vector[ChapterMetadata],
         id: ChapterId,
         name: DestinationName,
         period: Period,
@@ -64,7 +72,7 @@ object ChapterPlanning:
         val plan  = UpdatePlan(existing.destination.id, sourceChanged = (existing.sourceFolder: String) =!= folder, resolved, order = order)
         maybeConflict.fold[UpdateResult](UpdateResult.Planned(plan))(UpdateResult.Rejected(_))
 
-    override def orderChapters(chapters: Vector[Chapter], id: ChapterId, isHome: Boolean, period: VisitPeriod): NonEmptyList[ChapterId] =
+    override def orderChapters(chapters: Vector[ChapterMetadata], id: ChapterId, isHome: Boolean, period: VisitPeriod): NonEmptyList[ChapterId] =
       val others = chapters.filterNot(_.id.value === id.value).map(value => ChapterOrder(value.id, isHome = value.destination.isHome, value.period))
       NonEmptyList(ChapterOrder(id, isHome = isHome, period), tail = others.toList)
         .sortBy(value => (value.isHome, value.period.firstDay.toEpochDay, value.period.days: Long, value.id.value.toString)).map(_.id)
@@ -87,7 +95,13 @@ object ChapterPlanning:
             val chapter = ChapterRepository.NewChapter(id, destination, name, countries = countries, period, description = "", source, opening)
             BuildResult.Built(chapter)
 
-    private def findMetadataConflict(year: AlbumYear, chapters: Vector[Chapter], name: DestinationName, period: VisitPeriod, folder: PhotoSource) =
+    private def findMetadataConflict(
+        year: AlbumYear,
+        chapters: Vector[ChapterMetadata],
+        name: DestinationName,
+        period: VisitPeriod,
+        folder: PhotoSource
+    ) =
       val maybeHomeConflict =
         if (name: String) === "Home" then findHomeConflict(year, period, homeExists = chapters.exists(_.destination.isHome)) else None
       maybeHomeConflict.orElse(Option.when(chapters.exists(value => (value.sourceFolder: String) === folder))(ChapterConflict.FolderAssigned))

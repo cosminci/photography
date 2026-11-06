@@ -147,6 +147,8 @@ Connection or ownership uncertainty blocks editing and retains drafts, with back
 
 Chapter saves commit independently of background photo processing. Creation, a changed source folder or an explicit Refresh initiates reconciliation; opening an album reads saved state.
 
+The backend processes one chapter source at a time; other requested chapters remain queued. Superseded work releases that capacity without publishing stale photos.
+
 ```mermaid
 sequenceDiagram
   participant Editor
@@ -188,7 +190,7 @@ Acknowledged saved state takes precedence over older in-flight reads. Workspace 
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
 
-Print export is a read-only projection across existing saved-data owners, retaining their independent read lifetimes. The application owns saved-book print readiness; InDesign owns local resources and final composition.
+Print export reads saved facts from their existing owners and assembles the book for print readiness and handoff. Export assumes editing has stopped; InDesign owns local resources and final composition.
 
 One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
 
@@ -198,4 +200,8 @@ Shared protected writes prove caller-owned grants and reject atomically when any
 
 Routes declare access requirements; application operations decide ownership while content managers retain business validation. HTTP adapters translate credentials, and SQLite commits supplied decisions atomically; slow source and image work stays outside the critical section.
 
-Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Lightweight album, chapter and membership reads use their existing persistence authorities and representation validation, while atomic business workflows retain aggregate acquisition. Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving. [Contracts](contracts.md) identify authoritative representations; [operations](operational.md) owns deployment and recovery.
+Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Catalog and album metadata writes use lightweight saved facts; chapter planning uses chapter metadata and the actual interior spread count rather than acquiring book geometry.
+
+The browser composes workspace reads, while the application assembles the album for print export. SQLite validates and persists owned representations; application operations select Cover dimensions from the saved sizing catalog and classify photo-processing outcomes.
+
+Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving; [contracts](contracts.md) identify authoritative representations and [operations](operational.md) owns deployment and recovery.

@@ -701,8 +701,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
               maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value)).map: chapter =>
                 orders.findLast { case (id, _) => id.value === chapterId.value }
                   .fold(NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)) { case (_, order) => order }
-      override def findSpread(value: AlbumId, id: SpreadId): IO[Option[Located]] =
-        refs.replacements.get.map: replacements =>
+      override def findSpread(value: AlbumId, id: SpreadId): IO[AlbumCompositionRepository.SpreadResult] =
+        refs.replacements.get.map { replacements =>
           maybeAlbum.filter(_.id.value === value.value).flatMap: album =>
             val located = Vector[Located](Located.AlbumOpening(album.opening)) ++ album.chapters.flatMap: chapter =>
               Vector[Located](Located.ChapterOpening(chapter.id, chapter.opening)) ++ chapter.spreads.map(Located.Photo(chapter.id, _))
@@ -711,6 +711,9 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
                 case spread: Spread.AlbumStart   => Located.AlbumOpening(spread)
                 case spread: Spread.ChapterStart => Located.ChapterOpening(chapter.id, spread)
                 case spread: Spread.PhotosOnly   => Located.Photo(chapter.id, spread)
+        }.map(_.fold[AlbumCompositionRepository.SpreadResult](AlbumCompositionRepository.SpreadResult.NotFound)(
+          AlbumCompositionRepository.SpreadResult.Found(_)
+        ))
     val writes     = maybeWriteError.fold(IO.unit)(error => IO.raiseError[Unit](error))
     val repository = new SpreadRepository[IO]:
       override def insert(chapterId: ChapterId, spread: Spread.PhotosOnly): IO[Unit] =

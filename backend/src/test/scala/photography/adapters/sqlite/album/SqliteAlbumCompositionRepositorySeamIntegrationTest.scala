@@ -5,6 +5,7 @@ import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 import org.typelevel.doobie.implicits.*
+import org.typelevel.doobie.ConnectionIO
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.adapters.sqlite.{FlywayMigrator, SqliteConnection}
@@ -17,13 +18,14 @@ import java.nio.file.{Files, Path}
 import java.util.UUID
 
 final class SqliteAlbumCompositionRepositorySeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO]   = Slf4jLogger.getLogger[IO]
-  private val album          = AlbumId(new UUID(0L, 1L))
-  private val chapter        = ChapterId(new UUID(0L, 2L))
-  private val opening        = SpreadId(new UUID(0L, 3L))
-  private val chapterOpening = SpreadId(new UUID(0L, 4L))
-  private val photo          = SpreadId(new UUID(0L, 5L))
-  private val destination    = new UUID(0L, 6L)
+  private given Logger[IO]           = Slf4jLogger.getLogger[IO]
+  private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
+  private val album                  = AlbumId(new UUID(0L, 1L))
+  private val chapter                = ChapterId(new UUID(0L, 2L))
+  private val opening                = SpreadId(new UUID(0L, 3L))
+  private val chapterOpening         = SpreadId(new UUID(0L, 4L))
+  private val photo                  = SpreadId(new UUID(0L, 5L))
+  private val destination            = new UUID(0L, 6L)
 
   test("should acquire ordered membership without reading Cover or spread geometry"):
     buildTransactor.use: xa =>
@@ -37,7 +39,12 @@ final class SqliteAlbumCompositionRepositorySeamIntegrationTest extends CatsEffe
       for
         _       <- seed.transact(xa)
         members <- repository.composition(album)
-      yield assertEquals(members, expected)
+        exists  <- SqliteAlbumCompositionRepository.make.hasAlbum(album).transact(xa)
+        count   <- SqliteAlbumCompositionRepository.make.countInteriorSpreads(album).transact(xa)
+      yield
+        assertEquals(members, expected)
+        assertEquals(exists, true)
+        assertEquals(count, 3)
 
   test("should reject incomplete chapter membership and leave the stored rows unchanged"):
     buildTransactor.use: xa =>
@@ -45,13 +52,36 @@ final class SqliteAlbumCompositionRepositorySeamIntegrationTest extends CatsEffe
       val expectedResult = CompositionResult.Failed(Failure.Unavailable)
 
       for
-        _        <- seed.transact(xa)
-        _        <- sql"DELETE FROM spread WHERE id = ${chapterOpening.value}".update.run.transact(xa)
-        result   <- repository.composition(album)
-        retained <- sql"SELECT id FROM spread WHERE chapter_id = ${chapter.value} ORDER BY position".query[UUID].to[List].transact(xa)
+        _              <- seed.transact(xa)
+        _              <- sql"DELETE FROM spread WHERE id = ${chapterOpening.value}".update.run.transact(xa)
+        result         <- repository.composition(album)
+        retained       <- sql"SELECT id FROM spread WHERE chapter_id = ${chapter.value} ORDER BY position".query[UUID].to[List].transact(xa)
+        _              <- sql"DELETE FROM spread WHERE id = ${opening.value}".update.run.transact(xa)
+        missingOpening <- repository.composition(album)
       yield
         assertEquals(result, expectedResult)
         assertEquals(retained, List(photo.value))
+        assertEquals(missingOpening, expectedResult)
+
+  test("should reject saved geometry that no longer represents its template"):
+    Vector(
+      sql"UPDATE spread_photo_slot SET x = x + 1 WHERE spread_id = ${opening.value}",
+      sql"DELETE FROM spread_photo_slot WHERE spread_id = ${opening.value}",
+      sql"UPDATE spread_template SET kind = 'photos_only' WHERE id IN (SELECT template_id FROM spread WHERE id = ${opening.value})"
+    ).traverse_ { mutation =>
+      buildTransactor.use: xa =>
+        val repository = SqliteAlbumCompositionRepository.make
+        val photoSlots = sql"""INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height)
+          SELECT printf('00000000-0000-0001-0000-%012x', t.id), s.id, t.x, t.y, t.width, t.height
+          FROM spread s JOIN spread_template_slot t ON t.template_id = s.template_id WHERE t.kind = 'photo'""".update.run
+        val textSlots = sql"""INSERT INTO spread_text_slot (id, spread_id, x, y, width, height)
+          SELECT printf('00000000-0000-0002-0000-%012x', t.id), s.id, t.x, t.y, t.width, t.height
+          FROM spread s JOIN spread_template_slot t ON t.template_id = s.template_id WHERE t.kind = 'text'""".update.run
+        for
+          _      <- (seed >> photoSlots >> textSlots >> mutation.update.run).transact(xa)
+          result <- repository.findSpread(album, opening).transact(xa).attempt
+        yield assert(result.isLeft)
+    }
 
   test("should reject gaps in persisted chapter positions through the shared order decoder"):
     buildTransactor.use: xa =>

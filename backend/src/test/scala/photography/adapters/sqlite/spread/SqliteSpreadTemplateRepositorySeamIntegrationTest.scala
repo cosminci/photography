@@ -115,7 +115,10 @@ final class SqliteSpreadTemplateRepositorySeamIntegrationTest extends CatsEffect
         for
           _      <- corrupt.transact(xa)
           result <- repository.listAlbumStartTemplates
-        yield assertEquals(result, expectedFailure)
+          found  <- repository.findTemplate(SpreadTemplateId(UUID.fromString("00000000-0000-0000-0000-000000000001")))
+        yield
+          assertEquals(result, expectedFailure)
+          assertEquals(found, FindTemplateResult.Failed(Failure.DatabaseFailure))
     }
 
   test(s"should load the 68 photo layouts with seeded default $defaultPhotoLayout and only photo slots"):

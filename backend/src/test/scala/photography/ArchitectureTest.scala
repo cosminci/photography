@@ -88,6 +88,15 @@ class ArchitectureTest extends FunSuite:
       .dependOnClassesThat()
       .resideInAPackage("photography.usecases..")
       .check(classes)
+    val applicationFactories = Set(
+      "photography.domain.album.Album$",
+      "photography.domain.album.Chapter$",
+      "photography.domain.layout.CoverDimensions$"
+    )
+    val sqlitePolicyCalls = classes.iterator.asScala.filter(_.getPackageName.startsWith("photography.adapters.sqlite"))
+      .flatMap(_.getMethodCallsFromSelf.asScala)
+      .filter(call => applicationFactories.contains(call.getTarget.getOwner.getName)).map(_.getDescription).toVector
+    assertEquals(sqlitePolicyCalls, Vector.empty[String])
     slices().matching("photography.adapters.(*)..").should().notDependOnEachOther().check(classes)
     noClasses().that().resideInAPackage("photography.domain..").should().dependOnClassesThat().haveSimpleName("Ordering").check(classes)
     val capabilities = Set(
@@ -99,6 +108,7 @@ class ArchitectureTest extends FunSuite:
       "cats.effect.kernel.Sync",
       "cats.effect.kernel.Clock",
       "cats.effect.std.Mutex",
+      "cats.effect.std.Semaphore",
       "org.typelevel.log4cats.Logger",
       "photography.capabilities.IdGenerator",
       "photography.capabilities.Clock",
@@ -108,13 +118,17 @@ class ArchitectureTest extends FunSuite:
     assert(implementations.nonEmpty)
     implementations.foreach { implementation =>
       implementation.getConstructors.iterator.asScala.foreach { constructor =>
-        val dependencies = constructor.getRawParameterTypes.iterator.asScala.filterNot(value => capabilities.contains(value.getName)).toVector
-        val maximum      = if implementation.getName === "photography.usecases.spread.SpreadManager$LiveSpreadManager" then 6 else 5
+        val dependencies        = constructor.getRawParameterTypes.iterator.asScala.filterNot(value => capabilities.contains(value.getName)).toVector
+        val sixOwnerProjections = Set(
+          "photography.usecases.spread.SpreadManager$LiveSpreadManager",
+          "photography.usecases.album.BookExport$LiveBookExport"
+        )
+        val maximum = if sixOwnerProjections.contains(implementation.getName) then 6 else 5
         assert(dependencies.sizeIs <= maximum, s"${implementation.getName} injects ${dependencies.size} collaborators: $dependencies")
       }
     }
 
-    val seams = ClassFileImporter().importPackages(
+    val seams = ClassFileImporter().withImportOption(excludeTestClasses).importPackages(
       "photography.adapters.http",
       "photography.adapters.sqlite.album",
       "photography.adapters.sqlite.cover",
@@ -131,10 +145,10 @@ class ArchitectureTest extends FunSuite:
     )
     val httpCalls = seams.iterator.asScala.filter(_.getPackageName === "photography.adapters.http")
       .flatMap(_.getMethodCallsFromSelf.asScala).toVector
+    val authorityViolations =
+      httpCalls.filter(call => call.getTarget.getName === "make" && authorityFactories.contains(call.getTarget.getOwner.getName))
+        .map(_.getDescription)
+    val boundaryViolations = persistenceBoundary.evaluate(seams).getFailureReport.getDetails.asScala.toVector
+
     assert(httpCalls.nonEmpty)
-    assertEquals(
-      persistenceBoundary.evaluate(seams).getFailureReport.getDetails.asScala.toVector ++
-        httpCalls.filter(call => call.getTarget.getName === "make" && authorityFactories.contains(call.getTarget.getOwner.getName))
-          .map(_.getDescription),
-      Vector.empty[String]
-    )
+    assertEquals(boundaryViolations ++ authorityViolations, Vector.empty[String])

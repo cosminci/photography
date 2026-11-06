@@ -7,7 +7,7 @@ import java.time.Instant
 trait AlbumRepository[F[_]]:
   def list(offset: Int, limit: Int): F[AlbumRepository.ListResult]
   def create(album: Album, cover: Cover): F[AlbumRepository.CreateResult]
-  def get(id: AlbumId): F[AlbumRepository.GetResult]
+  def readPlanning(id: AlbumId): F[AlbumRepository.PlanningResult]
   def rename(id: AlbumId, title: AlbumTitle): F[AlbumRepository.RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[AlbumRepository.SaveSynopsisResult]
   def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[AlbumRepository.SaveAuthorsResult]
@@ -31,6 +31,7 @@ object AlbumRepository:
     case Failed(reason: Failure)
 
   final case class Metadata(id: AlbumId, year: AlbumYear, title: AlbumTitle, synopsis: String, authors: AlbumAuthors, createdAt: Instant)
+  final case class PlanningSnapshot(year: AlbumYear, chapters: Vector[ChapterMetadata], spreadCount: InteriorSpreadCount)
   final case class ChapterMetadata(
       id: ChapterId,
       destination: Destination,
@@ -40,12 +41,12 @@ object AlbumRepository:
   )
 
   enum SaveSynopsisResult derives CanEqual:
-    case Saved(album: Album)
+    case Saved(album: Metadata)
     case NotFound, Uncertain
     case Failed(reason: Failure)
 
   enum SaveAuthorsResult derives CanEqual:
-    case Saved(album: Album)
+    case Saved(album: Metadata)
     case NotFound, Uncertain
     case Failed(reason: Failure)
 
@@ -57,13 +58,13 @@ object AlbumRepository:
     case Created
     case Failed(reason: Failure)
 
-  enum GetResult derives CanEqual:
-    case Found(album: Album)
+  enum PlanningResult derives CanEqual:
+    case Found(snapshot: PlanningSnapshot)
     case NotFound
     case Failed(reason: Failure)
 
   enum RenameResult derives CanEqual:
-    case Renamed(album: Album)
+    case Renamed(album: Metadata)
     case NotFound
     case Failed(reason: Failure)
 
@@ -72,7 +73,7 @@ object AlbumRepository:
     case NotFound
     case Failed(reason: Failure)
 
-  final case class AlbumPageSlice(totalAlbums: Long, albums: Vector[Album])
+  final case class AlbumPageSlice(totalAlbums: Long, albums: Vector[Metadata])
 
   enum Failure derives CanEqual:
     case YearAlreadyUsed, DatabaseFailure

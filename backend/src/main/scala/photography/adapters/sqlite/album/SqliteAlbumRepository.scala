@@ -1,52 +1,56 @@
 package photography.adapters.sqlite.album
 
 import cats.effect.Async
+import cats.MonadThrow
+import cats.arrow.FunctionK
 import cats.data.NonEmptyList
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.Positive
 import io.github.iltotore.iron.constraint.collection.MinLength
-import org.typelevel.doobie.{ConnectionIO, Fragment, Transactor}
+import org.typelevel.doobie.{ConnectionIO, Fragment, Read, Transactor}
 import org.typelevel.doobie.implicits.*
 import org.typelevel.doobie.util.invariant.InvalidValue
 import org.typelevel.log4cats.Logger
 import org.sqlite.{SQLiteErrorCode, SQLiteException}
 import photography.adapters.sqlite.SqliteCodecs.given
+import photography.adapters.sqlite.SqliteAlbumQueries
 import photography.domain.album.*
 import photography.domain.layout.*
-import photography.domain.gear.*
-import photography.ports.album.{AlbumRepository, AlbumCompositionRepository}
+import photography.ports.album.AlbumRepository
 import photography.ports.album.AlbumRepository.*
-import photography.ports.chapter.ChapterRepository
 
 import java.time.{Instant, ZoneOffset}
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 object SqliteAlbumRepository:
-  def make[F[_]: Async: Logger](
-      transactor: Transactor[F],
-      composition: AlbumCompositionRepository[ConnectionIO],
-      chapters: ChapterRepository[ConnectionIO]
-  ): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] =
-    new LiveSqliteAlbumRepository(transactor, composition, chapters)
+  def make[F[_]: Async: Logger](transactor: Transactor[F]): AlbumRepository[F] & AlbumRepository.MetadataRead[F] & AlbumRepository.ChapterRead[F] =
+    val resolve = new FunctionK[ConnectionIO, F]:
+      override def apply[A](query: ConnectionIO[A]): F[A] = query.transact(transactor)
+    val save = new FunctionK[ConnectionIO, F]:
+      override def apply[A](query: ConnectionIO[A]): F[A] =
+        val commit = transactor.strategy.after.handleErrorWith(error => new UncertainCommit(error).raiseError[ConnectionIO, Unit])
+        query.transact(Transactor.after.set(transactor, commit))
+    new LiveSqliteAlbumRepository(resolve, save)
 
-  final private class LiveSqliteAlbumRepository[F[_]: Async: Logger](
-      transactor: Transactor[F],
-      albumComposition: AlbumCompositionRepository[ConnectionIO],
-      chapterRepository: ChapterRepository[ConnectionIO]
+  final private class LiveSqliteAlbumRepository[F[_]: MonadThrow: Logger](
+      resolve: FunctionK[ConnectionIO, F],
+      save: FunctionK[ConnectionIO, F]
   ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
+    private type MetadataRow = (UUID, AlbumYear, AlbumTitle, String, AlbumAuthors, Instant)
+    private given Read[AlbumAuthors] = Read[Int].emap(decodeAuthors)
+    private given Read[VisitPeriod]  = Read[(Long, Long)].emap { case (start, end) =>
+      decodePeriod(start = Instant.ofEpochMilli(start), end = Instant.ofEpochMilli(end))
+    }
+    private val selectMetadata =
+      fr"""SELECT id, year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms FROM album"""
+
     override def metadata(album: AlbumId): F[MetadataResult] =
-      val query = sql"""SELECT year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms
-                        FROM album WHERE id = ${album.value}"""
-        .query[(AlbumYear, AlbumTitle, String, Int, Instant)].option.flatMap:
-          case None                                                     => none[Metadata].pure[ConnectionIO]
-          case Some((year, title, synopsis, encodedAuthors, createdAt)) =>
-            decodeAuthors(encodedAuthors).liftTo[ConnectionIO].map(authors => Metadata(album, year, title, synopsis, authors, createdAt).some)
-      execute(query.map(_.fold[MetadataResult](MetadataResult.NotFound)(MetadataResult.Found(_))), MetadataResult.Failed(_))
+      execute(load(album.value).map(_.fold[MetadataResult](MetadataResult.NotFound)(MetadataResult.Found(_))), MetadataResult.Failed(_))
 
     override def chapters(album: AlbumId): F[ChaptersResult] =
-      val query = albumComposition.hasAlbum(album).flatMap:
+      val query = hasAlbum(album).flatMap:
         case false => (ChaptersResult.AlbumNotFound: ChaptersResult).pure[ConnectionIO]
         case true  => loadChapterMetadata(album.value).map[ChaptersResult](ChaptersResult.Found(_))
       execute(query, ChaptersResult.Failed(_))
@@ -54,10 +58,9 @@ object SqliteAlbumRepository:
     override def list(offset: Int, limit: Int): F[ListResult] =
       val query =
         for
-          total  <- sql"SELECT count(*) FROM album".query[Long].unique
-          ids    <- sql"SELECT id FROM album ORDER BY created_at_ms DESC, id DESC LIMIT $limit OFFSET $offset".query[UUID].to[Vector]
-          albums <- ids.traverse(loadRequired)
-        yield ListResult.Listed(AlbumPageSlice(totalAlbums = total, albums = albums)): ListResult
+          total <- sql"SELECT count(*) FROM album".query[Long].unique
+          rows  <- (selectMetadata ++ sql"ORDER BY created_at_ms DESC, id DESC LIMIT $limit OFFSET $offset").query[MetadataRow].to[Vector]
+        yield ListResult.Listed(AlbumPageSlice(totalAlbums = total, albums = rows.map(decodeMetadata))): ListResult
       execute(query, ListResult.Failed(_))
 
     override def create(album: Album, cover: Cover): F[CreateResult] =
@@ -74,8 +77,18 @@ object SqliteAlbumRepository:
         yield CreateResult.Created: CreateResult
       execute(query, CreateResult.Failed(_))
 
-    override def get(id: AlbumId): F[GetResult] =
-      execute(load(id.value).map(_.fold[GetResult](GetResult.NotFound)(GetResult.Found(_))), GetResult.Failed(_))
+    override def readPlanning(id: AlbumId): F[PlanningResult] =
+      val query = load(id.value).flatMap:
+        case None           => (PlanningResult.NotFound: PlanningResult).pure[ConnectionIO]
+        case Some(metadata) =>
+          for
+            chapters <- loadChapterMetadata(id.value)
+            count    <- SqliteAlbumQueries.interiorSpreadCount(id).query[InteriorSpreadCount].unique
+          yield PlanningResult.Found(PlanningSnapshot(metadata.year, chapters, count)): PlanningResult
+      execute(query, PlanningResult.Failed(_))
+
+    private def hasAlbum(album: AlbumId) =
+      sql"SELECT EXISTS(SELECT 1 FROM album WHERE id = ${album.value})".query[Boolean].unique
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       val update = sql"UPDATE album SET title = $title WHERE id = ${id.value}"
@@ -112,8 +125,7 @@ object SqliteAlbumRepository:
       val query    = load(album.value).flatMap:
         case None    => FieldSaveResult.NotFound.pure[ConnectionIO]
         case Some(_) => update.update.run.ensure(rejected)(_ === 1) >> loadRequired(album.value).map(FieldSaveResult.Saved(_))
-      val commit = transactor.strategy.after.handleErrorWith(error => new UncertainCommit(error).raiseError[ConnectionIO, Unit])
-      query.transact(Transactor.after.set(transactor, commit)).attempt.flatMap:
+      save(query).attempt.flatMap:
         case Right(result) => result.pure[F]
         case Left(error)   =>
           val result = error match
@@ -124,25 +136,22 @@ object SqliteAlbumRepository:
             case _                                                   => FieldSaveResult.Uncertain
           Logger[F].error(error)(s"SQLite album field save failed for ${album.value}: $result").as(result)
 
-    final private class UncertainCommit(cause: Throwable) extends RuntimeException(cause)
-
     private enum FieldSaveResult:
-      case Saved(album: Album)
+      case Saved(album: Metadata)
       case NotFound, Uncertain
       case Failed(reason: Failure)
 
     private def insertAlbum(album: Album) =
       val authors = encodeAuthors(album.authors)
-      sql"""INSERT INTO album (id, year, title, synopsis, authors, created_at_ms)
-            VALUES (${album.id.value}, ${album.year}, ${album.title}, ${album.synopsis}, $authors, ${album.createdAt})""".update.run.void
+      insert(sql"""INSERT INTO album (id, year, title, synopsis, authors, created_at_ms)
+            VALUES (${album.id.value}, ${album.year}, ${album.title}, ${album.synopsis}, $authors, ${album.createdAt})""")
 
     private def encodeAuthors(authors: AlbumAuthors) =
       authors.foldLeft(0)((encoded, author) => encoded | (1 << author.ordinal))
 
     private def decodeAuthors(encoded: Int) =
-      Either.cond(encoded >= 1 && encoded <= 7, (), new IllegalArgumentException("Invalid album authors")).flatMap: _ =>
+      Either.cond(encoded >= 1 && encoded <= 7, (), "Invalid album authors").flatMap: _ =>
         Author.all.filter(author => (encoded & (1 << author.ordinal)) =!= 0).refineEither[MinLength[1]]
-          .leftMap(new IllegalArgumentException(_))
 
     private def insertInitialSpread(
         album: AlbumId,
@@ -151,103 +160,40 @@ object SqliteAlbumRepository:
         photos: Vector[SpreadSlot.Photo],
         text: SpreadSlot.Text
     ) =
-      val insert = sql"""INSERT INTO spread (id, template_id, kind, album_id, position)
+      val row = sql"""INSERT INTO spread (id, template_id, kind, album_id, position)
                         VALUES (${spread.value}, ${template.value}, 'album_start', ${album.value}, 0)"""
-      for
-        _ <- insert.update.run
-        _ <- photos.traverse_(slot => insertSlot(spread, slot))
-        _ <- insertSlot(spread, text)
-      yield ()
+      insert(row) >> photos.traverse_(slot => insertSlot(spread, slot)) >> insertSlot(spread, text)
 
     private def insertSlot(spread: SpreadId, slot: SpreadSlot) =
       slot match
         case SpreadSlot.Photo(id, box, bleed) =>
-          for
-            _ <- sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)".update.run
-            _ <- bleed.toList.traverse_(edge => sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)".update.run.void)
-          yield ()
+          val photo = sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)"
+          val edges = bleed.toList.traverse_(edge => insert(sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)"))
+          insert(photo) >> edges
         case SpreadSlot.Text(id, box) =>
-          sql"INSERT INTO spread_text_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)".update.run.void
+          insert(sql"INSERT INTO spread_text_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)")
 
-    private def loadAlbumOpening(albumId: UUID) =
-      loadSpreads(albumId, sql"s.album_id = $albumId").flatMap:
-        case (opening: Spread.AlbumStart) :: Nil => opening.pure[ConnectionIO]
-        case _ => new IllegalArgumentException("Album must have exactly one opening").raiseError[ConnectionIO, Spread.AlbumStart]
+    private def load(id: UUID) = (selectMetadata ++ sql"WHERE id = $id").query[MetadataRow].option.map(_.map(decodeMetadata))
 
-    private def loadChapterSpreads(albumId: UUID, chapterId: UUID) =
-      loadSpreads(albumId, sql"s.chapter_id = $chapterId").flatMap:
-        case (opening: Spread.ChapterStart) :: rest =>
-          val photos = rest.collect { case photo: Spread.PhotosOnly => photo }.toVector
-          Either.cond(photos.size === rest.size, (opening, photos), new IllegalArgumentException("Invalid chapter composition")).liftTo[ConnectionIO]
-        case _ =>
-          new IllegalArgumentException("Chapter must begin with its opening").raiseError[
-            ConnectionIO,
-            (Spread.ChapterStart, Vector[Spread.PhotosOnly])
-          ]
-
-    private def loadSpreads(albumId: UUID, owner: Fragment) =
-      val select = sql"SELECT s.id FROM spread s WHERE " ++ owner ++ sql" ORDER BY s.position"
-      select.query[UUID].to[List].flatMap(_.traverse(id => loadSpread(AlbumId(albumId), SpreadId(id))))
-
-    private def loadSpread(album: AlbumId, id: SpreadId) =
-      albumComposition.findSpread(album, id).flatMap:
-        case Some(located) => located.spread.pure[ConnectionIO]
-        case None          => new IllegalArgumentException(s"Missing required spread ${id.value}").raiseError[ConnectionIO, Spread]
-
-    private def load(id: UUID) =
-      sql"""SELECT year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms
-            FROM album WHERE id = $id""".query[(AlbumYear, AlbumTitle, String, Int, Instant)].option.flatMap:
-        case None                                                     => none[Album].pure[ConnectionIO]
-        case Some((year, title, synopsis, encodedAuthors, createdAt)) =>
-          for
-            authors  <- decodeAuthors(encodedAuthors).liftTo[ConnectionIO]
-            chapters <- loadChapters(id)
-            opening  <- loadAlbumOpening(id)
-            _        <- validateCover(id)
-          yield Album(AlbumId(id), year = year, title = title, synopsis = synopsis, authors, createdAt = createdAt, opening, chapters = chapters).some
+    private def decodeMetadata(row: MetadataRow) =
+      val (id, year, title, synopsis, authors, createdAt) = row
+      Metadata(AlbumId(id), year, title, synopsis, authors, createdAt)
 
     private def loadRequired(id: UUID) =
-      load(id).flatMap(_.toRight(new IllegalArgumentException(s"Missing required album $id")).liftTo[ConnectionIO])
-
-    private def loadChapters(albumId: UUID) =
-      loadChapterMetadata(albumId).flatMap(_.traverse(chapter => loadChapter(albumId, chapter)))
+      val missingAlbum = new IllegalArgumentException(s"Missing required album $id")
+      load(id).flatMap(_.toRight(missingAlbum).liftTo[ConnectionIO])
 
     private def loadChapterMetadata(albumId: UUID) =
       val select = sql"""SELECT c.id, d.id, d.name, c.description, c.start_ms, c.end_ms, c.source_folder
                         FROM chapter c LEFT JOIN destination d ON d.id = c.destination_id
                         WHERE c.album_id = $albumId ORDER BY c.position"""
       validateChapters(albumId) >>
-        select.query[(UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)].to[Vector]
-          .flatMap(_.traverse(decodeChapterMetadata))
+        select.query[(UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)].to[Vector].flatMap(_.traverse(decodeChapterMetadata))
 
-    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)) =
-      val (id, destination, name, description, start, end, folder) = row
-      for
-        period    <- decodePeriod(start = start, end = end).leftMap(new IllegalArgumentException(_)).liftTo[ConnectionIO]
-        countries <- loadCountries(destination)
-      yield ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
-
-    private def loadChapter(albumId: UUID, metadata: ChapterMetadata) =
-      for
-        loaded <- loadChapterSpreads(albumId, metadata.id.value)
-        gear   <- loadChapterGear(AlbumId(albumId), metadata.id)
-      yield
-        val (opening, photos) = loaded
-        Chapter(
-          metadata.id,
-          metadata.destination,
-          metadata.period,
-          description = metadata.description,
-          gear = gear,
-          sourceFolder = metadata.sourceFolder,
-          opening,
-          spreads = photos
-        )
-
-    private def loadChapterGear(album: AlbumId, chapter: ChapterId) =
-      chapterRepository.readGear(album, chapter).flatMap:
-        case ChapterRepository.GearReadResult.Found(selection) => selection.pure[ConnectionIO]
-        case _ => new IllegalArgumentException("Invalid saved chapter gear").raiseError[ConnectionIO, GearSelection]
+    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)) =
+      val (id, destination, name, description, period, folder) = row
+      loadCountries(destination).map: countries =>
+        ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
 
     private def decodePeriod(start: Instant, end: Instant) =
       val days    = ChronoUnit.DAYS.between(start, end)
@@ -266,28 +212,22 @@ object SqliteAlbumRepository:
       sql"SELECT count(*) FROM chapter WHERE album_id = $albumId AND position < 0".query[Long].unique.flatMap: count =>
         Either.cond(count === 0L, (), new IllegalArgumentException("Invalid chapter composition")).liftTo[ConnectionIO]
 
-    private def validateCover(id: UUID) =
-      val spine      = sql"SELECT spine_owner FROM cover WHERE album_id = $id".query[String].option
-      val slots      = sql"SELECT side FROM cover_slot WHERE album_id = $id ORDER BY side".query[String].to[List]
-      val incomplete = new IllegalArgumentException("Incomplete cover")
-      for
-        _ <- spine.ensure(incomplete)(_.exists(value => value === "front" || value === "back"))
-        _ <- slots.ensure(incomplete)(_ === List("back", "front"))
-      yield ()
-
     private def insertCover(cover: Cover) =
       val albumId = cover.album.value
       val spine   = cover.spineOwner match
         case SpineOwner.Front => "front"
         case SpineOwner.Back  => "back"
-      for
-        _ <- sql"INSERT INTO cover (album_id, spine_owner) VALUES ($albumId, $spine)".update.run
-        _ <- sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.front.id.value}, $albumId, 'front')".update.run
-        _ <- sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.back.id.value}, $albumId, 'back')".update.run
-      yield ()
+      val row   = sql"INSERT INTO cover (album_id, spine_owner) VALUES ($albumId, $spine)"
+      val front = sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.front.id.value}, $albumId, 'front')"
+      val back  = sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.back.id.value}, $albumId, 'back')"
+      insert(row) >> insert(front) >> insert(back)
+
+    private def insert(statement: Fragment) =
+      val incompleteWrite = new IllegalStateException("Expected one inserted album-owned row")
+      statement.update.run.ensure(incompleteWrite)(_ === 1).void
 
     private def execute[A](query: ConnectionIO[A], failed: Failure => A) =
-      query.transact(transactor).attempt.flatMap:
+      resolve(query).attempt.flatMap:
         case Right(result) => result.pure[F]
         case Left(error)   =>
           val reason = error match
@@ -296,3 +236,5 @@ object SqliteAlbumRepository:
                   sqlite.getMessage.contains("album.year") => Failure.YearAlreadyUsed
             case _ => Failure.DatabaseFailure
           Logger[F].error(error)("SQLite album operation failed").as(failed(reason))
+
+  final private class UncertainCommit(cause: Throwable) extends RuntimeException(cause)

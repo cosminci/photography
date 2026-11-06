@@ -75,4 +75,6 @@ Take a consistent backup of SQLite and its referenced thumbnail storage, prefera
 
 After restart, unfinished thumbnail publication/cleanup is reconciled from durable intents. Source enumeration is explicit: use Refresh to resume interrupted photo processing. A failed scheduling attempt does not undo a saved chapter.
 
+One chapter source is processed at a time to bound NAS image-processing load; other requests remain queued while saved-state viewing and editing stay available.
+
 For checksum-incompatible disposable development databases, select a fresh database path or recreate only the explicitly identified disposable database. Retained spike data, NAS state and original photographs require their owner's authorization before replacement.

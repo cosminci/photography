@@ -9,10 +9,9 @@ import munit.CatsEffectSuite
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.capabilities.{IdGenerator, Transaction}
-import photography.domain.album.{AlbumId, ChapterId, PhotoId}
+import photography.domain.album.{AlbumId, ChapterId, PhotoId, InteriorSpreadCount}
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
-import photography.ports.cover.CoverRepository.Composition
 import photography.ports.photo.PhotoPlacementRepository
 import photography.usecases.cover.CoverManager.*
 import java.util.UUID
@@ -37,6 +36,22 @@ class CoverManagerComponentTest extends CatsEffectSuite:
   private val specification = CoverSpecification.from(pageLimit = 30, width = 10000, height = 3000, spine = 200).fold(fail(_), identity)
   private val dimensions    = CoverDimensions.forSpreads(spreads = 0, NonEmptyVector.one(specification))
   private val empty         = Composition(cover, placements = Vector.empty[CoverPlacement], dimensions = dimensions)
+
+  test("should select cover dimensions from the current interior count and saved sizing catalog"):
+    val expanded = CoverSpecification.from(pageLimit = 36, width = 10100, height = 3000, spine = 250).fold(fail(_), identity)
+    val catalog  = NonEmptyVector.of(expanded, specification)
+    val cases    = Vector[InteriorSpreadCount](0, 15, 16, 65)
+
+    cases.traverse_ { count =>
+      for
+        state   <- Ref.of[IO, Composition](empty)
+        manager <- buildManager(state, interiorSpreads = count, specifications = catalog)
+        result  <- manager.read(cover.album)
+      yield
+        val selected = if count <= 15 then specification else expanded
+        val expected = empty.copy(dimensions = CoverDimensions.forSpreads(count, NonEmptyVector.one(selected)))
+        assertEquals(result, ReadResult.Found(expected))
+    }
 
   test("should change either spine owner without changing either photograph or its framing"):
     val occupied = empty.copy(placements = Vector(first, second))
@@ -175,7 +190,9 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       readFails: Boolean = false,
       inspectionFails: Boolean = false,
       writeFails: Boolean = false,
-      replaceMissing: Boolean = false
+      replaceMissing: Boolean = false,
+      interiorSpreads: InteriorSpreadCount = 0,
+      specifications: NonEmptyVector[CoverSpecification] = NonEmptyVector.one(specification)
   ) =
     val repository = new CoverRepository[IO]:
       override def setSpineOwner(album: AlbumId, owner: SpineOwner): IO[CoverRepository.SetSpineOwnerResult] =
@@ -186,7 +203,8 @@ class CoverManagerComponentTest extends CatsEffectSuite:
         if readFails then IO.raiseError[CoverRepository.ReadResult](new IllegalStateException("read failed"))
         else
           state.get.map: value =>
-            if album.value === value.cover.album.value then CoverRepository.ReadResult.Found(value)
+            if album.value === value.cover.album.value then
+              CoverRepository.ReadResult.Found(CoverRepository.Stored(value.cover, value.placements, interiorSpreads, specifications))
             else CoverRepository.ReadResult.NotFound
       override def replace(album: AlbumId, placements: Vector[CoverPlacement]): IO[CoverRepository.ReplaceResult] =
         if writeFails then IO.raiseError[CoverRepository.ReplaceResult](new IllegalStateException("write failed"))

@@ -48,11 +48,12 @@ object SqliteSpreadTemplateRepository:
         case Left(error)           => Logger[F].error(error)("Could not find spread template").as(FindTemplateResult.Failed(Failure.DatabaseFailure))
 
     private def loadPhotoLayouts =
-      val select = sql"SELECT id, name FROM spread_template WHERE kind = 'photos_only' ORDER BY id"
+      val select           = sql"SELECT id, name FROM spread_template WHERE kind = 'photos_only' ORDER BY id"
+      val missingTemplates = new IllegalArgumentException("No photos_only templates")
       for
         rows      <- select.query[(UUID, SpreadTemplateName)].to[List]
         templates <- rows.traverse { case (id, name) => loadPhotoTemplate(id, name) }
-        nonEmpty  <- NonEmptyList.fromList(templates).toRight(new IllegalArgumentException("No photos_only templates")).liftTo[ConnectionIO]
+        nonEmpty  <- NonEmptyList.fromList(templates).toRight(missingTemplates).liftTo[ConnectionIO]
       yield nonEmpty
 
     private def loadPhotoTemplate(id: UUID, name: SpreadTemplateName) =
@@ -71,7 +72,9 @@ object SqliteSpreadTemplateRepository:
           loadSlots(id).map { case (photos, text) =>
             (SpreadTemplate.ChapterStart(SpreadTemplateId(id), name, photoSlots = photos, text): SpreadTemplate).some
           }
+        // $COVERAGE-OFF$
         case Some((kind, _)) => new IllegalArgumentException(s"Unknown spread template kind $kind").raiseError[ConnectionIO, Option[SpreadTemplate]]
+        // $COVERAGE-ON$
 
     private def loadPhotoSlots(id: UUID) =
       val select = sql"SELECT kind, x, y, width, height FROM spread_template_slot WHERE template_id = $id ORDER BY id"
