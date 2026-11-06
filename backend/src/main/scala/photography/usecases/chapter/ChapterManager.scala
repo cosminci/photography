@@ -4,11 +4,11 @@ import cats.effect.kernel.MonadCancelThrow
 import cats.effect.std.Mutex
 import cats.syntax.all.*
 import photography.domain.album.{AlbumId, ChapterId}
-import photography.domain.gear.GearSelection
+import photography.domain.gear.{GearCatalog, GearSelection}
 import photography.capabilities.Transaction
 import org.typelevel.log4cats.Logger
 import photography.ports.chapter.ChapterRepository
-import photography.usecases.gear.GearManager
+import photography.ports.gear.GearRepository
 import photography.usecases.chapter.ChapterManager.*
 
 trait ChapterManager[F[_]]:
@@ -16,14 +16,14 @@ trait ChapterManager[F[_]]:
   def replaceGear(album: AlbumId, chapter: ChapterId, selection: GearSelection): F[GearReplaceResult]
 
 object ChapterManager:
-  def make[F[_]: MonadCancelThrow: Mutex: Logger, Db[_]](chapters: ChapterRepository[Db], gear: GearManager[F])(using
+  def make[F[_]: MonadCancelThrow: Mutex: Logger, Db[_]](chapters: ChapterRepository[Db], gear: GearRepository[F])(using
       Transaction[Db, F]
   ): ChapterManager[F] =
     new LiveChapterManager(chapters, gear)
 
   final private class LiveChapterManager[F[_]: MonadCancelThrow: Mutex: Logger, Db[_]](
       chapters: ChapterRepository[Db],
-      gear: GearManager[F]
+      gear: GearRepository[F]
   )(using Transaction[Db, F]) extends ChapterManager[F]:
     override def readGear(album: AlbumId, chapter: ChapterId): F[GearReadResult] =
       Transaction[Db, F].run(chapters.readGear(album, chapter)).map:
@@ -36,11 +36,11 @@ object ChapterManager:
       summon[Mutex[F]].lock.surround:
         MonadCancelThrow[F].uncancelable: _ =>
           gear.readCatalog.flatMap:
-            case GearManager.CatalogResult.Failed         => GearReplaceResult.Failed.pure[F]
-            case GearManager.CatalogResult.Found(catalog) =>
-              gear.validateSelection(catalog, selection = selection) match
-                case GearManager.ValidationResult.Rejected(reason) => GearReplaceResult.Rejected(reason).pure[F]
-                case GearManager.ValidationResult.Valid            =>
+            case GearRepository.CatalogReadResult.Failed         => GearReplaceResult.Failed.pure[F]
+            case GearRepository.CatalogReadResult.Found(catalog) =>
+              catalog.validateSelection(selection) match
+                case Left(reason) => GearReplaceResult.Rejected(reason).pure[F]
+                case Right(())    =>
                   Transaction[Db, F].run(chapters.replaceGear(album, chapter, selection = selection)).map:
                     case ChapterRepository.GearWriteResult.Saved     => GearReplaceResult.Saved
                     case ChapterRepository.GearWriteResult.NotFound  => GearReplaceResult.NotFound
@@ -54,4 +54,4 @@ object ChapterManager:
 
   enum GearReplaceResult:
     case Saved, NotFound, Failed, Uncertain
-    case Rejected(reason: GearManager.Failure)
+    case Rejected(reason: GearCatalog.Failure)

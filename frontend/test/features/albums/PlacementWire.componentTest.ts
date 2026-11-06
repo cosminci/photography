@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import { readPlacementSnapshot, readSpread, readTransform } from "../../../src/features/albums/api/PlacementWire";
+import { readPlacementSnapshot, readTransform } from "../../../src/features/albums/api/PlacementWire";
 import { readPhotoChoice } from "../../../src/features/albums/workspace/PhotoDrag";
 import { makeHttpAlbumClient } from "../../../src/features/albums/api/HttpAlbumClient";
 import { readPhotoInventory } from "../../../src/features/albums/api/PhotoWire";
@@ -71,12 +71,6 @@ describe("placement representation", () => {
         { kind: "cover" },
       ),
     ).toThrow();
-  });
-
-  it("should reject a chapter-owned album opening instead of silently publishing it in navigation", () => {
-    expect(() => readSpread({ ...wireLayout, id: "opening", kind: "album_start", chapter: "foreign", placements: [] })).toThrow(
-      "An album opening cannot belong to a chapter",
-    );
   });
 
   it.each(["top", "bottom", "left", "right"])("should preserve the saved %s direction without inferring another bleed selection", (edge) => {

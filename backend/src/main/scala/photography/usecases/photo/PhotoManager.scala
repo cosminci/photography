@@ -22,13 +22,15 @@ trait PhotoManager[F[_]]:
 object PhotoManager:
   def make[F[_]: Async: IdGenerator: Logger, Db[_]: MonadThrow](
       photoStorage: PhotoStorage[F],
+      storage: ThumbnailStorage[F],
       photos: PhotoRepository[Db],
       generator: PhotoThumbnailGenerator[F],
       recovery: PhotoWriteRecovery[F]
-  )(using Transaction[Db, F]): PhotoManager[F] = new LivePhotoManager(photoStorage, photos, generator, recovery)
+  )(using Transaction[Db, F]): PhotoManager[F] = new LivePhotoManager(photoStorage, storage, photos, generator, recovery)
 
   final private class LivePhotoManager[F[_]: Async: IdGenerator: Logger, Db[_]: MonadThrow](
       photoStorage: PhotoStorage[F],
+      storage: ThumbnailStorage[F],
       photos: PhotoRepository[Db],
       thumbnails: PhotoThumbnailGenerator[F],
       recovery: PhotoWriteRecovery[F]
@@ -51,7 +53,11 @@ object PhotoManager:
 
     override def refresh(chapter: ChapterId, source: PhotoSource): F[RefreshResult] =
       photoStorage.discoverOriginals(source).flatMap:
-        case PhotoStorage.DiscoveryResult.Failed => RefreshResult(unsupportedCount = 0, issues = Vector(Issue.Discovery)).pure[F]
+        case PhotoStorage.DiscoveryResult.Failed(cause) =>
+          Logger[F].error(cause)(s"Photo discovery failed for chapter ${chapter.value} at $source").as(RefreshResult(
+            unsupportedCount = 0,
+            issues = Vector(Issue.Discovery)
+          ))
         case PhotoStorage.DiscoveryResult.Complete(originals, unsupported) =>
           reconcile(chapter, originals = originals).map(issues => RefreshResult(unsupportedCount = unsupported, issues = issues))
       .handleErrorWith: error =>
@@ -75,10 +81,13 @@ object PhotoManager:
             (photo.metadata.hash: String) === (metadata.hash: String) && photo.thumbnail.quality === thumbnails.quality
           if unchanged then Vector.empty[Issue].pure[F]
           else generateThumbnail(chapter, original, content, metadata, maybePrevious = maybePrevious)
-        case PhotoStorage.ReadResult.Undecodable => Vector(Issue.Undecodable(original.filename)).pure[F]
-        case PhotoStorage.ReadResult.Unstable    => Vector(Issue.Unstable(original.filename)).pure[F]
-        case PhotoStorage.ReadResult.Failed      => Vector(Issue.Read(original.filename)).pure[F]
-      refresh.handleErrorWith(error => Logger[F].error(error)("Photo reconciliation failed").as(Vector(Issue.Unexpected)))
+        case PhotoStorage.ReadResult.Undecodable   => Vector(Issue.Undecodable(original.filename)).pure[F]
+        case PhotoStorage.ReadResult.Unstable      => Vector(Issue.Unstable(original.filename)).pure[F]
+        case PhotoStorage.ReadResult.Failed(cause) =>
+          Logger[F].error(cause)(s"Photo read failed for chapter ${chapter.value}: ${original.filename}").as(Vector(Issue.Read(original.filename)))
+      refresh.handleErrorWith(error =>
+        Logger[F].error(error)(s"Photo reconciliation failed for chapter ${chapter.value}: ${original.filename}").as(Vector(Issue.Unexpected))
+      )
 
     private def generateThumbnail(
         chapter: ChapterId,
@@ -88,7 +97,10 @@ object PhotoManager:
         maybePrevious: Option[Photo]
     ) =
       thumbnails.generate(content).flatMap:
-        case PhotoThumbnailGenerator.GenerationResult.Failed           => Vector(Issue.Generation(original.filename)).pure[F]
+        case PhotoThumbnailGenerator.GenerationResult.Failed(cause) =>
+          Logger[F].error(cause)(
+            s"Photo generation failed for chapter ${chapter.value}: ${original.filename}"
+          ).as(Vector(Issue.Generation(original.filename)))
         case PhotoThumbnailGenerator.GenerationResult.Generated(image) =>
           val maybeCaption                                 = maybePrevious.flatMap(_.maybeCaption)
           val identity                                     = maybePrevious.fold(IdGenerator[F].generateId.map(PhotoId(_)))(_.id.pure[F])
@@ -103,12 +115,11 @@ object PhotoManager:
     private def publish(intent: PhotoWriteIntent.Publication, photo: Thumbnail => Photo, image: EncodedThumbnail) =
       Async[F].uncancelable: _ =>
         Transaction[Db, F].run(recordWrite(intent)) >>
-          photoStorage.storeThumbnail(intent.location, image).attempt.flatMap:
-            case Right(ThumbnailStorage.StoreResult.Failed) => finishWrite(intent).map(Issue.Storage +: _)
-            case Left(error)                                =>
-              Logger[F].error(error)("Photo thumbnail storage failed") >>
+          storage.storeThumbnail(intent.location, image).handleError(ThumbnailStorage.StoreResult.Failed(_)).flatMap:
+            case ThumbnailStorage.StoreResult.Failed(cause) =>
+              Logger[F].error(cause)(s"Photo thumbnail storage failed for chapter ${intent.chapter.value}, photo ${intent.photo.value}") >>
                 finishWrite(intent).map(Issue.Storage +: _)
-            case Right(ThumbnailStorage.StoreResult.Stored(thumbnail)) =>
+            case ThumbnailStorage.StoreResult.Stored(thumbnail) =>
               Transaction[Db, F].run(photos.save(photo(thumbnail))).attempt.flatMap:
                 case Right(PhotoRepository.WriteResult.Applied) => finishWrite(intent)
                 case Right(PhotoRepository.WriteResult.Failed)  => finishWrite(intent).map(Issue.Persistence +: _)

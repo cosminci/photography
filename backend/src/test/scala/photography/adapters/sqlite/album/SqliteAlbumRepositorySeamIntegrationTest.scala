@@ -250,9 +250,9 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         yield
           assertEquals(metadata, MetadataResult.Failed(Failure.DatabaseFailure))
           assertEquals(listed, ListResult.Failed(Failure.DatabaseFailure))
-          assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
-          assertEquals(synopsis, SaveSynopsisResult.Failed(Failure.DatabaseFailure))
-          assertEquals(authors, SaveAuthorsResult.Failed(Failure.DatabaseFailure))
+          assert(fieldFailure(renamed).getMessage.nonEmpty)
+          assert(fieldFailure(synopsis).getMessage.nonEmpty)
+          assert(fieldFailure(authors).getMessage.nonEmpty)
     }
 
   test("should report unavailable persistence explicitly"):
@@ -274,7 +274,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(found, MetadataResult.Failed(Failure.DatabaseFailure))
         assertEquals(chapters, ChaptersResult.Failed(Failure.DatabaseFailure))
         assertEquals(planning, PlanningResult.Failed(Failure.DatabaseFailure))
-        assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
+        assert(fieldFailure(renamed).getMessage.nonEmpty)
         assertEquals(deleted, DeleteResult.Failed(Failure.DatabaseFailure))
 
   test("should preserve Unicode synopsis text and all nonempty author combinations, including synopsis clearing"):
@@ -314,9 +314,9 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           renamed  <- repository.rename(album.id, changedTitle)
           found    <- repository.metadata(album.id)
         yield
-          assertEquals(synopsis, SaveSynopsisResult.Failed(Failure.DatabaseFailure))
-          assertEquals(authors, SaveAuthorsResult.Failed(Failure.DatabaseFailure))
-          assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
+          assert(fieldFailure(synopsis).getMessage.nonEmpty)
+          assert(fieldFailure(authors).getMessage.nonEmpty)
+          assert(fieldFailure(renamed).getMessage.nonEmpty)
           assertEquals(found, MetadataResult.Found(buildMetadata(album)))
     }
 
@@ -373,12 +373,37 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
             writes   <- sql"SELECT field, count(*) FROM field_audit GROUP BY field ORDER BY field".query[(String, Long)].to[Vector].transact(xa)
           yield
             val expected = buildMetadata(album).copy(title = changedTitle, synopsis = "Saved once", authors = selected)
-            assertEquals(synopsis, SaveSynopsisResult.Uncertain)
-            assertEquals(authors, SaveAuthorsResult.Uncertain)
-            assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
+            assertEquals(synopsis, SaveSynopsisResult.Uncertain(error))
+            assertEquals(authors, SaveAuthorsResult.Uncertain(error))
+            assertEquals(renamed, RenameResult.Failed(error))
             assertEquals(found, MetadataResult.Found(expected))
             assertEquals(writes, Vector(("authors", 1L), ("synopsis", 1L), ("title", 1L)))
       }
+
+  test("should retain failure evidence when field mutation cannot acquire its transaction"):
+    buildTransactor.use: xa =>
+      val album       = buildAlbum(index = 1)
+      val repository  = SqliteAlbumRepository.make[IO](xa)
+      val failure     = new IllegalStateException("Transaction unavailable")
+      val unavailable = SqliteAlbumRepository.make[IO](Transactor.before.set(xa, failure.raiseError[ConnectionIO, Unit]))
+
+      for
+        _        <- repository.create(album, buildCover(album))
+        synopsis <- unavailable.saveSynopsis(album.id, text = "unsaved")
+        authors  <- unavailable.saveAuthors(album.id, Author.all)
+        renamed  <- unavailable.rename(album.id, changedTitle)
+        retained <- repository.metadata(album.id)
+      yield
+        assertEquals(synopsis, SaveSynopsisResult.Uncertain(failure))
+        assertEquals(authors, SaveAuthorsResult.Uncertain(failure))
+        assertEquals(renamed, RenameResult.Failed(failure))
+        assertEquals(retained, MetadataResult.Found(buildMetadata(album)))
+
+  private def fieldFailure(result: SaveSynopsisResult | SaveAuthorsResult | RenameResult) = result match
+    case RenameResult.Failed(cause)       => cause
+    case SaveSynopsisResult.Failed(cause) => cause
+    case SaveAuthorsResult.Failed(cause)  => cause
+    case other                            => fail(s"Expected a known field rejection, got $other")
 
   private def buildConnection(path: Path) =
     SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 2, maxSessions = 2)).buildTransactor

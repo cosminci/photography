@@ -21,7 +21,6 @@ import photography.ports.album.AlbumRepository
 import photography.domain.gear.*
 import photography.usecases.chapter.ChapterManager
 import photography.usecases.chapter.ChapterManager.{GearReadResult, GearReplaceResult}
-import photography.usecases.gear.GearManager
 import photography.usecases.editing.EditingAccess.Protection
 
 import java.time.{DateTimeException, LocalDate}
@@ -140,13 +139,13 @@ object ChapterApi:
         )
       Json.obj("cameras" -> Json.arr(cameras*))
 
-    private def explainGear(reason: GearManager.Failure) = reason match
-      case GearManager.Failure.DuplicateCamera    => "Select each camera only once"
-      case GearManager.Failure.UnknownCamera      => "Select a camera from the current catalog"
-      case GearManager.Failure.CameraKindMismatch => "Select lenses only for interchangeable cameras"
-      case GearManager.Failure.DuplicateLens      => "Select each lens only once per camera"
-      case GearManager.Failure.UnknownLens        => "Select a lens from the current catalog"
-      case GearManager.Failure.IncompatibleLens   => "Select lenses with a compatible mount and coverage"
+    private def explainGear(reason: GearCatalog.Failure) = reason match
+      case GearCatalog.Failure.DuplicateCamera    => "Select each camera only once"
+      case GearCatalog.Failure.UnknownCamera      => "Select a camera from the current catalog"
+      case GearCatalog.Failure.CameraKindMismatch => "Select lenses only for interchangeable cameras"
+      case GearCatalog.Failure.DuplicateLens      => "Select each lens only once per camera"
+      case GearCatalog.Failure.UnknownLens        => "Select a lens from the current catalog"
+      case GearCatalog.Failure.IncompatibleLens   => "Select lenses with a compatible mount and coverage"
 
     private def read(id: AlbumId) =
       metadata.chapters(id).flatMap:

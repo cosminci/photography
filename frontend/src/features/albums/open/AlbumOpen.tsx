@@ -13,7 +13,6 @@ export function AlbumOpen(props: {
     | "open"
     | "chapters"
     | "composition"
-    | "spread"
     | "countries"
     | "photoSource"
     | "createChapter"

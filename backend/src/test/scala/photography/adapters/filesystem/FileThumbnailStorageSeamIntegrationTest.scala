@@ -41,7 +41,7 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
         missing   <- FileThumbnailStorage.make[IO](root.resolve("absent")).removeThumbnail(location)
       yield
         assertEquals(stored, StoreResult.Stored(expected))
-        assertEquals(duplicate, StoreResult.Failed)
+        assertEquals(failureCause(duplicate).getMessage, "requirement failed: Thumbnail location already exists")
         assertEquals(content, bytes: Vector[Byte])
         assertEquals(removed, RemoveResult.Removed)
         assertEquals(repeated, RemoveResult.Removed)
@@ -57,8 +57,8 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
           stored  <- FileThumbnailStorage.make[IO](invalidRoot).storeThumbnail(location, image)
           removed <- FileThumbnailStorage.make[IO](invalidRoot).removeThumbnail(location)
         yield
-          assertEquals(stored, StoreResult.Failed)
-          assertEquals(removed, RemoveResult.Failed)
+          assertEquals(failureCause(stored).getMessage, "Expected an absolute normalized thumbnail root")
+          assertEquals(failureCause(removed).getMessage, "Expected an absolute normalized thumbnail root")
       }
 
   test("should publish each preset at its exact byte and dimension ceilings"):
@@ -152,6 +152,11 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
         _      <- IO.blocking(Files.delete(nested))
         _      <- IO.blocking(Files.delete(outside))
       yield assertEquals(result, ReadResult.NotFound)
+
+  private def failureCause(result: StoreResult | RemoveResult) = result match
+    case StoreResult.Failed(cause)  => cause
+    case RemoveResult.Failed(cause) => cause
+    case other                      => fail(s"Expected a storage failure, got $other")
 
   private def buildDirectory =
     Resource.make(IO.blocking(Files.createTempDirectory(Path.of("target"), "thumbnails-").toAbsolutePath)): root =>

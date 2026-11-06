@@ -33,6 +33,23 @@ export type Spread = SpreadLayout & {
 
 export type SpreadContext = Spread["kind"];
 
+export function composeSpread(saved: SpreadSnapshot, chapter: string | null): Spread {
+  const { kind } = saved.layout;
+  const geometry = { id: saved.id, ...saved.layout, placements: saved.placements };
+  if (kind === "album_start" && chapter === null) return { ...geometry, kind, chapter };
+  if (kind !== "album_start" && chapter !== null) return { ...geometry, kind, chapter };
+  throw new Error("Spread kind does not match chapter membership");
+}
+
+export function snapshotSpread(spread: Spread): SpreadSnapshot {
+  return {
+    kind: "spread",
+    id: spread.id,
+    placements: spread.placements,
+    layout: { kind: spread.kind, templateId: spread.templateId, slots: spread.slots, bleed: spread.bleed },
+  };
+}
+
 export interface SpreadMembership {
   readonly id: string;
   readonly chapter: string | null;
@@ -53,6 +70,6 @@ export interface Workspace {
   readonly countries: readonly Country[];
 }
 import type { PhotoInventory } from "./Photo";
-import type { SpreadPlacement } from "./Placement";
+import type { SpreadPlacement, SpreadSnapshot } from "./Placement";
 import type { Slot, SpreadLayout } from "./Layout";
 export type { Slot } from "./Layout";

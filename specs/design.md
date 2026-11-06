@@ -46,7 +46,7 @@ Editorial content belongs to the book's domain owners, independently of layout:
 
 Cameras and lenses have independent, shared catalog lifecycles; chapters select compatible equipment rather than owning catalog entries. A lens can serve several bodies, so changing or deleting one entry must preserve the validity of every saved selection that references it.
 
-The application decides compatibility against current catalog state, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
+Gear compatibility is a pure catalog-relative domain rule; application operations acquire current catalog state before applying it, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
 
 Book presentation preserves editorial text and derives headings and supporting information from structured data. Editing, navigation and Reader share presentation policy over saved composition, keeping content and catalog identities with their existing owners.
 
@@ -68,7 +68,7 @@ stateDiagram-v2
   Workspace --> Catalog: Return to catalog
 ```
 
-The workspace keeps the selected part addressable and restores it across navigation and reloads. Structural editing operates within chapter boundaries; template choices follow the selected spread's context.
+The workspace keeps the selected part addressable and restores it across navigation and reloads. Structural editing owns chapter-bound command and history reconciliation, while the workspace owns navigation, focus and context-specific template controls.
 
 Photo editing persists placements and transforms for interior layouts and Cover; collection availability is derived from saved placements. Reader presents the same saved book content and composition without editing chrome.
 
@@ -200,8 +200,10 @@ Shared protected writes prove caller-owned grants and reject atomically when any
 
 Routes declare access requirements; application operations decide ownership while content managers retain business validation. HTTP adapters translate credentials, and SQLite commits supplied decisions atomically; slow source and image work stays outside the critical section.
 
-Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Catalog and album metadata writes use lightweight saved facts; chapter planning uses chapter metadata and the actual interior spread count rather than acquiring book geometry.
+Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Catalog and album metadata writes use lightweight saved facts; chapter planning returns complete ordered decisions from chapter metadata and the actual interior spread count.
 
-The browser composes workspace reads, while the application assembles the album for print export. SQLite validates and persists owned representations; application operations select Cover dimensions from the saved sizing catalog and classify photo-processing outcomes.
+The browser composes workspace reads from the same saved-composition acquisition used by editing, adding chapter membership separately; the application assembles the album for print export. SQLite validates and persists owned representations; application operations select Cover dimensions from the saved sizing catalog and classify photo-processing outcomes.
+
+Original-photo discovery and reading are independent of managed-thumbnail storage. Application operations compose these capabilities and own contextual failure diagnostics, while boundaries retain causes and commit uncertainty.
 
 Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving; [contracts](contracts.md) identify authoritative representations and [operations](operational.md) owns deployment and recovery.

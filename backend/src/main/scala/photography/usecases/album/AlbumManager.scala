@@ -71,10 +71,11 @@ object AlbumManager:
         case ListAlbumStartTemplatesResult.Failed(_) => CreateAlbumResult.Failed.pure[F]
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
-      repository.rename(id, title = title).map:
-        case AlbumRepository.RenameResult.Renamed(album) => RenameResult.Renamed(album)
-        case AlbumRepository.RenameResult.NotFound       => RenameResult.NotFound
-        case AlbumRepository.RenameResult.Failed(_)      => RenameResult.Failed
+      repository.rename(id, title = title).flatMap:
+        case AlbumRepository.RenameResult.Renamed(album) => RenameResult.Renamed(album).pure[F]
+        case AlbumRepository.RenameResult.NotFound       => RenameResult.NotFound.pure[F]
+        case AlbumRepository.RenameResult.Failed(cause)  =>
+          Logger[F].error(cause)(s"Album rename failed for ${id.value}").as(RenameResult.Failed)
 
     override def delete(id: AlbumId): F[DeleteAlbumResult] =
       repository.delete(id).map:
@@ -86,19 +87,19 @@ object AlbumManager:
       repository.saveSynopsis(album, text = text).flatMap:
         case AlbumRepository.SaveSynopsisResult.Saved(updated) => SaveSynopsisResult.Saved(updated).pure[F]
         case AlbumRepository.SaveSynopsisResult.NotFound       => SaveSynopsisResult.NotFound.pure[F]
-        case AlbumRepository.SaveSynopsisResult.Failed(reason) =>
-          Logger[F].error(s"Album synopsis save failed for ${album.value}: $reason").as(SaveSynopsisResult.Failed)
-        case AlbumRepository.SaveSynopsisResult.Uncertain =>
-          Logger[F].error(s"Album synopsis save acknowledgement uncertain for ${album.value}").as(SaveSynopsisResult.Uncertain)
+        case AlbumRepository.SaveSynopsisResult.Failed(cause)  =>
+          Logger[F].error(cause)(s"Album synopsis save failed for ${album.value}").as(SaveSynopsisResult.Failed)
+        case AlbumRepository.SaveSynopsisResult.Uncertain(cause) =>
+          Logger[F].error(cause)(s"Album synopsis save acknowledgement uncertain for ${album.value}").as(SaveSynopsisResult.Uncertain)
 
     override def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult] =
       repository.saveAuthors(album, authors).flatMap:
         case AlbumRepository.SaveAuthorsResult.Saved(updated) => SaveAuthorsResult.Saved(updated).pure[F]
         case AlbumRepository.SaveAuthorsResult.NotFound       => SaveAuthorsResult.NotFound.pure[F]
-        case AlbumRepository.SaveAuthorsResult.Failed(reason) =>
-          Logger[F].error(s"Album authors save failed for ${album.value}: $reason").as(SaveAuthorsResult.Failed)
-        case AlbumRepository.SaveAuthorsResult.Uncertain =>
-          Logger[F].error(s"Album authors save acknowledgement uncertain for ${album.value}").as(SaveAuthorsResult.Uncertain)
+        case AlbumRepository.SaveAuthorsResult.Failed(cause)  =>
+          Logger[F].error(cause)(s"Album authors save failed for ${album.value}").as(SaveAuthorsResult.Failed)
+        case AlbumRepository.SaveAuthorsResult.Uncertain(cause) =>
+          Logger[F].error(cause)(s"Album authors save acknowledgement uncertain for ${album.value}").as(SaveAuthorsResult.Uncertain)
 
     private def buildInitialComposition(
         year: AlbumYear,

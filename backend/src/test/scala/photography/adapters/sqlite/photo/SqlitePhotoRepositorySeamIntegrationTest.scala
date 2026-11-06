@@ -163,8 +163,8 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
               IO.raiseError[A](new AssertionError("Unexpected automatic reconciliation"))
 
           val thumbnails = FileThumbnailStorage.make[IO](path.getParent)
-          val originals  = FilePhotoStorage.make[IO](thumbnails)
-          val manager    = PhotoManager.make(originals, repository, buildGenerator, PhotoWriteRecovery.make(repository, thumbnails))
+          val originals  = FilePhotoStorage.make[IO]
+          val manager    = PhotoManager.make(originals, thumbnails, repository, buildGenerator, PhotoWriteRecovery.make(repository, thumbnails))
           val expected   = if committed then photo.copy(maybeCaption = "日本\nVacanță".some) else photo
 
           for
@@ -322,18 +322,19 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
 
             val interrupt = buildTransactor(path).use: xa =>
               val storageBoundary = new PhotoStorage[IO]:
-                override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-                  IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
                 override def discoverOriginals(source: PhotoSource): IO[PhotoStorage.DiscoveryResult] =
                   val originals = if retiring then Vector.empty[OriginalPhotoLocation] else Vector(photo.original)
                   PhotoStorage.DiscoveryResult.Complete(originals = originals, unsupportedCount = 0).pure[IO]
                 override def readOriginal(original: OriginalPhotoLocation): IO[PhotoStorage.ReadResult] =
                   PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
+              val thumbnailBoundary = new ThumbnailStorage[IO]:
+                override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
+                  IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
                 override def storeThumbnail(target: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
                   repository.listUnfinishedWrites.transact(xa).flatMap: pending =>
                     IO(assertEquals(pending, expectedEvidence)) >> storage.storeThumbnail(target, value)
                 override def removeThumbnail(target: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-                  if finalization === Finalization.CleanupFailed then ThumbnailStorage.RemoveResult.Failed.pure[IO]
+                  if finalization === Finalization.CleanupFailed then ThumbnailStorage.RemoveResult.Failed(error).pure[IO]
                   else storage.removeThumbnail(target)
               val calls       = Ref.unsafe[IO, Int](0)
               val resolutions = Ref.unsafe[IO, Int](0)
@@ -353,7 +354,13 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
                 _      <- (seed >> repository.save(photo)).transact(xa)
                 _      <- storage.storeThumbnail(location, image)
                 _      <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
-                result <- PhotoManager.make(storageBoundary, repository, generator, PhotoWriteRecovery.make(repository, storageBoundary)).refresh(
+                result <- PhotoManager.make(
+                  storageBoundary,
+                  thumbnailBoundary,
+                  repository,
+                  generator,
+                  PhotoWriteRecovery.make(repository, thumbnailBoundary)
+                ).refresh(
                   chapter,
                   photo.original.source
                 )
@@ -405,32 +412,35 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
       val intent          = PhotoWriteIntent.Publication(PhotoWriteIntentId(new UUID(0L, 8L)), chapter, photoId, fresh, maybePrevious = location.some)
       val expectedPending = ListUnfinishedWritesResult.Listed(intents = Vector(intent))
       val generator       = buildGenerator
+      val error           = new IllegalStateException("Cancelled storage attempt")
       val cancel          = buildTransactor(path).use: xa =>
         given Transaction[ConnectionIO, IO] with
           override def run[A](program: ConnectionIO[A]): IO[A]     = program.transact(xa)
           override def resolve[A](program: ConnectionIO[A]): IO[A] = program.transact(xa)
         val source = new PhotoStorage[IO]:
-          override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-            IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
           override def discoverOriginals(value: PhotoSource): IO[PhotoStorage.DiscoveryResult] =
             PhotoStorage.DiscoveryResult.Complete(originals = Vector(photo.original), unsupportedCount = 0).pure[IO]
           override def readOriginal(original: OriginalPhotoLocation): IO[PhotoStorage.ReadResult] =
             PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
+        val interruptedStorage = new ThumbnailStorage[IO]:
+          override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
+            IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
           override def storeThumbnail(target: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
             val partial = root.resolve(s"${target.value}.tmp")
             storage.storeThumbnail(target, value) >> Files.write(partial, Array(2.toByte)).blocking[IO] >>
-              IO.canceled.as(ThumbnailStorage.StoreResult.Failed)
+              IO.canceled.as(ThumbnailStorage.StoreResult.Failed(error))
           override def removeThumbnail(target: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-            ThumbnailStorage.RemoveResult.Failed.pure[IO]
+            ThumbnailStorage.RemoveResult.Failed(error).pure[IO]
 
         for
           _      <- (seed >> repository.save(photo)).transact(xa)
           _      <- storage.storeThumbnail(location, image)
           _      <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
-          worker <- PhotoManager.make(source, repository, generator, PhotoWriteRecovery.make(repository, source)).refresh(
-            chapter,
-            photo.original.source
-          ).start
+          worker <-
+            PhotoManager.make(source, interruptedStorage, repository, generator, PhotoWriteRecovery.make(repository, interruptedStorage)).refresh(
+              chapter,
+              photo.original.source
+            ).start
           outcome <- worker.join
           pending <- repository.listUnfinishedWrites.transact(xa)
           listed  <- repository.listChapter(chapter).transact(xa)

@@ -14,19 +14,7 @@ import type {
 } from "../model/Placement";
 import { readArray, readNumber, readRecord, readText } from "./Wire";
 import { readSlot } from "./WorkspaceWire";
-import type { Spread } from "../model/Workspace";
 import type { Slot, SlotBox, SpreadEdge, SpreadLayout } from "../model/Layout";
-
-export function readSpread(value: unknown): Spread {
-  const fields = readRecord(value);
-  const id = readText(fields["id"]);
-  const saved = readPlacementSnapshot(value, { kind: "spread", id });
-  const kind = saved.layout.kind;
-  const geometry = { id, ...saved.layout, placements: saved.placements };
-  if (kind !== "album_start") return { ...geometry, kind, chapter: readText(fields["chapter"]) };
-  if (fields["chapter"] !== null) throw new Error("An album opening cannot belong to a chapter");
-  return { ...geometry, kind, chapter: null };
-}
 
 export function readPlacementSnapshot(value: unknown, context: CoverContext): CoverSnapshot;
 export function readPlacementSnapshot(value: unknown, context: SpreadContext): SpreadSnapshot;

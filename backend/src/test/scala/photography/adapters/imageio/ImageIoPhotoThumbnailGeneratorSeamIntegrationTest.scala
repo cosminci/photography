@@ -7,8 +7,6 @@ import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
-import org.typelevel.log4cats.Logger
-import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.ImageIOTestResources
 import photography.domain.album.*
 import photography.ports.photo.PhotoThumbnailGenerator.GenerationResult
@@ -29,9 +27,8 @@ import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
 
 final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO] = Slf4jLogger.getLogger[IO]
-  private val colors       = Vector(Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW)
-  private val imageIO      = ResourceTestLocalFixture("image-io", ImageIOTestResources.acquire)
+  private val colors  = Vector(Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW)
+  private val imageIO = ResourceTestLocalFixture("image-io", ImageIOTestResources.acquire)
 
   override def munitFixtures = List(imageIO)
 
@@ -111,7 +108,7 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
         failed <- malformed.traverse(bytes => generator.generate(PhotoContent(bytes = bytes.refineUnsafe[MinLength[1]])))
         retry  <- generator.generate(valid)
       yield
-        assertEquals(failed, Vector.fill(malformed.size)(GenerationResult.Failed))
+        assert(failed.map(requireFailure).forall(_.getMessage.nonEmpty))
         assertEquals(requireGenerated(retry).quality, ThumbnailQuality.Low)
 
   test("should distinguish expected image IO failures from unexpected defects and preserve primary failures during reader release"):
@@ -129,6 +126,7 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
     )
 
     cases.traverse_ { case (action, maybeReleaseFailure, expectedFailure) =>
+      val expectedClass = if action === ReadAction.ConstructionFailure then "javax.imageio.IIOException" else "java.io.EOFException"
       for
         content  <- IO.blocking(buildJpeg(width = 96, height = 64, maybeOrientation = None, noisy = false))
         refs     <- buildRefs
@@ -136,7 +134,7 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
         disposed <- IO.delay(refs.disposed.get())
         memory   <- IO.delay(refs.memoryInput.get())
       yield
-        if expectedFailure then assertEquals(result, GenerationResult.Failed.asRight[Throwable])
+        if expectedFailure then assertEquals(result.map(requireFailure).map(_.getClass.getName), expectedClass.asRight[Throwable])
         else
           val expected = action match
             case ReadAction.Decode            => secondary
@@ -194,16 +192,18 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
     val cases     = Vector(WriteAction.IoFailure, WriteAction.Unexpected(defect), WriteAction.ConstructionFailure, WriteAction.Oversized)
 
     cases.traverse_ { action =>
+      val expectedClass = if action === WriteAction.ConstructionFailure then "javax.imageio.IIOException" else "java.io.EOFException"
       for
         content <- IO.blocking(buildJpeg(width = 96, height = 64, maybeOrientation = None, noisy = false))
         refs    <- buildRefs
         result  <- buildObservedWriter(refs, action).use(_ => generator.generate(content).attempt)
         _       <- IO.blocking(refs.maybeOutput.get().foreach(output => intercept[IOException](output.getStreamPosition)))
       yield
-        val expected = action match
-          case WriteAction.IoFailure | WriteAction.ConstructionFailure | WriteAction.Oversized => GenerationResult.Failed.asRight[Throwable]
-          case WriteAction.Unexpected(error)                                                   => error.asLeft[GenerationResult]
-        assertEquals(result, expected)
+        action match
+          case WriteAction.Unexpected(error) => assertEquals(result, error.asLeft[GenerationResult])
+          case WriteAction.Oversized         =>
+            assertEquals(result.map(requireFailure).map(_.getMessage), "Encoded thumbnail exceeds its preset".asRight[Throwable])
+          case _ => assertEquals(result.map(requireFailure).map(_.getClass.getName), expectedClass.asRight[Throwable])
         assertEquals(refs.writerDisposed.get(), action =!= WriteAction.ConstructionFailure)
         assertEquals(refs.memoryOutput.get(), action =!= WriteAction.ConstructionFailure)
     }
@@ -219,7 +219,11 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
   private def requireGenerated(result: GenerationResult) =
     result match
       case GenerationResult.Generated(image) => image
-      case GenerationResult.Failed           => fail("Expected a complete generated thumbnail")
+      case GenerationResult.Failed(_)        => fail("Expected a complete generated thumbnail")
+
+  private def requireFailure(result: GenerationResult) = result match
+    case GenerationResult.Failed(cause) => cause
+    case other                          => fail(s"Expected a generation failure, got $other")
 
   private def decodeJpeg(image: EncodedThumbnail) =
     val bytes = image.bytes: Vector[Byte]

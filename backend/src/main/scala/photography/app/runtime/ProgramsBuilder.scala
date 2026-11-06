@@ -91,11 +91,11 @@ object ProgramsBuilder:
     private val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
     private val planning          = ChapterPlanning.make(templates)
     private val gearRepository    = SqliteGearRepository.make[F](sqlite)
-    private val storage           = FilePhotoStorage.make(thumbnails)
+    private val storage           = FilePhotoStorage.make[F]
     private val generator         = ImageIoPhotoThumbnailGenerator.make[F](quality)
     private val membership        = SqliteAlbumCompositionRepository.makeMembershipRead[F](sqlite)
     private val photoTargets      = SqlitePhotoPlacementRepository.makeTargetRead[F](sqlite)
-    private val recovery          = PhotoWriteRecovery.make(photoRepository, storage)
+    private val recovery          = PhotoWriteRecovery.make(photoRepository, thumbnails)
 
     override def build: Resource[F, Programs[F]] =
       for
@@ -111,8 +111,8 @@ object ProgramsBuilder:
           albums = AlbumManager.make(albumRepository, templates, pageSize),
           chapters = ChapterMetadataManager.make(albumRepository, chapterRepository, planning, imports, photoRepository),
           gear = gear,
-          chapterGear = ChapterManager.make(chapterRepository, gear),
-          photos = PhotoManager.make(storage, photoRepository, generator, recovery),
+          chapterGear = ChapterManager.make(chapterRepository, gearRepository),
+          photos = PhotoManager.make(storage, thumbnails, photoRepository, generator, recovery),
           templates = templates,
           inventories = ChapterPhotoInventory.make(inventory, imports),
           metadata = albumRepository,
@@ -130,7 +130,7 @@ object ProgramsBuilder:
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =
       val buildManager = (guarded: Transaction[ConnectionIO, F]) =>
         given Transaction[ConnectionIO, F] = guarded
-        PhotoManager.make(storage, photoRepository, generator, recovery)
+        PhotoManager.make(storage, thumbnails, photoRepository, generator, recovery)
       ChapterPhotoImport.make(buildManager, recovery, events)
 
     private def buildSessions(using Mutex[F]) =

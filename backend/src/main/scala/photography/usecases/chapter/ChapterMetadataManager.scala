@@ -70,10 +70,9 @@ object ChapterMetadataManager:
       val creation = summon[Mutex[F]].lock.surround:
         val program =
           for
-            saved    <- readAlbum(album).eitherT
-            resolved <- checkCreate(saved.year, existing = saved.chapters, count = saved.spreadCount, name, period, sourceFolder).eitherT[F]
-            chapter  <- prepareChapter(name, countries = countries, resolved, sourceFolder).eitherT
-            id       <- persistCreation(album, currentChapters = saved.chapters, chapter).eitherT
+            saved <- readAlbum(album).eitherT
+            plan  <- planning.planCreation(saved, name, countries, period, sourceFolder).lift[Failure]
+            id    <- persistCreation(album, plan).eitherT
           yield id
         program.value.flatMap: outcome =>
           outcome.traverse(id => photos.prepare(album, id, sourceFolder).attempt.tupleLeft(id))
@@ -135,18 +134,6 @@ object ChapterMetadataManager:
         case AlbumRepository.PlanningResult.NotFound     => Failure.AlbumNotFound.asLeft[PlanningSnapshot]
         case _: AlbumRepository.PlanningResult.Failed    => Failure.Unavailable.asLeft[PlanningSnapshot]
 
-    private def checkCreate(
-        year: AlbumYear,
-        existing: Vector[ChapterMetadata],
-        count: Int,
-        name: DestinationName,
-        period: Period,
-        folder: PhotoSource
-    ) =
-      planning.planCreation(year, chapters = existing, spreadCount = count, name, period, folder) match
-        case ChapterPlanning.CreationResult.Planned(resolved) => resolved.asRight[Failure]
-        case ChapterPlanning.CreationResult.Rejected(reason)  => Failure.Conflict(reason).asLeft[VisitPeriod]
-
     private def planUpdate(
         year: AlbumYear,
         current: Vector[ChapterMetadata],
@@ -160,19 +147,17 @@ object ChapterMetadataManager:
         case ChapterPlanning.UpdateResult.Rejected(reason) => Failure.Conflict(reason).asLeft[ChapterPlanning.UpdatePlan]
         case ChapterPlanning.UpdateResult.ChapterNotFound  => MissingChapter.asLeft[ChapterPlanning.UpdatePlan]
 
-    private def prepareChapter(name: DestinationName, countries: NonEmptyList[CountryId], period: VisitPeriod, source: PhotoSource) =
-      planning.buildChapter(name, countries = countries, period, source).map:
-        case ChapterPlanning.BuildResult.Built(chapter) => chapter.asRight[Failure]
-        case ChapterPlanning.BuildResult.Failed         => Failure.Unavailable.asLeft[ChapterRepository.NewChapter]
-
-    private def persistCreation(album: AlbumId, currentChapters: Vector[ChapterMetadata], chapter: ChapterRepository.NewChapter) =
-      val order = planning.orderChapters(chapters = currentChapters, chapter.id, isHome = (chapter.name: String) === "Home", chapter.period)
-      Transaction[Db, F].run(chapters.create(album, chapter, order = order)).map:
-        case ChapterRepository.CreateResult.Saved            => chapter.id.asRight[Failure]
-        case ChapterRepository.CreateResult.AlbumNotFound    => Failure.AlbumNotFound.asLeft[ChapterId]
-        case ChapterRepository.CreateResult.UnknownCountries => Failure.Conflict(ChapterConflict.UnknownCountries).asLeft[ChapterId]
-        case ChapterRepository.CreateResult.Failed           => Failure.Unavailable.asLeft[ChapterId]
-      .handleErrorWith(error => Logger[F].error(error)("Chapter creation failed").as(Failure.Unavailable.asLeft[ChapterId]))
+    private def persistCreation(album: AlbumId, plan: ChapterPlanning.CreationResult) =
+      val save = plan match
+        case ChapterPlanning.CreationResult.Rejected(reason)        => Failure.Conflict(reason).asLeft[ChapterId].pure[F]
+        case ChapterPlanning.CreationResult.Failed                  => Failure.Unavailable.asLeft[ChapterId].pure[F]
+        case ChapterPlanning.CreationResult.Planned(chapter, order) =>
+          Transaction[Db, F].run(chapters.create(album, chapter, order)).map:
+            case ChapterRepository.CreateResult.Saved            => chapter.id.asRight[Failure]
+            case ChapterRepository.CreateResult.AlbumNotFound    => Failure.AlbumNotFound.asLeft[ChapterId]
+            case ChapterRepository.CreateResult.UnknownCountries => Failure.Conflict(ChapterConflict.UnknownCountries).asLeft[ChapterId]
+            case ChapterRepository.CreateResult.Failed           => Failure.Unavailable.asLeft[ChapterId]
+      save.handleErrorWith(error => Logger[F].error(error)("Chapter creation failed").as(Failure.Unavailable.asLeft[ChapterId]))
 
     private def persistUpdate(
         previousSource: PhotoSource,

@@ -95,7 +95,12 @@ object ChapterPhotoImport:
       val started = summon[Mutex[F]].lock.surround(recordStatus(request, Status.Running))
       summon[Semaphore[F]].permit.use: _ =>
         started.flatMap: current =>
-          manager.refresh(request.chapter, request.source).flatMap(result => recordStatus(request, Status.Finished(result))).void.whenA(current)
+          manager.refresh(request.chapter, request.source).flatMap(result => finish(request, result)).void.whenA(current)
+
+    private def finish(request: Request, result: PhotoManager.RefreshResult) =
+      recordStatus(request, Status.Finished(result)).flatTap: changed =>
+        Logger[F].warn(s"Photo import finished with issues for album ${request.album.value}, chapter ${request.chapter.value}: ${result.issues}")
+          .whenA(changed && result.issues.nonEmpty)
 
     private object ImportTransaction:
       def make(request: Request): Transaction[Db, F] = new LiveImportTransaction(request)

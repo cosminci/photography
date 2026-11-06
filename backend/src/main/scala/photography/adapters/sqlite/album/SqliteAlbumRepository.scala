@@ -93,10 +93,10 @@ object SqliteAlbumRepository:
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       val update = sql"UPDATE album SET title = $title WHERE id = ${id.value}"
       saveField(id, update).map:
-        case FieldSaveResult.Saved(updated) => RenameResult.Renamed(updated)
-        case FieldSaveResult.NotFound       => RenameResult.NotFound
-        case FieldSaveResult.Failed(reason) => RenameResult.Failed(reason)
-        case FieldSaveResult.Uncertain      => RenameResult.Failed(Failure.DatabaseFailure)
+        case FieldSaveResult.Saved(updated)   => RenameResult.Renamed(updated)
+        case FieldSaveResult.NotFound         => RenameResult.NotFound
+        case FieldSaveResult.Failed(reason)   => RenameResult.Failed(reason)
+        case FieldSaveResult.Uncertain(cause) => RenameResult.Failed(cause)
 
     override def delete(id: AlbumId): F[DeleteResult] =
       val query = sql"DELETE FROM album WHERE id = ${id.value}".update.run.map: deleted =>
@@ -106,40 +106,41 @@ object SqliteAlbumRepository:
     override def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult] =
       val update = sql"UPDATE album SET synopsis = $text WHERE id = ${album.value}"
       saveField(album, update).map:
-        case FieldSaveResult.Saved(updated) => SaveSynopsisResult.Saved(updated)
-        case FieldSaveResult.NotFound       => SaveSynopsisResult.NotFound
-        case FieldSaveResult.Failed(reason) => SaveSynopsisResult.Failed(reason)
-        case FieldSaveResult.Uncertain      => SaveSynopsisResult.Uncertain
+        case FieldSaveResult.Saved(updated)   => SaveSynopsisResult.Saved(updated)
+        case FieldSaveResult.NotFound         => SaveSynopsisResult.NotFound
+        case FieldSaveResult.Failed(reason)   => SaveSynopsisResult.Failed(reason)
+        case FieldSaveResult.Uncertain(cause) => SaveSynopsisResult.Uncertain(cause)
 
     override def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult] =
       val encoded = encodeAuthors(authors)
       val update  = sql"UPDATE album SET authors = $encoded WHERE id = ${album.value}"
       saveField(album, update).map:
-        case FieldSaveResult.Saved(updated) => SaveAuthorsResult.Saved(updated)
-        case FieldSaveResult.NotFound       => SaveAuthorsResult.NotFound
-        case FieldSaveResult.Failed(reason) => SaveAuthorsResult.Failed(reason)
-        case FieldSaveResult.Uncertain      => SaveAuthorsResult.Uncertain
+        case FieldSaveResult.Saved(updated)   => SaveAuthorsResult.Saved(updated)
+        case FieldSaveResult.NotFound         => SaveAuthorsResult.NotFound
+        case FieldSaveResult.Failed(reason)   => SaveAuthorsResult.Failed(reason)
+        case FieldSaveResult.Uncertain(cause) => SaveAuthorsResult.Uncertain(cause)
 
     private def saveField(album: AlbumId, update: Fragment) =
       val rejected = new IllegalArgumentException(s"Expected one applied album field update for ${album.value}")
       val query    = load(album.value).flatMap:
         case None    => FieldSaveResult.NotFound.pure[ConnectionIO]
         case Some(_) => update.update.run.ensure(rejected)(_ === 1) >> loadRequired(album.value).map(FieldSaveResult.Saved(_))
-      save(query).attempt.flatMap:
-        case Right(result) => result.pure[F]
+      save(query).attempt.map:
+        case Right(result) => result
         case Left(error)   =>
-          val result = error match
+          error match
             case sqlite: SQLiteException
                 if (sqlite.getResultCode.code & 255) === SQLiteErrorCode.SQLITE_CONSTRAINT.code ||
-                  sqlite.getResultCode.code === SQLiteErrorCode.SQLITE_ERROR.code => FieldSaveResult.Failed(Failure.DatabaseFailure)
-            case _: IllegalArgumentException | _: InvalidValue[?, ?] => FieldSaveResult.Failed(Failure.DatabaseFailure)
-            case _                                                   => FieldSaveResult.Uncertain
-          Logger[F].error(error)(s"SQLite album field save failed for ${album.value}: $result").as(result)
+                  sqlite.getResultCode.code === SQLiteErrorCode.SQLITE_ERROR.code => FieldSaveResult.Failed(error)
+            case _: IllegalArgumentException | _: InvalidValue[?, ?] => FieldSaveResult.Failed(error)
+            case uncertain: UncertainCommit                          => FieldSaveResult.Uncertain(uncertain.failure)
+            case _                                                   => FieldSaveResult.Uncertain(error)
 
     private enum FieldSaveResult:
       case Saved(album: Metadata)
-      case NotFound, Uncertain
-      case Failed(reason: Failure)
+      case NotFound
+      case Uncertain(cause: Throwable)
+      case Failed(cause: Throwable)
 
     private def insertAlbum(album: Album) =
       val authors = encodeAuthors(album.authors)
@@ -235,4 +236,4 @@ object SqliteAlbumRepository:
             case _ => Failure.DatabaseFailure
           Logger[F].error(error)("SQLite album operation failed").as(failed(reason))
 
-  final private class UncertainCommit(cause: Throwable) extends RuntimeException(cause)
+  final private class UncertainCommit(val failure: Throwable) extends RuntimeException(failure)

@@ -131,16 +131,23 @@ describe("album dashboard and open", () => {
   it("should preserve the loaded document across catalog navigation and keep draft resolution ahead of history departure", async () => {
     const select = vi.fn().mockResolvedValue(true);
     const documentBefore = document;
+    const base = buildClient();
     const client = buildClient({
-      spread: vi.fn().mockResolvedValue({
-        id: "opening",
-        bleed: { state: "disabled" as const, available: true },
-        templateId: "layout",
-        chapter: null,
-        kind: "album_start",
-        placements: [],
-        slots: [{ id: "text-slot", kind: "text", x: 50, y: 4, width: 48, height: 92 }],
-      }),
+      readPlacements: vi.fn().mockImplementation((id: string, context: PlacementContext) =>
+        context.kind === "cover"
+          ? base.readPlacements(id, context)
+          : Promise.resolve({
+              id: "opening",
+              kind: "spread",
+              placements: [],
+              layout: {
+                kind: "album_start",
+                bleed: { state: "disabled" as const, available: true },
+                templateId: "layout",
+                slots: [{ id: "text-slot", kind: "text", x: 50, y: 4, width: 48, height: 92 }],
+              },
+            }),
+      ),
     });
     render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
@@ -559,15 +566,6 @@ function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
     remove: vi.fn().mockResolvedValue(undefined),
     chapters: vi.fn().mockResolvedValue([]),
     composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),
-    spread: vi.fn().mockResolvedValue({
-      id: "opening",
-      bleed: { state: "disabled" as const, available: true },
-      templateId: "layout",
-      chapter: null,
-      kind: "album_start",
-      slots: [],
-      placements: [],
-    }),
     countries: vi.fn().mockResolvedValue([]),
     photoSource: vi.fn().mockResolvedValue("/photos"),
     createChapter: vi.fn(),

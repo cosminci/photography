@@ -116,9 +116,9 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     val album = buildMetadata(index = 1).copy(title = "Asian capitals")
 
     val cases: Vector[(response: AlbumRepository.RenameResult, expected: RenameResult)] = Vector(
-      AlbumRepository.RenameResult.Renamed(album)                  -> RenameResult.Renamed(album),
-      AlbumRepository.RenameResult.NotFound                        -> RenameResult.NotFound,
-      AlbumRepository.RenameResult.Failed(Failure.DatabaseFailure) -> RenameResult.Failed
+      AlbumRepository.RenameResult.Renamed(album)                                                -> RenameResult.Renamed(album),
+      AlbumRepository.RenameResult.NotFound                                                      -> RenameResult.NotFound,
+      AlbumRepository.RenameResult.Failed(new IllegalStateException("Album persistence failed")) -> RenameResult.Failed
     )
 
     for
@@ -147,17 +147,18 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     val album         = buildMetadata(index = 1)
     val text          = "Șir 日本語\n🙂"
     val updated       = album.copy(synopsis = text)
+    val error         = new IllegalStateException("Album persistence failed")
     val synopsisCases = Vector(
-      AlbumRepository.SaveSynopsisResult.Saved(updated)                  -> SaveSynopsisResult.Saved(updated),
-      AlbumRepository.SaveSynopsisResult.NotFound                        -> SaveSynopsisResult.NotFound,
-      AlbumRepository.SaveSynopsisResult.Failed(Failure.DatabaseFailure) -> SaveSynopsisResult.Failed,
-      AlbumRepository.SaveSynopsisResult.Uncertain                       -> SaveSynopsisResult.Uncertain
+      AlbumRepository.SaveSynopsisResult.Saved(updated)   -> SaveSynopsisResult.Saved(updated),
+      AlbumRepository.SaveSynopsisResult.NotFound         -> SaveSynopsisResult.NotFound,
+      AlbumRepository.SaveSynopsisResult.Failed(error)    -> SaveSynopsisResult.Failed,
+      AlbumRepository.SaveSynopsisResult.Uncertain(error) -> SaveSynopsisResult.Uncertain
     )
     val authorsCases = Vector(
-      AlbumRepository.SaveAuthorsResult.Saved(album)                    -> SaveAuthorsResult.Saved(album),
-      AlbumRepository.SaveAuthorsResult.NotFound                        -> SaveAuthorsResult.NotFound,
-      AlbumRepository.SaveAuthorsResult.Failed(Failure.DatabaseFailure) -> SaveAuthorsResult.Failed,
-      AlbumRepository.SaveAuthorsResult.Uncertain                       -> SaveAuthorsResult.Uncertain
+      AlbumRepository.SaveAuthorsResult.Saved(album)     -> SaveAuthorsResult.Saved(album),
+      AlbumRepository.SaveAuthorsResult.NotFound         -> SaveAuthorsResult.NotFound,
+      AlbumRepository.SaveAuthorsResult.Failed(error)    -> SaveAuthorsResult.Failed,
+      AlbumRepository.SaveAuthorsResult.Uncertain(error) -> SaveAuthorsResult.Uncertain
     )
 
     val saveSynopsisCases = synopsisCases.traverse { case (response, expected) =>
