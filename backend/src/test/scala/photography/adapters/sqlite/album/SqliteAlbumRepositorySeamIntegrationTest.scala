@@ -64,20 +64,18 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildTransactor.use: xa =>
       val repository    = SqliteAlbumRepository.make[IO](xa)
       val album         = buildAlbum(index = 1)
-      val destination   = buildUuid(index = 901)
       val chapter       = buildUuid(index = 902)
       val nextChapter   = buildUuid(index = 903)
-      val insertChapter = sql"""INSERT INTO chapter (id, album_id, destination_id, description, start_ms, end_ms, position, source_folder)
-        VALUES ($nextChapter, ${album.id.value}, $destination, 'Mountain text', 86400000, 172800000, 1, '/photos/mountain'),
-               ($chapter, ${album.id.value}, $destination, 'Coast text', 0, 86400000, 0, '/photos/coast')""".update.run
+      val insertChapter = sql"""INSERT INTO chapter (id, album_id, name, description, start_ms, end_ms, position, source_folder)
+        VALUES ($nextChapter, ${album.id.value}, 'Coast', 'Mountain text', 86400000, 172800000, 1, '/photos/mountain'),
+               ($chapter, ${album.id.value}, 'Coast', 'Coast text', 0, 86400000, 0, '/photos/coast')""".update.run
       val saveMetadata =
         for
           country <-
             sql"SELECT id, code, name, flag FROM country ORDER BY code LIMIT 1".query[(UUID, CountryCode, CountryName, AbsoluteLocation)].unique
               .map { case (id, code, name, flag) => Country(CountryId(id), code, name, flag) }
-          _ <- sql"INSERT INTO destination (id, name) VALUES ($destination, 'Coast')".update.run
           _ <- insertChapter
-          _ <- sql"INSERT INTO destination_country VALUES ($destination, ${country.id.value}, 0)".update.run
+          _ <- sql"INSERT INTO chapter_country VALUES ($chapter, ${country.id.value}, 0), ($nextChapter, ${country.id.value}, 0)".update.run
         yield country
       for
         _            <- repository.create(album, buildCover(album))
@@ -86,12 +84,12 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         planning     <- repository.readPlanning(album.id)
         _            <- sql"UPDATE chapter SET position = -1 WHERE id = $chapter".update.run.transact(xa)
         invalidOrder <- repository.chapters(album.id)
-        _ <- (sql"UPDATE chapter SET position = 0 WHERE id = $chapter".update.run >> sql"DELETE FROM destination_country".update.run).transact(xa)
+        _ <- (sql"UPDATE chapter SET position = 0 WHERE id = $chapter".update.run >> sql"DELETE FROM chapter_country".update.run).transact(xa)
         missingCountries <- repository.chapters(album.id)
       yield
         val expected = ChapterMetadata(
           ChapterId(chapter),
-          Destination(DestinationId(destination), "Coast", NonEmptyList.one(country)),
+          Destination("Coast", NonEmptyList.one(country)),
           VisitPeriod(LocalDate.of(1970, 1, 1), days = 1L),
           "/photos/coast",
           "Coast text"
@@ -214,7 +212,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       val country = Country(CountryId(buildUuid(index = 12)), "RO", "Romania", AbsoluteLocation(Path.of("/flags/ro.svg")))
       val chapter = Chapter(
         ChapterId(buildUuid(index = 13)),
-        Destination(DestinationId(buildUuid(index = 14)), "Home", NonEmptyList.one(country)),
+        Destination("Home", NonEmptyList.one(country)),
         VisitPeriod(LocalDate.of(1901, 1, 1), days = 365),
         "",
         Vector.empty[CameraSelection],

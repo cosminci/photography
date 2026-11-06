@@ -8,7 +8,7 @@ import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.ports.photo.PhotoPlacementRepository
 import photography.ports.photo.PhotoPlacementRepository.TargetResult
 import photography.ports.album.AlbumCompositionRepository
-import photography.ports.album.AlbumCompositionRepository.CompositionResult
+import photography.ports.album.AlbumCompositionRepository.OpeningResult
 import photography.usecases.editing.EditorSessionManager.{AuthorizationResult, ConnectionAuthorizationResult}
 
 trait EditingAccess[F[_]]:
@@ -37,7 +37,7 @@ object EditingAccess:
             case Protection.OwnAlbumOpening(album) =>
               admitOpening(connection, album, maybeChapter = None, maybeGrant)(write)
             case Protection.OwnChapterOpening(album, chapter) =>
-              admitOpening(connection, album, maybeChapter = Some(chapter), maybeGrant)(write)
+              admitOpening(connection, album, maybeChapter = chapter.some, maybeGrant)(write)
             case Protection.OwnPhotoSpread(chapter, photo) =>
               sessions.authorizeConnection(connection).flatMap:
                 case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
@@ -60,12 +60,11 @@ object EditingAccess:
       sessions.authorizeConnection(connection).flatMap:
         case ConnectionAuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
         case ConnectionAuthorizationResult.Authorized       =>
-          membership.composition(album).flatMap:
-            case CompositionResult.Found(members) =>
-              val maybeOpening = maybeChapter.fold(members.head.some)(chapter => members.find(_.maybeChapter.contains(chapter)))
-              maybeOpening.fold(Result.ChapterNotFound[A]().pure[F])(member => admit(connection, EditingTarget.Spread(member.id), maybeGrant)(write))
-            case CompositionResult.AlbumNotFound => Result.AlbumNotFound[A]().pure[F]
-            case CompositionResult.Failed(_)     => Result.Failed[A]().pure[F]
+          membership.opening(album, maybeChapter).flatMap:
+            case OpeningResult.Found(spread)   => admit(connection, EditingTarget.Spread(spread), maybeGrant)(write)
+            case OpeningResult.AlbumNotFound   => Result.AlbumNotFound[A]().pure[F]
+            case OpeningResult.ChapterNotFound => Result.ChapterNotFound[A]().pure[F]
+            case OpeningResult.Failed(_)       => Result.Failed[A]().pure[F]
 
     private def admit[A](connection: EditorConnection, spread: EditingTarget, maybeGrant: Option[GrantId])(write: F[A]) =
       val authorization = maybeGrant match

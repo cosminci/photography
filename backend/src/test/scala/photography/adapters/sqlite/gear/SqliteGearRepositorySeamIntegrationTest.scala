@@ -146,17 +146,15 @@ final class SqliteGearRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should protect actual saved references while allowing shared lenses and independent unused camera deletion"):
     buildDatabase.flatMap(buildConnection).use: xa =>
-      val repository  = SqliteGearRepository.make[IO](xa)
-      val first       = camera.copy(kind = CameraKind.InterchangeableLens(LensMount.SonyE, SensorFormat.ApsC))
-      val second      = first.copy(id = CameraId(new UUID(1L, 2L)), code = "second")
-      val unused      = first.copy(id = CameraId(new UUID(1L, 3L)), code = "unused")
-      val album       = new UUID(3L, 1L)
-      val chapter     = new UUID(3L, 2L)
-      val destination = new UUID(3L, 3L)
-      val seed        = sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES ($album, 2026, 'Album', '', 0)".update.run >>
-        sql"INSERT INTO destination (id, name) VALUES ($destination, 'Trip')".update.run >>
-        sql"""INSERT INTO chapter (id, album_id, destination_id, description, start_ms, end_ms, position, source_folder)
-          VALUES ($chapter, $album, $destination, '', 0, 86400000, 0, '/photos')""".update.run
+      val repository = SqliteGearRepository.make[IO](xa)
+      val first      = camera.copy(kind = CameraKind.InterchangeableLens(LensMount.SonyE, SensorFormat.ApsC))
+      val second     = first.copy(id = CameraId(new UUID(1L, 2L)), code = "second")
+      val unused     = first.copy(id = CameraId(new UUID(1L, 3L)), code = "unused")
+      val album      = new UUID(3L, 1L)
+      val chapter    = new UUID(3L, 2L)
+      val seed       = sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES ($album, 2026, 'Album', '', 0)".update.run >>
+        sql"""INSERT INTO chapter (id, album_id, name, description, start_ms, end_ms, position, source_folder)
+          VALUES ($chapter, $album, 'Trip', '', 0, 86400000, 0, '/photos')""".update.run
       val select = Vector(first, second).traverse_ { body =>
         sql"INSERT INTO chapter_camera (chapter_id, camera_id, use_kind) VALUES ($chapter, ${body.id.value}, 'interchangeable_lenses')".update.run >>
           sql"INSERT INTO chapter_camera_lens (chapter_id, camera_id, lens_id) VALUES ($chapter, ${body.id.value}, ${lens.id.value})".update.run.void

@@ -112,7 +112,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         yield assertEquals(completed, ().some)
       }
 
-  test("should await publication, preserve identity and caption, and retire only the previous thumbnail"):
+  test("should await publication, preserve identity and caption, and hand both thumbnail locations to recovery"):
     Vector(
       (metadata.copy(hash = "changed"), ThumbnailQuality.Standard),
       (metadata, ThumbnailQuality.Low)
@@ -128,15 +128,18 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
           "record",
           "store",
           "transaction",
-          s"remove:${thumbnail.location.value}",
-          "complete"
+          "resolve"
         )
         val previous = existing.copy(thumbnail = thumbnail.copy(quality = previousQuality))
         val manager  = buildManager(
           events,
           readResult = PhotoStorage.ReadResult.Read(content, changed).pure[IO],
           existingPhotos = Vector(previous),
-          save = save
+          save = save,
+          finalization = intent =>
+            val expected =
+              PhotoWriteIntent.Publication(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, stored.location, thumbnail.location.some)
+            IO(assertEquals(intent, expected)).as(PhotoWriteRecovery.RecoveryResult.Recovered)
         )
         manager.refresh(chapter, original.source).flatMap: result =>
           events.get.map: actual =>
@@ -160,17 +163,21 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         assertEquals(unchanged.issues, Vector.empty[Issue])
         assertEquals(actual, Vector("transaction", "read"))
 
-  test("should delete absent photos only after completed enumeration and successful removal"):
+  test("should attempt absence retirement only after completed enumeration and hand its evidence to recovery"):
     Vector(
-      (PhotoRepository.WriteResult.Applied, Vector.empty[Issue], true),
-      (PhotoRepository.WriteResult.Failed, Vector(Issue.Persistence), false)
-    ).traverse_ { case (result, issues, removesFile) =>
+      (PhotoRepository.WriteResult.Applied, Vector.empty[Issue]),
+      (PhotoRepository.WriteResult.Failed, Vector(Issue.Persistence))
+    ).traverse_ { case (result, issues) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val remove = (id: PhotoId) => IO(assertEquals(id, existing.id)).as(result)
-        buildManager(events, discovery = absent.pure[IO], remove = remove).refresh(chapter, original.source).flatMap: actual =>
-          events.get.map: recorded =>
-            assertEquals(actual.issues, issues)
-            assertEquals(recorded.contains(s"remove:${thumbnail.location.value}"), removesFile)
+        val remove       = (id: PhotoId) => IO(assertEquals(id, existing.id)).as(result)
+        val finalization = (intent: PhotoWriteIntent) =>
+          val expected = PhotoWriteIntent.Retirement(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, thumbnail.location)
+          IO(assertEquals(intent, expected)).as(PhotoWriteRecovery.RecoveryResult.Recovered)
+        buildManager(events, discovery = absent.pure[IO], remove = remove, finalization = finalization).refresh(chapter, original.source).flatMap:
+          actual =>
+            events.get.map: recorded =>
+              assertEquals(actual.issues, issues)
+              assertEquals(recorded, Vector("transaction", "transaction", "record", "resolve"))
     }
 
   test("should retain inventory when discovery or inventory reading fails"):
@@ -214,71 +221,54 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
               assert(!recorded.contains("store"))
     }
 
-  test("should compensate rejected or failed database writes and expose cleanup failures"):
-    Vector(
-      (PhotoRepository.WriteResult.Failed.pure[IO], Vector(Issue.Persistence)),
-      (IO.raiseError[PhotoRepository.WriteResult](error), Vector(Issue.Persistence))
-    ).traverse_ { case (writing, issues) =>
-      Vector(
-        (ThumbnailStorage.RemoveResult.Removed.pure[IO], Vector.empty[Issue]),
-        (ThumbnailStorage.RemoveResult.Failed.pure[IO], Vector(Issue.Cleanup(stored.location))),
-        (IO.raiseError[ThumbnailStorage.RemoveResult](error), Vector(Issue.Cleanup(stored.location)))
-      )
-        .traverse_ { case (cleaning, cleanupIssues) =>
-          Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-            val manager = buildManager(events, existingPhotos = Vector.empty[Photo], save = _ => writing, cleaning = cleaning)
-            manager.refresh(chapter, original.source).flatMap: actual =>
-              events.get.map: recorded =>
-                assertEquals(actual.issues, issues ++ cleanupIssues)
-                assert(recorded.contains(s"remove:${stored.location.value}"))
-        }
-    }
+  test("should preserve publication failures alongside explicit finalization issues"):
+    val id          = PhotoWriteIntentId(new UUID(0L, 9L))
+    val storedImage = ThumbnailStorage.StoreResult.Stored(stored).pure[IO]
+    val rejected    = PhotoRepository.WriteResult.Failed.pure[IO]
+    val failures    = Vector(
+      (storage = ThumbnailStorage.StoreResult.Failed.pure[IO], writing = rejected, primary = Issue.Storage),
+      (storage = IO.raiseError[ThumbnailStorage.StoreResult](error), writing = rejected, primary = Issue.Storage),
+      (storage = storedImage, writing = rejected, primary = Issue.Persistence),
+      (storage = storedImage, writing = IO.raiseError[PhotoRepository.WriteResult](error), primary = Issue.Persistence)
+    )
+    val outcomes = Vector(
+      Vector.empty[PhotoWriteRecovery.Issue],
+      Vector(PhotoWriteRecovery.Issue.References(id)),
+      Vector(PhotoWriteRecovery.Issue.Cleanup(id, stored.location)),
+      Vector(PhotoWriteRecovery.Issue.Completion(id))
+    )
 
-  test("should expose storage failures without writes, and cleanup failures after successful persistence"):
-    Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-      val storeFailure   = buildManager(events, existingPhotos = Vector.empty[Photo], storage = ThumbnailStorage.StoreResult.Failed.pure[IO])
-      val cleanupFailure = buildManager(events, discovery = absent.pure[IO], cleaning = ThumbnailStorage.RemoveResult.Failed.pure[IO])
-      val removeFailure  = buildManager(events, discovery = absent.pure[IO], remove = _ => IO.raiseError[PhotoRepository.WriteResult](error))
-      for
-        storage      <- storeFailure.refresh(chapter, original.source)
-        recorded     <- events.get
-        cleanup      <- cleanupFailure.refresh(chapter, original.source)
-        failedDelete <- removeFailure.refresh(chapter, original.source)
-      yield
-        assertEquals(storage.issues, Vector(Issue.Storage))
-        assertEquals(recorded.count(_ === "transaction"), 2)
-        assertEquals(cleanup.issues, Vector(Issue.Cleanup(thumbnail.location)))
-        assertEquals(failedDelete.issues, Vector(Issue.Persistence))
+    failures.traverse_ { case (storage, writing, primary) =>
+      outcomes.traverse_ { issues =>
+        Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
+          val outcome = if issues.isEmpty then PhotoWriteRecovery.RecoveryResult.Recovered else PhotoWriteRecovery.RecoveryResult.Failed(issues)
+          val manager =
+            buildManager(events, existingPhotos = Vector.empty[Photo], storage = storage, save = _ => writing, finalization = _ => outcome.pure[IO])
 
-  test("should compensate partial storage failures at their preallocated location and preserve cleanup errors"):
-    Vector(ThumbnailStorage.StoreResult.Failed.pure[IO], IO.raiseError[ThumbnailStorage.StoreResult](error)).traverse_ { storage =>
-      Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val reading = PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
-        val manager = buildManager(events, storage = storage, cleaning = ThumbnailStorage.RemoveResult.Failed.pure[IO], readResult = reading)
-        manager.refresh(chapter, original.source).flatMap: result =>
-          events.get.map: recorded =>
-            assertEquals(result.issues, Vector(Issue.Storage, Issue.Cleanup(stored.location)))
-            assertEquals(recorded.lastOption, s"remove:${stored.location.value}".some)
-            assert(!recorded.contains(s"remove:${thumbnail.location.value}"))
-            assertEquals(recorded.count(_ === "transaction"), 2)
+          for
+            result <- manager.refresh(chapter, original.source)
+            calls  <- events.get
+          yield
+            assertEquals(result.issues, primary +: issues.map(Issue.Finalization(_)))
+            assertEquals(calls.lastOption, "resolve".some)
+      }
     }
 
   test("should finish publication and absent-photo retirement handoffs before honoring cancellation"):
     Vector((false, false), (false, true), (true, false), (true, true)).traverse_ { case (retiring, committed) =>
       (Ref.of[IO, Vector[String]](Vector.empty), Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap:
         case (events, saving, release) =>
-          val writeResult = if committed then PhotoRepository.WriteResult.Applied else PhotoRepository.WriteResult.Failed
-          val handoff     = saving.complete(()).void >> release.get
-          val save        = (_: Photo) => handoff.as(writeResult)
-          val remove      = (_: PhotoId) => if committed then writeResult.pure[IO] else handoff.as(writeResult)
-          val cleaning    =
-            if retiring && committed then handoff.as(ThumbnailStorage.RemoveResult.Removed) else ThumbnailStorage.RemoveResult.Removed.pure[IO]
+          val writeResult  = if committed then PhotoRepository.WriteResult.Applied else PhotoRepository.WriteResult.Failed
+          val handoff      = saving.complete(()).void >> release.get
+          val save         = (_: Photo) => handoff.as(writeResult)
+          val remove       = (_: PhotoId) => if committed then writeResult.pure[IO] else handoff.as(writeResult)
+          val finalization = (_: PhotoWriteIntent) =>
+            (if retiring && committed then handoff else IO.unit).as(PhotoWriteRecovery.RecoveryResult.Recovered)
           val reading   = PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
           val discovery = if retiring then absent else complete
-          val manager = buildManager(events, discovery = discovery.pure[IO], save = save, remove = remove, cleaning = cleaning, readResult = reading)
-          val removed = if committed then thumbnail.location else stored.location
-          val expectedRemovals = if retiring && !committed then Vector.empty[String] else Vector(s"remove:${removed.value}")
-          val program          =
+          val manager   =
+            buildManager(events, discovery = discovery.pure[IO], save = save, remove = remove, finalization = finalization, readResult = reading)
+          val program =
             for
               refresh      <- manager.refresh(chapter, original.source).flatTap(_ => IO.cede).start
               _            <- saving.get
@@ -288,8 +278,8 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
               recorded     <- events.get
             yield
               assert(result.isCanceled)
-              assertEquals(recorded.filter(_.startsWith("remove:")), expectedRemovals)
-              assertEquals(recorded.lastOption, "complete".some)
+              assertEquals(recorded.count(_ === "resolve"), 1)
+              assertEquals(recorded.lastOption, "resolve".some)
 
           for
             control <- TestControl.execute(program)
@@ -314,41 +304,17 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         assertEquals(result.issues, Vector(Issue.Persistence))
         assertEquals(actual, Vector("transaction"))
 
-  test("should retain the primary failure when evidence recording, reference resolution or completion fails"):
-    val id = PhotoWriteIntentId(new UUID(0L, 9L))
-    Vector(false, true).traverse_ { throws =>
-      val recording  = if throws then IO.raiseError[PhotoRepository.RecordWriteResult](error) else PhotoRepository.RecordWriteResult.Failed.pure[IO]
-      val resolving  = if throws then IO.raiseError[Unit](error) else IO.unit
-      val completing =
-        if throws then IO.raiseError[PhotoRepository.CompleteWriteResult](error) else PhotoRepository.CompleteWriteResult.Failed.pure[IO]
+  test("should reject publication before storing media when its durable evidence cannot be recorded"):
+    Vector(PhotoRepository.RecordWriteResult.Failed.pure[IO], IO.raiseError[PhotoRepository.RecordWriteResult](error)).traverse_ { recording =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
         val noEvidence = buildManager(events, existingPhotos = Vector.empty[Photo], recording = recording)
-        val listed     = events.get.map: recorded =>
-          if recorded.contains("store") then PhotoRepository.ListResult.Failed
-          else PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo])
-        val noReferences = buildManager(
-          events,
-          existingPhotos = Vector.empty[Photo],
-          storage = ThumbnailStorage.StoreResult.Failed.pure[IO],
-          resolving = resolving,
-          maybeListed = listed.some
-        )
-        val noCompletion =
-          buildManager(events, existingPhotos = Vector.empty[Photo], save = _ => PhotoRepository.WriteResult.Failed.pure[IO], completing = completing)
 
         for
-          rejected   <- noEvidence.refresh(chapter, original.source)
-          before     <- events.get
-          _          <- events.set(Vector.empty)
-          unresolved <- noReferences.refresh(chapter, original.source)
-          untouched  <- events.get
-          incomplete <- noCompletion.refresh(chapter, original.source)
+          rejected <- noEvidence.refresh(chapter, original.source)
+          before   <- events.get
         yield
           assertEquals(rejected.issues, Vector(Issue.Persistence))
           assert(!before.contains("store"))
-          assertEquals(unresolved.issues, Vector(Issue.Storage, Issue.WriteReferences(id)))
-          assert(!untouched.exists(_.startsWith("remove:")))
-          assertEquals(incomplete.issues, Vector(Issue.Persistence, Issue.WriteCompletion(id)))
     }
 
   // scalafix:off DisableSyntax.defaultArgs
@@ -358,14 +324,13 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       readResult: IO[PhotoStorage.ReadResult] = read.pure[IO],
       generation: IO[PhotoThumbnailGenerator.GenerationResult] = PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO],
       storage: IO[ThumbnailStorage.StoreResult] = ThumbnailStorage.StoreResult.Stored(stored).pure[IO],
-      cleaning: IO[ThumbnailStorage.RemoveResult] = ThumbnailStorage.RemoveResult.Removed.pure[IO],
       existingPhotos: Vector[Photo] = Vector(existing),
       maybeListed: Option[IO[PhotoRepository.ListResult]] = None,
       quality: ThumbnailQuality = ThumbnailQuality.Standard,
       save: Photo => IO[PhotoRepository.WriteResult] = _ => PhotoRepository.WriteResult.Applied.pure[IO],
       remove: PhotoId => IO[PhotoRepository.WriteResult] = _ => PhotoRepository.WriteResult.Applied.pure[IO],
       recording: IO[PhotoRepository.RecordWriteResult] = PhotoRepository.RecordWriteResult.Recorded.pure[IO],
-      completing: IO[PhotoRepository.CompleteWriteResult] = PhotoRepository.CompleteWriteResult.Completed.pure[IO],
+      finalization: PhotoWriteIntent => IO[PhotoWriteRecovery.RecoveryResult] = _ => PhotoWriteRecovery.RecoveryResult.Recovered.pure[IO],
       resolving: IO[Unit] = IO.unit,
       nextId: IO[UUID] = new UUID(0L, 9L).pure[IO],
       maybeFound: Option[IO[PhotoRepository.FindResult]] = None,
@@ -374,7 +339,6 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
   ) =
     given IdGenerator[IO] with
       override def generateId: IO[UUID] = nextId
-    val current = Ref.unsafe[IO, Vector[Photo]](existingPhotos)
     given Transaction[Db, IO] with
       override def run[A](program: Db[A]): IO[A]     = events.update(_ :+ "transaction") >> program.run(())
       override def resolve[A](program: Db[A]): IO[A] = resolving >> program.run(())
@@ -387,32 +351,31 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       override def storeThumbnail(location: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
         IO(assertEquals(location, stored.location)) >> IO(assertEquals(value, image)) >> events.update(_ :+ "store") >> storage
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-        events.update(_ :+ s"remove:${location.value}") >> cleaning
+        IO.raiseError[ThumbnailStorage.RemoveResult](new AssertionError("Unexpected cleanup outside recovery"))
     val writePhoto  = save
     val removePhoto = remove
     val repository  = new PhotoRepository[Db]:
       override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
-        val found = maybeFound.getOrElse(current.get.map(_.find(
-          _.id.value === photo.value
-        ).fold[PhotoRepository.FindResult](PhotoRepository.FindResult.NotFound)(PhotoRepository.FindResult.Found(_))))
+        val found = maybeFound.getOrElse(existingPhotos.find(_.id.value === photo.value)
+          .fold[PhotoRepository.FindResult](PhotoRepository.FindResult.NotFound)(PhotoRepository.FindResult.Found(_)).pure[IO])
         Kleisli.liftF[IO, Unit, PhotoRepository.FindResult](events.update(_ :+ s"find:${photo.value}") >> found)
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.SaveCaptionResult](caption(id, text))
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =
-        val listed = maybeListed.getOrElse(current.get.map(photos => PhotoRepository.ListResult.Listed(photos)))
+        val listed = maybeListed.getOrElse(PhotoRepository.ListResult.Listed(existingPhotos).pure[IO])
         Kleisli.liftF[IO, Unit, PhotoRepository.ListResult](IO(assertEquals(id, chapter)) >> listed)
       override def save(photo: Photo): Db[PhotoRepository.WriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](writePhoto(photo).flatTap:
-          case PhotoRepository.WriteResult.Applied => current.update(photos => photos.filterNot(_.id.value === photo.id.value) :+ photo)
-          case PhotoRepository.WriteResult.Failed  => IO.unit)
+        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](writePhoto(photo))
       override def remove(photo: PhotoId): Db[PhotoRepository.WriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](removePhoto(photo).flatTap:
-          case PhotoRepository.WriteResult.Applied => current.update(_.filterNot(_.id.value === photo.value))
-          case PhotoRepository.WriteResult.Failed  => IO.unit)
+        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](removePhoto(photo))
       override def recordWrite(intent: PhotoWriteIntent): Db[PhotoRepository.RecordWriteResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.RecordWriteResult](events.update(_ :+ "record") >> recording)
       override def completeWrite(id: PhotoWriteIntentId): Db[PhotoRepository.CompleteWriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.CompleteWriteResult](events.update(_ :+ "complete") >> completing)
+        Kleisli.liftF[
+          IO,
+          Unit,
+          PhotoRepository.CompleteWriteResult
+        ](IO.raiseError[PhotoRepository.CompleteWriteResult](new AssertionError("Unexpected completion outside recovery")))
       override def listUnfinishedWrites: Db[PhotoRepository.ListUnfinishedWritesResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.ListUnfinishedWritesResult](PhotoRepository.ListUnfinishedWritesResult.Failed.pure[IO])
     val selectedQuality = quality
@@ -420,5 +383,10 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       override def quality: ThumbnailQuality                                                   = selectedQuality
       override def generate(value: PhotoContent): IO[PhotoThumbnailGenerator.GenerationResult] =
         IO(assertEquals(value, content)) >> events.update(_ :+ "generate") >> generation
-    PhotoManager.make(photoStorage, repository, generator)
+    val recovery = new PhotoWriteRecovery[IO]:
+      override def recover: IO[PhotoWriteRecovery.RecoveryResult] =
+        IO.raiseError[PhotoWriteRecovery.RecoveryResult](new AssertionError("Unexpected startup recovery"))
+      override def resolve(intent: PhotoWriteIntent): IO[PhotoWriteRecovery.RecoveryResult] =
+        events.update(_ :+ "resolve") >> finalization(intent)
+    PhotoManager.make(photoStorage, repository, generator, recovery)
   // scalafix:on DisableSyntax.defaultArgs

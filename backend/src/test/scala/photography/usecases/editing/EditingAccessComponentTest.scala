@@ -1,6 +1,5 @@
 package photography.usecases.editing
 
-import cats.data.NonEmptyList
 import cats.effect.{Deferred, IO, Outcome, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
@@ -13,7 +12,7 @@ import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.SpreadId
 import photography.ports.album.AlbumCompositionRepository
-import photography.ports.album.AlbumCompositionRepository.{CompositionResult, Member}
+import photography.ports.album.AlbumCompositionRepository.{CompositionResult, OpeningResult}
 import photography.ports.photo.PhotoPlacementRepository
 import photography.ports.photo.PhotoPlacementRepository.TargetResult
 import photography.usecases.editing.EditingAccess.{Protection, Result}
@@ -31,11 +30,9 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
   private val grant             = GrantId(new UUID(0L, 10L))
   private val chapter           = ChapterId(new UUID(0L, 11L))
   private val photo             = PhotoId(new UUID(0L, 12L))
-  private val found             = CompositionResult.Found(NonEmptyList.one(Member(opening, maybeChapter = None)))
-  private val unusedMembership  = new AlbumCompositionRepository.MembershipRead[IO]:
-    override def composition(album: AlbumId): IO[CompositionResult] =
-      IO.raiseError[CompositionResult](new AssertionError("Unexpected membership acquisition"))
-  private val unusedTargets = new PhotoPlacementRepository.TargetRead[IO]:
+  private val found             = OpeningResult.Found(opening)
+  private val unusedMembership  = buildMembership((_, _) => IO.raiseError[OpeningResult](new AssertionError("Unexpected opening acquisition")))
+  private val unusedTargets     = new PhotoPlacementRepository.TargetRead[IO]:
     override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
       IO.raiseError[TargetResult](new AssertionError("Unexpected photo target acquisition"))
 
@@ -70,105 +67,60 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         yield
           val authorization = maybeTarget.fold[Call](Call.Affected(connection, Set.empty, Some(grant)))(Call.Target(connection, _, grant))
           val resolved      = Vector(Call.Connection(connection), Call.PhotoTarget(chapter, photo))
+          val expected      =
+            resolved ++ Vector(authorization, Call.Written) ++ resolved ++ Vector(Call.Affected(connection, Set.empty, None), Call.Written) ++
+              resolved ++ Vector(authorization) ++ resolved ++ resolved ++ Vector(Call.Connection(connection))
           assertEquals(saved, Result.Completed(()))
           assertEquals(unplaced, Result.Completed(()))
           assertEquals(rejected, Result.Rejected[Unit](Failure.StaleGrant))
           assertEquals(missing, Result.PhotoNotFound[Unit]())
           assertEquals(failed, Result.Failed[Unit]())
           assertEquals(obsolete, Result.Rejected[Unit](Failure.ObsoleteConnection))
-          assertEquals(
-            observed,
-            resolved ++ Vector(authorization, Call.Written) ++ resolved ++ Vector(Call.Affected(connection, Set.empty, None), Call.Written) ++
-              resolved ++ Vector(authorization) ++
-              resolved ++ resolved ++ Vector(Call.Connection(connection))
-          )
+          assertEquals(observed, expected)
   }
 
-  test("should resolve current opening membership and preserve missing, failed and obsolete outcomes without writing"):
-    Mutex[IO].flatMap: mutex =>
-      given Mutex[IO] = mutex
-      for
-        calls      <- Ref.of[IO, Vector[Call]](Vector.empty)
-        connected  <- Ref.of[IO, ConnectionAuthorizationResult](ConnectionAuthorizationResult.Authorized)
-        authorized <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
-        current    <- Ref.of[IO, CompositionResult](found)
-        written    <- Ref.of[IO, Int](0)
-        sessions   = new AuthorizationStub(calls, connected.get, authorized.get)
-        membership = new AlbumCompositionRepository.MembershipRead[IO]:
-          override def composition(id: AlbumId): IO[CompositionResult] = calls.update(_ :+ Call.Membership(id)) >> current.get
-        access = EditingAccess.make(sessions, membership, unusedTargets)
-        save   = access.run(connection, Protection.OwnAlbumOpening(album), Some(grant))(calls.update(_ :+ Call.Written) >> written.update(_ + 1))
-        saved    <- save
-        _        <- current.set(CompositionResult.Found(NonEmptyList.one(Member(SpreadId(new UUID(0L, 4L)), maybeChapter = None))))
-        _        <- authorized.set(AuthorizationResult.Rejected(Failure.StaleGrant))
-        replaced <- save
-        _        <- current.set(CompositionResult.AlbumNotFound)
-        missing  <- save
-        _        <- current.set(CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
-        failed   <- save
-        _        <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
-        obsolete <- save
-        observed <- calls.get
-        count    <- written.get
-      yield
-        assertEquals(saved, Result.Completed(()))
-        assertEquals(replaced, Result.Rejected[Unit](Failure.StaleGrant))
-        assertEquals(missing, Result.AlbumNotFound[Unit]())
-        assertEquals(failed, Result.Failed[Unit]())
-        assertEquals(obsolete, Result.Rejected[Unit](Failure.ObsoleteConnection))
-        assertEquals(
-          observed,
-          Vector(
-            Call.Connection(connection),
-            Call.Membership(album),
-            Call.Target(connection, target, grant),
-            Call.Written,
-            Call.Connection(connection),
-            Call.Membership(album),
-            Call.Target(connection, EditingTarget.Spread(SpreadId(new UUID(0L, 4L))), grant),
-            Call.Connection(connection),
-            Call.Membership(album),
-            Call.Connection(connection),
-            Call.Membership(album),
-            Call.Connection(connection)
-          )
-        )
-        assertEquals(count, 1)
+  Vector(none[ChapterId], chapter.some).foreach { maybeChapter =>
+    test(s"should resolve only opening $maybeChapter and preserve missing, failed, stale and obsolete outcomes"):
+      Mutex[IO].flatMap: mutex =>
+        given Mutex[IO]     = mutex
+        val protection      = maybeChapter.fold[Protection](Protection.OwnAlbumOpening(album))(Protection.OwnChapterOpening(album, _))
+        val replacedOpening = SpreadId(new UUID(0L, 4L))
+        val relationship    = Vector(Call.Connection(connection), Call.Opening(album, maybeChapter))
 
-  test("should resolve the chapter opening rather than the album opening or a photo spread and reject absent membership"):
-    Mutex[IO].flatMap: mutex =>
-      given Mutex[IO] = mutex
-      val members     = CompositionResult.Found(NonEmptyList.of(
-        Member(SpreadId(new UUID(0L, 13L)), maybeChapter = None),
-        Member(opening, maybeChapter = Some(chapter)),
-        Member(SpreadId(new UUID(0L, 14L)), maybeChapter = Some(chapter))
-      ))
-      for
-        calls   <- Ref.of[IO, Vector[Call]](Vector.empty)
-        current <- Ref.of[IO, CompositionResult](members)
-        sessions   = new AuthorizationStub(calls, ConnectionAuthorizationResult.Authorized.pure[IO], AuthorizationResult.Authorized.pure[IO])
-        membership = new AlbumCompositionRepository.MembershipRead[IO]:
-          override def composition(id: AlbumId): IO[CompositionResult] = calls.update(_ :+ Call.Membership(id)) >> current.get
-        access = EditingAccess.make(sessions, membership, unusedTargets)
-        save   = access.run(connection, Protection.OwnChapterOpening(album, chapter), Some(grant))(calls.update(_ :+ Call.Written))
-        saved       <- save
-        _           <- current.set(found)
-        missing     <- save
-        _           <- current.set(CompositionResult.AlbumNotFound)
-        absentAlbum <- save
-        _           <- current.set(CompositionResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
-        failed      <- save
-        observed    <- calls.get
-      yield
-        assertEquals(saved, Result.Completed(()))
-        assertEquals(missing, Result.ChapterNotFound[Unit]())
-        assertEquals(absentAlbum, Result.AlbumNotFound[Unit]())
-        assertEquals(failed, Result.Failed[Unit]())
-        assertEquals(
-          observed,
-          Vector(Call.Connection(connection), Call.Membership(album), Call.Target(connection, target, grant), Call.Written) ++
-            Vector.fill(3)(Vector(Call.Connection(connection), Call.Membership(album))).flatten
-        )
+        for
+          calls      <- Ref.of[IO, Vector[Call]](Vector.empty)
+          connected  <- Ref.of[IO, ConnectionAuthorizationResult](ConnectionAuthorizationResult.Authorized)
+          authorized <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
+          current    <- Ref.of[IO, OpeningResult](found)
+          sessions   = new AuthorizationStub(calls, connected.get, authorized.get)
+          membership = buildMembership((id, requestedChapter) => calls.update(_ :+ Call.Opening(id, requestedChapter)) >> current.get)
+          access     = EditingAccess.make(sessions, membership, unusedTargets)
+          save       = access.run(connection, protection, grant.some)(calls.update(_ :+ Call.Written))
+          saved       <- save
+          _           <- current.set(OpeningResult.Found(replacedOpening))
+          _           <- authorized.set(AuthorizationResult.Rejected(Failure.StaleGrant))
+          replaced    <- save
+          _           <- current.set(maybeChapter.fold[OpeningResult](OpeningResult.AlbumNotFound)(_ => OpeningResult.ChapterNotFound))
+          missing     <- save
+          _           <- current.set(OpeningResult.AlbumNotFound)
+          absentAlbum <- save
+          _           <- current.set(OpeningResult.Failed(AlbumCompositionRepository.Failure.Unavailable))
+          failed      <- save
+          _           <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
+          obsolete    <- save
+          observed    <- calls.get
+        yield
+          val initial  = relationship ++ Vector(Call.Target(connection, target, grant), Call.Written)
+          val changed  = relationship :+ Call.Target(connection, EditingTarget.Spread(replacedOpening), grant)
+          val expected = initial ++ changed ++ Vector.fill(3)(relationship).flatten :+ Call.Connection(connection)
+          assertEquals(saved, Result.Completed(()))
+          assertEquals(replaced, Result.Rejected[Unit](Failure.StaleGrant))
+          assertEquals(missing, maybeChapter.fold[Result[Unit]](Result.AlbumNotFound())(_ => Result.ChapterNotFound()))
+          assertEquals(absentAlbum, Result.AlbumNotFound[Unit]())
+          assertEquals(failed, Result.Failed[Unit]())
+          assertEquals(obsolete, Result.Rejected[Unit](Failure.ObsoleteConnection))
+          assertEquals(observed, expected)
+  }
 
   Vector(Protection.OwnAlbumOpening(album), Protection.OwnChapterOpening(album, chapter), Protection.OwnPhotoSpread(chapter, photo)).foreach {
     protection =>
@@ -183,23 +135,17 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
               finish        <- Deferred[IO, Unit]
               written       <- Ref.of[IO, Int](0)
               sessions   = new AuthorizationStub(calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
-              membership = new AlbumCompositionRepository.MembershipRead[IO]:
-                override def composition(id: AlbumId): IO[CompositionResult] =
-                  val resolved = protection match
-                    case Protection.OwnChapterOpening(_, _) =>
-                      CompositionResult.Found(NonEmptyList.of(
-                        Member(SpreadId(new UUID(0L, 13L)), maybeChapter = None),
-                        Member(opening, maybeChapter = Some(chapter))
-                      ))
-                    case _ => found
-                  calls.update(_ :+ Call.Membership(id)) >> entered.complete(()).void >> finish.get.as(resolved)
+              membership = buildMembership { (id, maybeChapter) =>
+                calls.update(_ :+ Call.Opening(id, maybeChapter)) >> entered.complete(()).void >> finish.get.as(found)
+              }
               targets = new PhotoPlacementRepository.TargetRead[IO]:
                 override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
                   calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> entered.complete(()).void >> finish.get.as(TargetResult.Found(Some(target)))
               access       = EditingAccess.make(sessions, membership, targets)
               relationship = protection match
-                case Protection.OwnAlbumOpening(_) | Protection.OwnChapterOpening(_, _) => Call.Membership(album)
-                case _                                                                  => Call.PhotoTarget(chapter, photo)
+                case Protection.OwnAlbumOpening(_)       => Call.Opening(album, maybeChapter = None)
+                case Protection.OwnChapterOpening(_, id) => Call.Opening(album, maybeChapter = id.some)
+                case _                                   => Call.PhotoTarget(chapter, photo)
               writing  <- access.run(connection, protection, Some(grant))(written.update(_ + 1)).start
               _        <- entered.get
               paused   <- calls.get
@@ -212,15 +158,13 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
               after    <- written.get
               observed <- calls.get
             yield
+              val expected = Vector.fill(2)(Vector(Call.Connection(connection), relationship, Call.Target(connection, target, grant))).flatten
               assertEquals(paused, Vector(Call.Connection(connection), relationship))
               assertEquals(rejected, Result.Rejected[Unit](failure))
               assertEquals(before, 0)
               assertEquals(saved, Result.Completed(()))
               assertEquals(after, 1)
-              assertEquals(
-                observed,
-                Vector.fill(2)(Vector(Call.Connection(connection), relationship, Call.Target(connection, target, grant))).flatten
-              )
+              assertEquals(observed, expected)
       }
   }
 
@@ -289,9 +233,9 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           finish   <- Deferred[IO, Unit]
           acquired <- Deferred[IO, (SelectResult, Int)]
           written  <- Ref.of[IO, Int](0)
-          membership = new AlbumCompositionRepository.MembershipRead[IO]:
-            override def composition(id: AlbumId): IO[CompositionResult] =
-              IO(assertEquals(id, album)) >> entered.complete(()).void >> finish.get.as(found)
+          membership = buildMembership { (id, maybeChapter) =>
+            IO(assertEquals(id, album)) >> IO(assertEquals(maybeChapter, None)) >> entered.complete(()).void >> finish.get.as(found)
+          }
           access = EditingAccess.make(sessions, membership, unusedTargets)
           writing   <- access.run(owner, Protection.OwnAlbumOpening(album), Some(lock.grant))(written.update(_ + 1)).start
           _         <- entered.get
@@ -330,6 +274,13 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           count    <- written.get
           observed <- calls.get
         yield
+          val expected = Vector(
+            Call.Target(connection, destination, grant),
+            Call.Affected(connection, Set(destination), Some(grant)),
+            Call.Affected(connection, Set(destination), None),
+            Call.Target(connection, destination, grant),
+            Call.Affected(connection, Set(destination), None)
+          )
           assertEquals(missing, Result.Rejected[Unit](Failure.StaleGrant))
           assertEquals(blocked, Result.Blocked[Unit](EditorId(new UUID(0L, 6L)), "Other"))
           assertEquals(saved, Result.Completed(()))
@@ -337,16 +288,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           assertEquals(unlocked, Result.Completed(()))
           assertEquals(rejected, Result.Rejected[Unit](Failure.StaleGrant))
           assertEquals(count, 3)
-          assertEquals(
-            observed,
-            Vector(
-              Call.Target(connection, destination, grant),
-              Call.Affected(connection, Set(destination), Some(grant)),
-              Call.Affected(connection, Set(destination), None),
-              Call.Target(connection, destination, grant),
-              Call.Affected(connection, Set(destination), None)
-            )
-          )
+          assertEquals(observed, expected)
   }
 
   test("should allow independent shared writes and release coordination after application failure"):
@@ -367,28 +309,32 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         count       <- written.get
         observed    <- calls.get
       yield
+        val expected = Vector(
+          Call.Affected(connection, Set(target), None),
+          Call.Affected(connection, Set(target), None),
+          Call.Connection(connection),
+          Call.Connection(connection)
+        )
         assertEquals(failed, cause.asLeft[Result[Unit]])
         assertEquals(saved, Result.Completed(()))
         assertEquals(independent, Result.Completed(()))
         assertEquals(obsolete, Result.Rejected[Unit](Failure.ObsoleteConnection))
         assertEquals(count, 2)
-        assertEquals(
-          observed,
-          Vector(
-            Call.Affected(connection, Set(target), None),
-            Call.Affected(connection, Set(target), None),
-            Call.Connection(connection),
-            Call.Connection(connection)
-          )
-        )
+        assertEquals(observed, expected)
 
   private enum Call:
     case Connection(connection: EditorConnection)
     case Target(connection: EditorConnection, target: EditingTarget, grant: GrantId)
     case Affected(connection: EditorConnection, targets: Set[EditingTarget], maybeGrant: Option[GrantId])
-    case Membership(album: AlbumId)
+    case Opening(album: AlbumId, maybeChapter: Option[ChapterId])
     case PhotoTarget(chapter: ChapterId, photo: PhotoId)
     case Written
+
+  private def buildMembership(read: (AlbumId, Option[ChapterId]) => IO[OpeningResult]) =
+    new AlbumCompositionRepository.MembershipRead[IO]:
+      override def composition(album: AlbumId): IO[CompositionResult] =
+        IO.raiseError[CompositionResult](new AssertionError("Unexpected whole-album membership acquisition"))
+      override def opening(album: AlbumId, maybeChapter: Option[ChapterId]): IO[OpeningResult] = read(album, maybeChapter)
 
   private class AuthorizationStub(calls: Ref[IO, Vector[Call]], connected: IO[ConnectionAuthorizationResult], authorized: IO[AuthorizationResult])
       extends EditorSessionManager[IO]:

@@ -69,7 +69,7 @@ object ChapterPlanning:
           if existing.destination.isHome =!= ((name: String) === "Home") then ChapterConflict.TypeChange.some
           else findMetadataConflict(year, chapters = others, name, resolved, folder)
         val order = orderChapters(chapters = chapters, id, isHome = (name: String) === "Home", resolved)
-        val plan  = UpdatePlan(existing.destination.id, sourceChanged = (existing.sourceFolder: String) =!= folder, resolved, order = order)
+        val plan  = UpdatePlan(existing.sourceFolder, resolved, order = order)
         maybeConflict.fold[UpdateResult](UpdateResult.Planned(plan))(UpdateResult.Rejected(_))
 
     override def orderChapters(chapters: Vector[ChapterMetadata], id: ChapterId, isHome: Boolean, period: VisitPeriod): NonEmptyList[ChapterId] =
@@ -88,12 +88,9 @@ object ChapterPlanning:
         case ListChapterStartTemplatesResult.Listed(available) =>
           val template = available.head
           for
-            id          <- IdGenerator[F].generateId.map(ChapterId(_))
-            opening     <- buildOpening(template.id, photoSlots = template.photoSlots, template.textSlot)
-            destination <- IdGenerator[F].generateId.map(DestinationId(_))
-          yield
-            val chapter = ChapterRepository.NewChapter(id, destination, name, countries = countries, period, description = "", source, opening)
-            BuildResult.Built(chapter)
+            id      <- IdGenerator[F].generateId.map(ChapterId(_))
+            opening <- buildOpening(template.id, photoSlots = template.photoSlots, template.textSlot)
+          yield BuildResult.Built(ChapterRepository.NewChapter(id, name, countries = countries, period, description = "", source, opening))
 
     private def findMetadataConflict(
         year: AlbumYear,
@@ -142,5 +139,6 @@ object ChapterPlanning:
     case Built(chapter: ChapterRepository.NewChapter)
     case Failed
 
-  final case class UpdatePlan(previousDestination: DestinationId, sourceChanged: Boolean, period: VisitPeriod, order: NonEmptyList[ChapterId])
+  final case class UpdatePlan(previousSource: PhotoSource, period: VisitPeriod, order: NonEmptyList[ChapterId]):
+    def changesSource(source: PhotoSource): Boolean = (previousSource: String) =!= source
   final private case class ChapterOrder(id: ChapterId, isHome: Boolean, period: VisitPeriod)

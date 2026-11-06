@@ -148,7 +148,8 @@ object SpreadManager:
                   checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
                     permission.flatMap(_ => change(target.spread)) match
                       case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
-                      case Right(updated) => spreads.replace(updated).as(PlacementResult.Saved(updated): PlacementResult)
+                      case Right(updated) =>
+                        spreads.replacePlacements(updated.id, placements = updated.placements).as(PlacementResult.Saved(updated): PlacementResult)
           Transaction[Db, F].run(mutation)
 
     override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): F[SetBleedResult] =
@@ -157,7 +158,7 @@ object SpreadManager:
           _       <- composition.hasAlbum(album).map(Either.cond(_, (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
           target  <- findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
           changed <- target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult).eitherT[Db]
-          _       <- spreads.replace(changed).lift[SetBleedResult]
+          _       <- spreads.replaceBleed(changed.id, edges = changed.photos.map(slot => slot.id -> slot.bleed).toMap).lift[SetBleedResult]
         yield SetBleedResult.Saved(changed): SetBleedResult
       act(SetBleedResult.Failed)(Transaction[Db, F].run(mutation.merge))
 

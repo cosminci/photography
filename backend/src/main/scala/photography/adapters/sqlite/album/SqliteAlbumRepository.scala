@@ -184,16 +184,14 @@ object SqliteAlbumRepository:
       load(id).flatMap(_.toRight(missingAlbum).liftTo[ConnectionIO])
 
     private def loadChapterMetadata(albumId: UUID) =
-      val select = sql"""SELECT c.id, d.id, d.name, c.description, c.start_ms, c.end_ms, c.source_folder
-                        FROM chapter c LEFT JOIN destination d ON d.id = c.destination_id
-                        WHERE c.album_id = $albumId ORDER BY c.position"""
+      val select = sql"""SELECT id, name, description, start_ms, end_ms, source_folder
+                        FROM chapter WHERE album_id = $albumId ORDER BY position"""
       validateChapters(albumId) >>
-        select.query[(UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)].to[Vector].flatMap(_.traverse(decodeChapterMetadata))
+        select.query[(UUID, DestinationName, String, VisitPeriod, PhotoSource)].to[Vector].flatMap(_.traverse(decodeChapterMetadata))
 
-    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)) =
-      val (id, destination, name, description, period, folder) = row
-      loadCountries(destination).map: countries =>
-        ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
+    private def decodeChapterMetadata(row: (UUID, DestinationName, String, VisitPeriod, PhotoSource)) =
+      val (id, name, description, period, folder) = row
+      loadCountries(id).map(countries => ChapterMetadata(ChapterId(id), Destination(name, countries = countries), period, folder, description))
 
     private def decodePeriod(start: Instant, end: Instant) =
       val days    = ChronoUnit.DAYS.between(start, end)
@@ -201,9 +199,9 @@ object SqliteAlbumRepository:
       Either.cond(aligned, (), "Expected UTC calendar days").flatMap(_ => days.refineEither[Positive])
         .map(length => VisitPeriod(start.atOffset(ZoneOffset.UTC).toLocalDate, days = length))
 
-    private def loadCountries(destination: UUID) =
-      val select = sql"""SELECT k.id, k.code, k.name, k.flag FROM destination_country d
-                         LEFT JOIN country k ON k.id = d.country_id WHERE d.destination_id = $destination ORDER BY d.position"""
+    private def loadCountries(chapter: UUID) =
+      val select = sql"""SELECT k.id, k.code, k.name, k.flag FROM chapter_country c
+                         LEFT JOIN country k ON k.id = c.country_id WHERE c.chapter_id = $chapter ORDER BY c.position"""
       select.query[(UUID, CountryCode, CountryName, AbsoluteLocation)].to[List].flatMap: rows =>
         val countries = rows.map { case (id, code, name, flag) => Country(CountryId(id), code = code, name = name, flag) }
         NonEmptyList.fromList(countries).toRight(new IllegalArgumentException("Destination must have countries")).liftTo[ConnectionIO]

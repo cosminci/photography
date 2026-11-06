@@ -22,7 +22,7 @@ final class ChapterPlanningComponentTest extends FunSuite:
     override def generateId: IO[UUID] = new UUID(0L, 1L).pure[IO]
   private val country = Country(CountryId(new UUID(0L, 2L)), code = "JP", name = "Japan", AbsoluteLocation(Path.of("/flags/jp.svg")))
   private val chapter =
-    val destination = Destination(DestinationId(new UUID(0L, 6L)), name = "Kyoto", countries = NonEmptyList.one(country))
+    val destination = Destination(name = "Kyoto", countries = NonEmptyList.one(country))
     val period      = VisitPeriod(firstDay = LocalDate.of(2026, 5, 1), days = 2)
     ChapterMetadata(
       ChapterId(new UUID(0L, 7L)),
@@ -78,7 +78,7 @@ final class ChapterPlanningComponentTest extends FunSuite:
     val chapters      = Vector(chapter)
     val period        = Period.Dates(chapter.period)
     val expectedOrder = NonEmptyList.one(chapter.id)
-    val expected      = ChapterPlanning.UpdatePlan(chapter.destination.id, sourceChanged = false, chapter.period, order = expectedOrder)
+    val expected      = ChapterPlanning.UpdatePlan(chapter.sourceFolder, chapter.period, order = expectedOrder)
 
     val unchanged = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, chapter.sourceFolder)
     val changed   = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, folder = "/photos/new")
@@ -86,7 +86,9 @@ final class ChapterPlanningComponentTest extends FunSuite:
     val typeChange = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Home", Period.AlbumYear, chapter.sourceFolder)
 
     assertEquals(unchanged, UpdateResult.Planned(expected))
-    assertEquals(changed, UpdateResult.Planned(expected.copy(sourceChanged = true)))
+    assertEquals(changed, UpdateResult.Planned(expected))
+    assertEquals(expected.changesSource(chapter.sourceFolder), false)
+    assertEquals(expected.changesSource("/photos/new"), true)
     assertEquals(missing, UpdateResult.ChapterNotFound)
     assertEquals(typeChange, UpdateResult.Rejected(ChapterConflict.TypeChange))
 

@@ -40,7 +40,6 @@ object ChapterRepository:
   final case class Update(
       album: AlbumId,
       chapter: ChapterId,
-      destination: DestinationId,
       name: DestinationName,
       countries: NonEmptyList[CountryId],
       period: VisitPeriod,
@@ -49,7 +48,6 @@ object ChapterRepository:
   )
   final case class NewChapter(
       id: ChapterId,
-      destinationId: DestinationId,
       name: DestinationName,
       countries: NonEmptyList[CountryId],
       period: VisitPeriod,

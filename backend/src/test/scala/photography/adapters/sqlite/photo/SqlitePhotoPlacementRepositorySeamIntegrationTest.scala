@@ -61,10 +61,9 @@ final class SqlitePhotoPlacementRepositorySeamIntegrationTest extends CatsEffect
         val targetRead = SqlitePhotoPlacementRepository.makeTargetRead[IO](xa)
         val seed       =
           sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES (${album.value}, 2026, 'Album', '', 0)".update.run >>
-            sql"INSERT INTO destination VALUES ('d', 'Trip')".update.run >>
-            sql"INSERT INTO chapter VALUES (${chapter.value}, ${album.value}, 'd', '', 0, 1, 0, '/photos')".update.run >>
-            sql"INSERT INTO chapter VALUES (${other.value}, ${album.value}, 'd', '', 0, 1, 1, '/other')".update.run >>
-            sql"INSERT INTO chapter VALUES (${unplaced.value}, ${album.value}, 'd', '', 0, 1, 2, '/empty')".update.run >>
+            sql"INSERT INTO chapter VALUES (${chapter.value}, ${album.value}, 'Trip', '', 0, 1, 0, '/photos')".update.run >>
+            sql"INSERT INTO chapter VALUES (${other.value}, ${album.value}, 'Trip', '', 0, 1, 1, '/other')".update.run >>
+            sql"INSERT INTO chapter VALUES (${unplaced.value}, ${album.value}, 'Trip', '', 0, 1, 2, '/empty')".update.run >>
             sql"INSERT INTO cover VALUES (${album.value}, 'front')".update.run >>
             sql"INSERT INTO cover_slot VALUES ('front', ${album.value}, 'front'), ('back', ${album.value}, 'back')".update.run >>
             sql"INSERT INTO spread_template VALUES ('template', 'Test', 'photos_only')".update.run >>
