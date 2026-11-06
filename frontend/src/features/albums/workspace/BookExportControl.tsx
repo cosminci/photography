@@ -20,13 +20,13 @@ export function BookExportControl(props: {
   onCleanup(() => {
     active = false;
   });
-  const reason = () => (pending() ? "Validating the saved book. Please wait." : props.unavailable);
+  const reason = () => (pending() ? "Checking original photographs and preparing export." : props.unavailable);
   async function exportBook() {
     const album = props.album;
     const year = props.year;
     const focused = document.activeElement === button;
     setPending(true);
-    setMessage("Validating the saved book...");
+    setMessage("Checking original photographs and preparing export.");
     setIssues([]);
     if (focused) status.focus({ preventScroll: true });
     try {
@@ -63,7 +63,7 @@ export function BookExportControl(props: {
       role="status"
       aria-live="polite"
       tabIndex={-1}
-      classList={{ "visually-hidden": message() === undefined }}
+      classList={{ "visually-hidden": pending() || message() === undefined }}
     >
       <Show when={reason() ?? message()}>{(text) => <p>{text()}</p>}</Show>
       <Show when={issues().length > 0}>
@@ -93,12 +93,21 @@ export function BookExportControl(props: {
         aria-describedby={feedback}
         onClick={() => void exportBook()}
       >
-        <svg class="reader-entry-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="2" y="2" width="20" height="20" rx="2" />
-          <text x="5" y="17" stroke="none" fill="currentColor" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
-            Id
-          </text>
-        </svg>
+        <Show
+          when={pending()}
+          fallback={
+            <svg class="reader-entry-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="2" y="2" width="20" height="20" rx="2" />
+              <text x="5" y="17" stroke="none" fill="currentColor" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+                Id
+              </text>
+            </svg>
+          }
+        >
+          <svg class="reader-entry-icon export-processing" viewBox="0 0 24 24" role="img" aria-label="Export in progress">
+            <circle cx="12" cy="12" r="8" stroke-dasharray="36 15" />
+          </svg>
+        </Show>
       </button>
       <Show when={props.feedbackMount} fallback={output}>
         {(mount) => <Portal mount={mount()}>{output}</Portal>}

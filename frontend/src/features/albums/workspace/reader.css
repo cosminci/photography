@@ -45,6 +45,19 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+.export-processing {
+  animation: export-processing 1s linear infinite;
+}
+@keyframes export-processing {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .export-processing {
+    animation: none;
+  }
+}
 .reader-stage:fullscreen {
   display: grid;
   place-items: center;

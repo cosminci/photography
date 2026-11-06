@@ -41,11 +41,15 @@ describe("saved-book InDesign export", () => {
     fireEvent.click(screen.getByRole("button"));
     expect(screen.getByRole("button")).toBeDisabled();
     expect(screen.getByRole("button")).toHaveAttribute("aria-busy", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Validating");
+    expect(screen.getByRole("img", { name: "Export in progress" })).toBeInTheDocument();
+    expect(screen.queryByText("Id")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Checking original photographs and preparing export.");
     finish({ content: '{"formatVersion":1,"interior":{},"cover":{}}', warnings: [] });
 
     await waitFor(() => expect(screen.getByRole("button")).toBeEnabled());
     expect(screen.getByRole("button")).toHaveAttribute("aria-busy", "false");
+    expect(screen.queryByRole("img", { name: "Export in progress" })).not.toBeInTheDocument();
+    expect(screen.getByText("Id")).toBeInTheDocument();
     expect(exportBook).toHaveBeenCalledExactlyOnceWith("book");
     expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(expect.any(Blob));
     expect(click).toHaveBeenCalledOnce();
