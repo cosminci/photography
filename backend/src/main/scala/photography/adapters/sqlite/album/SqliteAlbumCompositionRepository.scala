@@ -13,7 +13,7 @@ import photography.adapters.sqlite.SqliteAlbumQueries
 import photography.domain.album.*
 import photography.domain.layout.*
 import photography.ports.album.AlbumCompositionRepository
-import photography.ports.album.AlbumCompositionRepository.{CompositionResult, Failure, Located, Member, SpreadResult}
+import photography.ports.album.AlbumCompositionRepository.{CompositionResult, Failure, Located, Member, OpeningResult, SpreadResult}
 import java.util.UUID
 
 object SqliteAlbumCompositionRepository:
@@ -34,6 +34,19 @@ object SqliteAlbumCompositionRepository:
         case true  => loadMembership(album).map[CompositionResult](CompositionResult.Found(_))
       resolve(read).handleErrorWith: error =>
         Logger[F].error(error)("SQLite composition read failed").as(CompositionResult.Failed(Failure.Unavailable))
+
+    override def opening(album: AlbumId, maybeChapter: Option[ChapterId]): F[OpeningResult] =
+      val read = hasSavedAlbum(album).flatMap:
+        case false => OpeningResult.AlbumNotFound.pure[ConnectionIO]
+        case true  => maybeChapter match
+            case None          => loadOpeningMember(album).map(member => OpeningResult.Found(member.id))
+            case Some(chapter) =>
+              sql"""SELECT s.id FROM chapter c LEFT JOIN spread s ON s.chapter_id = c.id AND s.kind = 'chapter_start' AND s.position = 0
+                WHERE c.id = ${chapter.value} AND c.album_id = ${album.value}""".query[Option[UUID]].option.flatMap:
+                case None           => OpeningResult.ChapterNotFound.pure[ConnectionIO]
+                case Some(Some(id)) => OpeningResult.Found(SpreadId(id)).pure[ConnectionIO]
+                case Some(None)     => new IllegalArgumentException("Missing chapter opening").raiseError[ConnectionIO, OpeningResult]
+      resolve(read).handleErrorWith(error => Logger[F].error(error)("SQLite opening read failed").as(OpeningResult.Failed(Failure.Unavailable)))
 
     private def loadMembership(album: AlbumId) =
       for

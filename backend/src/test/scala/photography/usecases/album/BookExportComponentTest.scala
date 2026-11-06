@@ -65,7 +65,7 @@ final class BookExportComponentTest extends CatsEffectSuite:
   )
   private val chapter = Chapter(
     chapterId,
-    Destination(DestinationId(new UUID(0L, 13L)), "Hội An", NonEmptyList.one(country)),
+    Destination("Hội An", NonEmptyList.one(country)),
     VisitPeriod(LocalDate.of(2025, 1, 1), days = 1L),
     "Retained Ș description",
     selected,
@@ -560,6 +560,8 @@ final class BookExportComponentTest extends CatsEffectSuite:
       Vector[Located](Located.ChapterOpening(chapter.id, chapter.opening)) ++ chapter.spreads.map(Located.Photo(chapter.id, _))
     ))
     new AlbumCompositionRepository[IO] with AlbumCompositionRepository.MembershipRead[IO]:
+      override def opening(id: AlbumId, maybeChapter: Option[ChapterId]): IO[AlbumCompositionRepository.OpeningResult] =
+        fail("Export reads membership")
       override def composition(id: AlbumId): IO[CompositionResult] =
         maybeMembership.getOrElse(CompositionResult.Found(NonEmptyList.fromList(located.map(value =>
           Member(value.spread.id, maybeChapter = None)

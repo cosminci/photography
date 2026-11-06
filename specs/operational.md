@@ -53,7 +53,7 @@ Preserve immutable thumbnail caching independently of API and event responses. [
 
 ## Editing access and recovery
 
-The single backend keeps session and target authority in memory; existing SQLite session/lock tables remain dormant. Restart invalidates old credentials and grants while preserving saved albums and remembered browser identity and alias.
+The single backend keeps session and target authority in memory. Restart invalidates old credentials and grants while preserving saved albums and remembered browser identity and alias.
 
 Accepted session heartbeats and target renewals extend separate leases. Expiry releases abandoned access after a crash or network loss; a failed heartbeat attempt extends nothing.
 

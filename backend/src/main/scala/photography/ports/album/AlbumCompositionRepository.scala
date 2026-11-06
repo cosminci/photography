@@ -13,6 +13,12 @@ trait AlbumCompositionRepository[Db[_]]:
 object AlbumCompositionRepository:
   trait MembershipRead[Db[_]]:
     def composition(album: AlbumId): Db[CompositionResult]
+    def opening(album: AlbumId, maybeChapter: Option[ChapterId]): Db[OpeningResult]
+
+  enum OpeningResult:
+    case Found(spread: SpreadId)
+    case AlbumNotFound, ChapterNotFound
+    case Failed(reason: Failure)
 
   enum CompositionResult:
     case Found(members: NonEmptyList[Member])

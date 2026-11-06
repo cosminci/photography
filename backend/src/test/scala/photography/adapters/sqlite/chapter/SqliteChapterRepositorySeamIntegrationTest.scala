@@ -46,8 +46,8 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
   )
   private val chapters    = SqliteChapterRepository.make
   private val composition = SqliteAlbumCompositionRepository.make
-  private val countRows   = sql"""SELECT (SELECT count(*) FROM chapter) + (SELECT count(*) FROM destination) +
-    (SELECT count(*) FROM destination_country) + (SELECT count(*) FROM spread) +
+  private val countRows   = sql"""SELECT (SELECT count(*) FROM chapter) +
+    (SELECT count(*) FROM chapter_country) + (SELECT count(*) FROM spread) +
     (SELECT count(*) FROM spread_photo_slot) + (SELECT count(*) FROM spread_text_slot)""".query[Long].unique
 
   test("should replace ordered chapter gear completely, including clearing it, without changing chapter content"):
@@ -235,7 +235,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
           assertEquals(retained, ChaptersResult.Found(Vector(buildMetadata(first))))
     }
 
-  test("should persist supplied chapter order and isolate shared destinations without changing description, gear or openings"):
+  test("should persist supplied chapter order and chapter-owned destinations without changing description, gear or openings"):
     buildTransactor.use: xa =>
       val albums  = SqliteAlbumRepository.make[IO](xa)
       val catalog = SqliteGearRepository.make[IO](xa)
@@ -245,13 +245,11 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         created <- chapters.create(album, first, NonEmptyList.one(first.id)).transact(xa)
         added   <- chapters.create(album, second, NonEmptyList.of(second.id, first.id)).transact(xa)
         initial <- albums.chapters(album)
-        _       <- sql"UPDATE chapter SET destination_id = ${first.destinationId.value} WHERE id = ${second.id.value}".update.run.transact(xa)
         _       <- catalog.createCamera(fixedBody)
         _       <- chapters.replaceGear(album, first.id, selection.take(1)).transact(xa)
         updated <- chapters.update(Update(
           album,
           first.id,
-          DestinationId(new UUID(99L, 1L)),
           "Changed",
           NonEmptyList.of(otherCountry.id, country.id),
           period,
@@ -263,12 +261,10 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         firstOpening  <- composition.findSpread(album, first.opening.id).transact(xa)
         secondOpening <- composition.findSpread(album, second.opening.id).transact(xa)
       yield
-        val originalDestination = buildMetadata(first).destination
-        val changedDestination  =
-          originalDestination.copy(id = DestinationId(new UUID(99L, 1L)), name = "Changed", countries = NonEmptyList.of(otherCountry, country))
-        val expected = Vector(
+        val changedDestination = Destination(name = "Changed", countries = NonEmptyList.of(otherCountry, country))
+        val expected           = Vector(
           buildMetadata(first).copy(destination = changedDestination, sourceFolder = "/photos/changed"),
-          buildMetadata(second).copy(destination = originalDestination)
+          buildMetadata(second)
         )
         assertEquals(created, CreateResult.Saved)
         assertEquals(added, CreateResult.Saved)
@@ -370,7 +366,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
   private def buildMetadata(chapter: NewChapter) =
     ChapterMetadata(
       chapter.id,
-      Destination(chapter.destinationId, chapter.name, NonEmptyList.of(country, otherCountry)),
+      Destination(chapter.name, NonEmptyList.of(country, otherCountry)),
       chapter.period,
       chapter.sourceFolder,
       chapter.description
@@ -380,7 +376,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
     Update(
       album,
       chapter.id,
-      DestinationId(new UUID(99L, 1L)),
       chapter.name,
       chapter.countries,
       chapter.period,
@@ -429,7 +424,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         val folder  = s"/photos/$index".refineUnsafe[PhotoSourceConstraint]
         NewChapter(
           ChapterId(new UUID(index.toLong, 102L)),
-          DestinationId(new UUID(index.toLong, 103L)),
           "Trip",
           NonEmptyList.of(country.id, otherCountry.id),
           period,

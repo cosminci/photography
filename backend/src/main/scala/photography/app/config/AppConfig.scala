@@ -1,6 +1,7 @@
 package photography.app.config
 
 import cats.effect.IO
+import cats.syntax.all.*
 import com.comcast.ip4s.{Host, Port}
 import io.github.iltotore.iron.pureconfig.given
 import photography.usecases.album.AlbumPageSize
@@ -30,7 +31,10 @@ object ThumbnailsConfig:
   // $COVERAGE-OFF$
   given ConfigReader[ThumbnailsConfig] =
     ConfigReader.forProduct2("root", "quality")(ThumbnailsConfig.apply)(using
-      ConfigReader[Path].ensure(_.isAbsolute, _ => "Expected an absolute thumbnail root"),
+      ConfigReader[Path].ensure(
+        root => root.isAbsolute && root.normalize().toString === root.toString,
+        _ => "Expected an absolute normalized thumbnail root"
+      ),
       deriveEnumerationReader[ThumbnailQuality]
     )
   // $COVERAGE-ON$

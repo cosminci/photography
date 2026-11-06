@@ -96,10 +96,10 @@ object ChapterMetadataManager:
           for
             current     <- readAlbum(album).eitherT.leftWiden[UpdateFailure]
             plan        <- planUpdate(current.year, current = current.chapters, chapter, name, period, sourceFolder).eitherT[F]
-            retirements <- prepareRetirements(chapter, sourceChanged = plan.sourceChanged).lift[UpdateFailure]
-            command <- allocateUpdate(album, chapter, name, countries = countries, plan.period, sourceFolder, order = plan.order).lift[UpdateFailure]
-            _       <- persistUpdate(plan.previousDestination, command, retirements = retirements).eitherT
-            maybeRequest <- prepareImport(album, chapter, sourceFolder, sourceChanged = plan.sourceChanged).lift[UpdateFailure]
+            retirements <- prepareRetirements(chapter, sourceChanged = plan.changesSource(sourceFolder)).lift[UpdateFailure]
+            command = ChapterRepository.Update(album, chapter, name, countries = countries, plan.period, sourceFolder, order = plan.order)
+            _            <- persistUpdate(plan.previousSource, command, retirements = retirements).eitherT
+            maybeRequest <- prepareImport(album, chapter, sourceFolder, sourceChanged = plan.changesSource(sourceFolder)).lift[UpdateFailure]
           yield maybeRequest.map(value => ImportLaunch(value, retirements = retirements))
         program.value
       MonadCancelThrow[F].uncancelable: _ =>
@@ -175,7 +175,7 @@ object ChapterMetadataManager:
       .handleErrorWith(error => Logger[F].error(error)("Chapter creation failed").as(Failure.Unavailable.asLeft[ChapterId]))
 
     private def persistUpdate(
-        previousDestination: DestinationId,
+        previousSource: PhotoSource,
         command: ChapterRepository.Update,
         retirements: Vector[PhotoWriteIntent.Retirement]
     ) =
@@ -183,7 +183,7 @@ object ChapterMetadataManager:
         case ChapterRepository.UpdateResult.Saved => retirements.traverse_(removePhoto)
         case _                                    => ().pure[Db]
       val commit = Transaction[Db, F].run(update).handleErrorWith: error =>
-        resolveUpdate(command.album, command.chapter, previousDestination, command.destination, error)
+        resolveUpdate(previousSource, command, error)
       commit.map:
         case ChapterRepository.UpdateResult.Saved            => ().asRight[UpdateFailure]
         case ChapterRepository.UpdateResult.ChapterNotFound  => MissingChapter.asLeft[Unit]
@@ -204,18 +204,6 @@ object ChapterMetadataManager:
       IdGenerator[F].generateId.map: id =>
         PhotoWriteIntent.Retirement(PhotoWriteIntentId(id), chapter, photo, location): PhotoWriteIntent.Retirement
 
-    private def allocateUpdate(
-        album: AlbumId,
-        chapter: ChapterId,
-        name: DestinationName,
-        countries: NonEmptyList[CountryId],
-        period: VisitPeriod,
-        folder: PhotoSource,
-        order: NonEmptyList[ChapterId]
-    ) =
-      IdGenerator[F].generateId.map: id =>
-        ChapterRepository.Update(album, chapter, DestinationId(id), name, countries = countries, period, folder, order = order)
-
     private def removePhoto(intent: PhotoWriteIntent.Retirement) =
       val record = photoRepository.recordWrite(intent).flatMap:
         case PhotoRepository.RecordWriteResult.Recorded => ().pure[Db]
@@ -232,16 +220,26 @@ object ChapterMetadataManager:
           case _: Right[Throwable, Request] => ().pure[F]
         .map(_.some)
 
-    private def resolveUpdate(album: AlbumId, chapter: ChapterId, previousDestination: DestinationId, destination: DestinationId, error: Throwable) =
-      Logger[F].error(error)("Chapter update commit acknowledgement failed") >> albums.readPlanning(album).flatMap:
+    private def resolveUpdate(previousSource: PhotoSource, command: ChapterRepository.Update, error: Throwable) =
+      val uncertain =
+        if (previousSource: String) === command.sourceFolder then ChapterRepository.UpdateResult.Failed.pure[F]
+        else photos.suspend(command.chapter).as(ChapterRepository.UpdateResult.Failed)
+      Logger[F].error(error)("Chapter update commit acknowledgement failed") >> albums.readPlanning(command.album).flatMap:
         case AlbumRepository.PlanningResult.Found(current) =>
-          current.chapters.find(_.id.value === chapter.value) match
-            case Some(saved) if saved.destination.id.value === destination.value         => ChapterRepository.UpdateResult.Saved.pure[F]
-            case Some(saved) if saved.destination.id.value === previousDestination.value => ChapterRepository.UpdateResult.Failed.pure[F]
-            case _ => photos.suspend(chapter).as(ChapterRepository.UpdateResult.Failed)
-        case _ => photos.suspend(chapter).as(ChapterRepository.UpdateResult.Failed)
+          current.chapters.find(_.id.value === command.chapter.value) match
+            case Some(saved) if matchesUpdate(saved, command) && current.chapters.map(_.id.value).toList === command.order.toList.map(_.value) =>
+              ChapterRepository.UpdateResult.Saved.pure[F]
+            case Some(saved) if (saved.sourceFolder: String) === previousSource => ChapterRepository.UpdateResult.Failed.pure[F]
+            case _                                                              => uncertain
+        case _ => uncertain
       .handleErrorWith: failure =>
-        Logger[F].error(failure)("Chapter update commit resolution failed") >> photos.suspend(chapter).as(ChapterRepository.UpdateResult.Failed)
+        Logger[F].error(failure)("Chapter update commit resolution failed") >> uncertain
+
+    private def matchesUpdate(saved: ChapterMetadata, command: ChapterRepository.Update) =
+      (saved.destination.name: String) === command.name &&
+        saved.destination.countries.map(_.id.value) === command.countries.map(_.value) &&
+        saved.period.firstDay.isEqual(command.period.firstDay) && (saved.period.days: Long) === command.period.days &&
+        (saved.sourceFolder: String) === command.sourceFolder
 
     private def translateCreateFailure(failure: Failure) = failure match
       case Failure.AlbumNotFound    => CreateResult.AlbumNotFound

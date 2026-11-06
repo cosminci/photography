@@ -22,16 +22,28 @@ object SqliteSpreadRepository:
       insert.update.run.ensure(incompleteWrite)(_ === 1) >> spread.photoSlots.traverse_(insertSlot(spread.id, _))
 
     override def replace(spread: Spread): ConnectionIO[Unit] =
-      val id               = spread.id.value
-      val update           = sql"UPDATE spread SET template_id = ${spread.template.value} WHERE id = $id"
-      val deletePlacements = sql"DELETE FROM placement WHERE spread_photo_slot_id IN (SELECT id FROM spread_photo_slot WHERE spread_id = $id)"
-      val incompleteWrite  = new IllegalStateException("Expected one persisted row")
+      val id              = spread.id.value
+      val update          = sql"UPDATE spread SET template_id = ${spread.template.value} WHERE id = $id"
+      val incompleteWrite = new IllegalStateException("Expected one persisted row")
       update.update.run.ensure(incompleteWrite)(_ === 1) >>
-        deletePlacements.update.run >>
         sql"DELETE FROM spread_photo_slot WHERE spread_id = $id".update.run >>
         sql"DELETE FROM spread_text_slot WHERE spread_id = $id".update.run >>
         collectSlots(spread).traverse_(insertSlot(spread.id, _)) >>
-        spread.placements.traverse_(insertPlacement)
+        spread.placements.traverse_(insertPlacement(spread.id, _))
+
+    override def replacePlacements(spread: SpreadId, placements: Vector[SpreadPlacement]): ConnectionIO[Unit] =
+      requireSpread(spread) >>
+        sql"""DELETE FROM placement WHERE spread_photo_slot_id IN
+          (SELECT id FROM spread_photo_slot WHERE spread_id = ${spread.value})""".update.run >>
+        placements.traverse_(insertPlacement(spread, _))
+
+    override def replaceBleed(spread: SpreadId, edges: Map[PhotoSpreadSlotId, Set[SpreadEdge]]): ConnectionIO[Unit] =
+      val slots = sql"SELECT id FROM spread_photo_slot WHERE spread_id = ${spread.value}".query[UUID].to[Set]
+      requireSpread(spread) >>
+        slots.ensure(new IllegalArgumentException("Bleed must describe exactly this spread's photo slots"))(_ === edges.keySet.map(_.value)) >>
+        sql"""DELETE FROM spread_photo_slot_bleed WHERE slot_id IN
+          (SELECT id FROM spread_photo_slot WHERE spread_id = ${spread.value})""".update.run >>
+        edges.toList.traverse_ { case (slot, directions) => insertEdges(slot, directions) }
 
     override def reorder(chapter: ChapterId, order: NonEmptyList[SpreadId]): ConnectionIO[Unit] =
       val supplied = order.toList.map(_.value)
@@ -57,20 +69,26 @@ object SqliteSpreadRepository:
       case value: Spread.ChapterStart => value.photoSlots.map(slot => slot: SpreadSlot) :+ value.textSlot
       case value: Spread.PhotosOnly   => value.photoSlots.toList.toVector.map(slot => slot: SpreadSlot)
 
-    private def insertPlacement(placement: SpreadPlacement) =
+    private def requireSpread(spread: SpreadId) =
+      sql"SELECT EXISTS(SELECT 1 FROM spread WHERE id = ${spread.value})".query[Boolean].unique
+        .ensure(new IllegalStateException("Expected an existing spread"))(identity).void
+
+    private def insertPlacement(spread: SpreadId, placement: SpreadPlacement) =
       val transform       = placement.transform
       val incompleteWrite = new IllegalStateException("Expected one persisted row")
       sql"""INSERT INTO placement (id, photo_id, kind, spread_photo_slot_id, cover_slot_id, shift_x, shift_y, mirrored, zoom, caption_corner)
-            VALUES (${placement.id.value}, ${placement.photo.value}, 'spread', ${placement.slot.value}, NULL,
-                    ${transform.shift.x}, ${transform.shift.y}, ${transform.mirrored}, ${transform.zoom}, ${placement.captionCorner})""".update.run
+            SELECT ${placement.id.value}, ${placement.photo.value}, 'spread', id, NULL,
+                    ${transform.shift.x}, ${transform.shift.y}, ${transform.mirrored}, ${transform.zoom}, ${placement.captionCorner}
+            FROM spread_photo_slot WHERE id = ${placement.slot.value} AND spread_id = ${spread.value}""".update.run
         .ensure(incompleteWrite)(_ === 1).void
 
     private def insertSlot(spread: SpreadId, slot: SpreadSlot) =
       slot match
         case SpreadSlot.Photo(id, box, bleed) =>
           val photo = sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)"
-          val edges =
-            bleed.toList.traverse_(edge => sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)".update.run.void)
-          photo.update.run >> edges
+          photo.update.run >> insertEdges(id, bleed)
         case SpreadSlot.Text(id, box) =>
           sql"INSERT INTO spread_text_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)".update.run.void
+
+    private def insertEdges(slot: PhotoSpreadSlotId, edges: Set[SpreadEdge]) =
+      edges.toList.traverse_(edge => sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${slot.value}, $edge)".update.run.void)

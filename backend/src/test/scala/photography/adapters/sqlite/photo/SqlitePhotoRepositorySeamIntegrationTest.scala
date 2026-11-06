@@ -164,7 +164,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
 
           val thumbnails = FileThumbnailStorage.make[IO](path.getParent)
           val originals  = FilePhotoStorage.make[IO](thumbnails)
-          val manager    = PhotoManager.make(originals, repository, buildGenerator)
+          val manager    = PhotoManager.make(originals, repository, buildGenerator, PhotoWriteRecovery.make(repository, thumbnails))
           val expected   = if committed then photo.copy(maybeCaption = "日本\nVacanță".some) else photo
 
           for
@@ -237,7 +237,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
       buildTransactor(path).use: xa =>
         val repository     = SqlitePhotoRepository.make
         val otherChapter   = ChapterId(new UUID(0L, 9L))
-        val insertChapter  = sql"INSERT INTO chapter VALUES (${otherChapter.value}, 'a', 'd', '', 0, 1, 1, '/other')"
+        val insertChapter  = sql"INSERT INTO chapter VALUES (${otherChapter.value}, 'a', 'Trip', '', 0, 1, 1, '/other')"
         val checkQualities = ThumbnailQuality.values.toVector.traverse_ { quality =>
           val complete = photo.copy(thumbnail = thumbnail.copy(quality = quality))
           (repository.save(complete) >> repository.listChapter(chapter)).transact(xa)
@@ -350,10 +350,13 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
                     if fails then error.raiseError[IO, A] else program.transact(xa)
 
               for
-                _       <- (seed >> repository.save(photo)).transact(xa)
-                _       <- storage.storeThumbnail(location, image)
-                _       <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
-                result  <- PhotoManager.make(storageBoundary, repository, generator).refresh(chapter, photo.original.source)
+                _      <- (seed >> repository.save(photo)).transact(xa)
+                _      <- storage.storeThumbnail(location, image)
+                _      <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
+                result <- PhotoManager.make(storageBoundary, repository, generator, PhotoWriteRecovery.make(repository, storageBoundary)).refresh(
+                  chapter,
+                  photo.original.source
+                )
                 pending <- repository.listUnfinishedWrites.transact(xa)
                 before  <- Files.exists(root.resolve(s"${location.value}.jpg")).blocking[IO]
               yield
@@ -421,10 +424,13 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
             ThumbnailStorage.RemoveResult.Failed.pure[IO]
 
         for
-          _       <- (seed >> repository.save(photo)).transact(xa)
-          _       <- storage.storeThumbnail(location, image)
-          _       <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
-          worker  <- PhotoManager.make(source, repository, generator).refresh(chapter, photo.original.source).start
+          _      <- (seed >> repository.save(photo)).transact(xa)
+          _      <- storage.storeThumbnail(location, image)
+          _      <- Files.write(root.resolve("unrelated.jpg"), Array(7.toByte)).blocking[IO]
+          worker <- PhotoManager.make(source, repository, generator, PhotoWriteRecovery.make(repository, source)).refresh(
+            chapter,
+            photo.original.source
+          ).start
           outcome <- worker.join
           pending <- repository.listUnfinishedWrites.transact(xa)
           listed  <- repository.listChapter(chapter).transact(xa)
@@ -479,8 +485,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   private def seed =
     sql"INSERT INTO album (id, year, title, synopsis, created_at_ms) VALUES ('a', 2026, 'Album', '', 0)".update.run >>
-      sql"INSERT INTO destination VALUES ('d', 'Trip')".update.run >>
-      sql"INSERT INTO chapter VALUES (${chapter.value}, 'a', 'd', '', 0, 1, 0, '/photos')".update.run.void
+      sql"INSERT INTO chapter VALUES (${chapter.value}, 'a', 'Trip', '', 0, 1, 0, '/photos')".update.run.void
 
   private def buildDatabase =
     Resource.make(Files.createTempFile(Path.of("target"), "photo-journal-", ".sqlite").blocking[IO])(path =>

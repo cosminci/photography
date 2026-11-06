@@ -72,7 +72,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
   )
   private val chapter = Chapter(
     ChapterId(buildUuid(index = 20L)),
-    Destination(DestinationId(buildUuid(index = 21L)), name = "Asian capitals", countries = NonEmptyList.one(country)),
+    Destination(name = "Asian capitals", countries = NonEmptyList.one(country)),
     VisitPeriod(firstDay = LocalDate.of(2026, 5, 1), days = 2),
     description = "",
     gear = Vector.empty[CameraSelection],
@@ -191,9 +191,11 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
         manager      <- buildManager(refs, maybeAlbum = occupied.some)
         result       <- manager.editPlacements(album.id, first.id, Edit.SetCaptionCorner(selected.id, corner))
         replacements <- refs.replacements.get
+        layouts      <- refs.layouts.get
       yield
         assertEquals(result, PlacementResult.Saved(expected))
         assertEquals(replacements, Vector(expected))
+        assertEquals(layouts, Vector.empty[Spread])
     }
 
   test("should change an unoccupied photo spread to a same-context layout with fresh slots"):
@@ -605,11 +607,13 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       disabled     <- manager.setBleed(album.id, firstOccupied.id, enabled = false)
       rejected     <- manager.setBleed(album.id, albumOpening.id, enabled = true)
       replacements <- refs.replacements.get
+      layouts      <- refs.layouts.get
     yield
       assertEquals(enabled, SetBleedResult.Saved(expected))
       assertEquals(disabled, SetBleedResult.Saved(firstOccupied))
       assertEquals(rejected, SetBleedResult.Rejected)
       assertEquals(replacements, Vector(expected, firstOccupied))
+      assertEquals(layouts, Vector.empty[Spread])
 
   test("should expose missing and failed bleed writes without changing another spread"):
     val refs        = Refs()
@@ -633,6 +637,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
   final private case class Refs():
     val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]]    = Ref.unsafe(Vector.empty)
     val replacements: Ref[IO, Vector[Spread]]                                        = Ref.unsafe(Vector.empty)
+    val layouts: Ref[IO, Vector[Spread]]                                             = Ref.unsafe(Vector.empty)
     val orders: Ref[IO, Vector[(chapter: ChapterId, order: NonEmptyList[SpreadId])]] = Ref.unsafe(Vector.empty)
     val removals: Ref[IO, Vector[SpreadId]]                                          = Ref.unsafe(Vector.empty)
 
@@ -664,6 +669,13 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     case value: Spread.AlbumStart   => value.copy(placements = placements)
     case value: Spread.ChapterStart => value.copy(placements = placements)
     case value: Spread.PhotosOnly   => value.copy(placements = placements)
+
+  private def replaceTestBleed(spread: Spread, edges: Map[PhotoSpreadSlotId, Set[SpreadEdge]]) =
+    val update = (slot: SpreadSlot.Photo) => slot.copy(bleed = edges.getOrElse(slot.id, fail("Missing photo slot bleed")))
+    spread match
+      case value: Spread.AlbumStart   => value.copy(photoSlots = value.photoSlots.map(update))
+      case value: Spread.ChapterStart => value.copy(photoSlots = value.photoSlots.map(update))
+      case value: Spread.PhotosOnly   => value.copy(photoSlots = value.photoSlots.map(update))
 
   private def describePlacementResult(result: PlacementResult) = result match
     case PlacementResult.Saved(spread) => spread.placements
@@ -718,7 +730,18 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val repository = new SpreadRepository[IO]:
       override def insert(chapterId: ChapterId, spread: Spread.PhotosOnly): IO[Unit] =
         refs.inserts.update(_ :+ (chapterId, spread)) >> writes
-      override def replace(spread: Spread): IO[Unit]                                      = writes >> refs.replacements.update(_ :+ spread)
+      override def replace(spread: Spread): IO[Unit] =
+        writes >> refs.layouts.update(_ :+ spread) >> refs.replacements.update(_ :+ spread)
+      override def replacePlacements(spread: SpreadId, placements: Vector[SpreadPlacement]): IO[Unit] =
+        composition.findSpread(album.id, spread).flatMap:
+          case AlbumCompositionRepository.SpreadResult.Found(current) =>
+            writes >> refs.replacements.update(_ :+ replaceTestPlacements(current.spread, placements))
+          case _ => IO.raiseError[Unit](new AssertionError("Missing placement target"))
+      override def replaceBleed(spread: SpreadId, edges: Map[PhotoSpreadSlotId, Set[SpreadEdge]]): IO[Unit] =
+        composition.findSpread(album.id, spread).flatMap:
+          case AlbumCompositionRepository.SpreadResult.Found(current) =>
+            writes >> refs.replacements.update(_ :+ replaceTestBleed(current.spread, edges))
+          case _ => IO.raiseError[Unit](new AssertionError("Missing bleed target"))
       override def reorder(chapterId: ChapterId, order: NonEmptyList[SpreadId]): IO[Unit] =
         refs.orders.update(_ :+ (chapterId, order)) >> writes
       override def remove(spread: SpreadId): IO[Unit] = refs.removals.update(_ :+ spread) >> writes

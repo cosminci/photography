@@ -64,12 +64,25 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         replaced <- retemplate(xa, photo)
         _        <- spreads.replace(replaced).transact(xa)
         after    <- readSpreads(xa)
-        _        <- CaptionCorner.values.toVector.traverse_ { corner =>
+        _        <- sql"""CREATE TRIGGER protect_geometry BEFORE DELETE ON spread_photo_slot BEGIN
+          SELECT RAISE(ABORT, 'Placement edits cannot rebuild geometry'); END""".update.run.transact(xa)
+        _ <- CaptionCorner.values.toVector.traverse_ { corner =>
           val changed = replaced.copy(placements = replaced.placements.map(_.copy(captionCorner = corner)))
-          (spreads.replace(changed) >> composition.findSpread(albumId, changed.id)).transact(xa).map(actual =>
+          (spreads.replacePlacements(changed.id, changed.placements) >> composition.findSpread(albumId, changed.id)).transact(xa).map(actual =>
             assertEquals(actual, SpreadResult.Found(Located.Photo(chapterId, changed)))
           )
         }
+        _ <- spreads.replacePlacements(replaced.id, placements = replaced.placements).transact(xa)
+        _ <- sql"""CREATE TRIGGER protect_placements BEFORE DELETE ON placement BEGIN
+          SELECT RAISE(ABORT, 'Bleed edits cannot rewrite placements'); END""".update.run.transact(xa)
+        _ <- Vector(true, false).traverse_ { enabled =>
+          val changed = replaced.copy(photoSlots = replaced.photoSlots.map(_.copy(bleed = if enabled then SpreadEdge.values.toSet else Set.empty)))
+          val edges   = changed.photos.map(slot => slot.id -> slot.bleed).toMap
+          (spreads.replaceBleed(changed.id, edges) >> composition.findSpread(albumId, changed.id)).transact(xa).map(actual =>
+            assertEquals(actual, SpreadResult.Found(Located.Photo(chapterId, changed)))
+          )
+        }
+        _               <- (sql"DROP TRIGGER protect_placements".update.run >> sql"DROP TRIGGER protect_geometry".update.run).transact(xa)
         _               <- spreads.remove(photo.id).transact(xa)
         removed         <- readSpreads(xa)
         photos          <- photoRows.transact(xa)
@@ -126,10 +139,16 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         maybeBefore <- composition.findSpread(albumId, photo.id).transact(xa)
         replacement <- retemplate(xa, photo)
         broken = replacement.copy(placements = replacement.placements.map(_.copy(photo = PhotoId(new UUID(99L, 99L)))))
-        failed     <- spreads.replace(broken).transact(xa).attempt
-        maybeAfter <- composition.findSpread(albumId, photo.id).transact(xa)
+        failed       <- spreads.replace(broken).transact(xa).attempt
+        partial      <- spreads.replacePlacements(photo.id, placements = broken.placements).transact(xa).attempt
+        invalidBleed <- spreads.replaceBleed(photo.id, edges = Map.empty[PhotoSpreadSlotId, Set[SpreadEdge]]).transact(xa).attempt
+        absent       <- spreads.replacePlacements(SpreadId(new UUID(99L, 99L)), placements = Vector.empty[SpreadPlacement]).transact(xa).attempt
+        maybeAfter   <- composition.findSpread(albumId, photo.id).transact(xa)
       yield
         assert(failed.isLeft)
+        assert(partial.isLeft)
+        assert(invalidBleed.isLeft)
+        assert(absent.isLeft)
         assertEquals(maybeAfter, maybeBefore)
 
   test("should distinguish absent chapter ownership from malformed persisted chapter ordering"):
@@ -168,7 +187,6 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
       opening    = buildOpening(chapterStart)
       newChapter = ChapterRepository.NewChapter(
         chapterId,
-        DestinationId(new UUID(3L, 1L)),
         name = "Trip",
         countries = NonEmptyList.one(country.id),
         VisitPeriod(firstDay = LocalDate.of(2026, 6, 1), days = 3L),

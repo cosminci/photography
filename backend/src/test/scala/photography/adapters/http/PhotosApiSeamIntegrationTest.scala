@@ -195,11 +195,11 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       PhotoManager.Issue.Undecodable(filename = "one.jpg"),
       PhotoManager.Issue.Unstable(filename = "one.jpg"),
       PhotoManager.Issue.Storage,
-      PhotoManager.Issue.Cleanup(location),
+      PhotoManager.Issue.Finalization(PhotoWriteRecovery.Issue.Cleanup(intent, location)),
       PhotoManager.Issue.Persistence,
       PhotoManager.Issue.Unexpected,
-      PhotoManager.Issue.WriteReferences(intent),
-      PhotoManager.Issue.WriteCompletion(intent)
+      PhotoManager.Issue.Finalization(PhotoWriteRecovery.Issue.References(intent)),
+      PhotoManager.Issue.Finalization(PhotoWriteRecovery.Issue.Completion(intent))
     )
     val cleanup = Vector(
       PhotoWriteRecovery.Issue.Listing,

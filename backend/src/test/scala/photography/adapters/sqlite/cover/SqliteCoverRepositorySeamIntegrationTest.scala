@@ -216,8 +216,7 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
             VALUES (30, 10382, 3402, 142), (36, 10397, 3402, 154)""".update.run >>
       sql"""INSERT INTO album (id, year, title, synopsis, created_at_ms)
           VALUES (${album.value}, 2026, 'Album', 'Synopsis', 0), (${foreignAlbum.value}, 2027, 'Other', '', 0)""".update.run >>
-      sql"INSERT INTO destination VALUES ('d', 'Trip')".update.run >>
-      sql"INSERT INTO chapter VALUES ('c', ${album.value}, 'd', '', 0, 1, 0, '/photos')".update.run >>
+      sql"INSERT INTO chapter VALUES ('c', ${album.value}, 'Trip', '', 0, 1, 0, '/photos')".update.run >>
       sql"INSERT INTO cover VALUES (${album.value}, 'back'), (${foreignAlbum.value}, 'front')".update.run >>
       sql"""INSERT INTO cover_slot VALUES
             (${cover.front.id.value}, ${album.value}, 'front'), (${cover.back.id.value}, ${album.value}, 'back'),

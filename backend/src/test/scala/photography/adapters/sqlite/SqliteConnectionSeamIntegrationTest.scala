@@ -19,7 +19,7 @@ final class SqliteConnectionSeamIntegrationTest extends CatsEffectSuite:
            FROM album ORDER BY created_at_ms DESC, id DESC LIMIT 6""",
       "album_created_at_id"
     ),
-    (sql"SELECT id FROM chapter WHERE destination_id = 'destination'", "chapter_destination"),
+    (sql"SELECT country_id FROM chapter_country WHERE chapter_id = 'chapter' ORDER BY position", "sqlite_autoindex_chapter_country_2"),
     (sql"SELECT id FROM photo WHERE chapter_id = 'chapter' ORDER BY id", "photo_chapter_id"),
     (sql"SELECT chapter_id FROM chapter_camera WHERE camera_id = 'camera'", "chapter_camera_camera"),
     (sql"SELECT chapter_id FROM chapter_camera_lens WHERE lens_id = 'lens'", "chapter_camera_lens_lens"),

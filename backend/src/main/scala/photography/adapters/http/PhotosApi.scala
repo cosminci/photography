@@ -131,7 +131,7 @@ object PhotosApi:
       case PhotoManager.Issue.Undecodable(filename) => encodeIssue(stage = "read", code = "undecodable", maybeFilename = filename.some)
       case PhotoManager.Issue.Unstable(filename)    => encodeIssue(stage = "read", code = "unstable", maybeFilename = filename.some)
       case PhotoManager.Issue.Storage               => encodeIssue(stage = "storage", code = "storage_failed", maybeFilename = None)
-      case _: PhotoManager.Issue.Cleanup            => encodeIssue(stage = "cleanup", code = "cleanup_failed", maybeFilename = None)
+      case PhotoManager.Issue.Finalization(cause)   => encodeRetirementIssue(cause)
       case _                                        => encodeIssue(stage = "persistence", code = "persistence_failed", maybeFilename = None)
 
     private def encodeRetirementIssue(issue: PhotoWriteRecovery.Issue) = issue match

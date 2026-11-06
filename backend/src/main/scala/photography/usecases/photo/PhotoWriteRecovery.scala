@@ -36,7 +36,7 @@ object PhotoWriteRecovery:
         if issues.isEmpty then RecoveryResult.Recovered else RecoveryResult.Failed(issues = issues)
 
     private def recoverWrite(intent: PhotoWriteIntent) =
-      Transaction[Db, F].run(photos.listChapter(intent.chapter)).flatMap:
+      Transaction[Db, F].resolve(photos.listChapter(intent.chapter)).flatMap:
         case PhotoRepository.ListResult.Failed          => Vector(Issue.References(intent.id)).pure[F]
         case PhotoRepository.ListResult.Listed(current) =>
           val locations = intent match
@@ -54,7 +54,7 @@ object PhotoWriteRecovery:
       .handleErrorWith(error => Logger[F].error(error)("Photo write cleanup failed").as(Vector(Issue.Cleanup(id, location))))
 
     private def complete(id: PhotoWriteIntentId) =
-      Transaction[Db, F].run(photos.completeWrite(id)).flatMap:
+      Transaction[Db, F].resolve(photos.completeWrite(id)).flatMap:
         case PhotoRepository.CompleteWriteResult.Completed => Vector.empty[Issue].pure[F]
         case PhotoRepository.CompleteWriteResult.Failed    => Vector(Issue.Completion(id)).pure[F]
       .handleErrorWith(error => Logger[F].error(error)("Photo write completion failed").as(Vector(Issue.Completion(id))))

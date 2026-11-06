@@ -48,12 +48,15 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       (retirement, Vector.empty[Photo], Vector(old)),
       (retirement, Vector(photo.copy(thumbnail = thumbnail.copy(location = old))), Vector.empty[ThumbnailLocation])
     ).traverse_ { case (intent, photos, removed) =>
-      val refs     = Refs(initial = Vector(intent))
-      val recovery = buildRecovery(refs, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])
+      val refs       = Refs(initial = Vector(intent))
+      val recovery   = buildRecovery(refs, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])
+      val superseded = new Transaction[IO, IO]:
+        override def run[A](program: IO[A]): IO[A]     = IO.raiseError[A](new AssertionError("Superseded import cannot start guarded writes"))
+        override def resolve[A](program: IO[A]): IO[A] = program
 
       for
         first     <- recovery.recover
-        resolved  <- recovery.resolve(intent)
+        resolved  <- buildRecovery(refs, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])(using superseded).resolve(intent)
         second    <- recovery.recover
         deletions <- refs.removed.get
         pending   <- refs.pending.get
@@ -177,7 +180,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       maybePending: Option[IO[PhotoRepository.ListUnfinishedWritesResult]] = None,
       cleaning: ThumbnailLocation => IO[ThumbnailStorage.RemoveResult] = _ => ThumbnailStorage.RemoveResult.Removed.pure[IO],
       completing: IO[PhotoRepository.CompleteWriteResult] = PhotoRepository.CompleteWriteResult.Completed.pure[IO]
-  ) =
+  )(using Transaction[IO, IO]) =
     val photos = new PhotoRepository[IO]:
       override def find(photo: PhotoId): IO[PhotoRepository.FindResult] =
         IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))

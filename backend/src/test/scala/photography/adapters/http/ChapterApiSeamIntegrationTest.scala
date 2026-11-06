@@ -34,7 +34,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
   private val photo    = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(0L, 7L)), box, bleed = Set.empty)
   private val template = SpreadTemplateId(new UUID(0L, 4L))
   private val chapter  =
-    val destination = Destination(DestinationId(new UUID(0L, 10L)), name = "Coast", countries = NonEmptyList.one(country))
+    val destination = Destination(name = "Coast", countries = NonEmptyList.one(country))
     val opening     =
       Spread.ChapterStart(SpreadId(new UUID(0L, 3L)), template, photoSlots = Vector(photo), text, placements = Vector.empty[SpreadPlacement])
     val photos =

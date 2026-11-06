@@ -12,19 +12,6 @@ CREATE TABLE country (
     flag TEXT NOT NULL
 ) STRICT;
 
-CREATE TABLE destination (
-    id TEXT PRIMARY KEY NOT NULL,
-    name TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE destination_country (
-    destination_id TEXT NOT NULL REFERENCES destination (id) ON DELETE CASCADE,
-    country_id TEXT NOT NULL REFERENCES country (id),
-    position INTEGER NOT NULL CHECK (position >= 0),
-    PRIMARY KEY (destination_id, country_id),
-    UNIQUE (destination_id, position)
-) STRICT;
-
 CREATE TABLE album (
     id TEXT PRIMARY KEY NOT NULL,
     year INTEGER NOT NULL UNIQUE CHECK (year BETWEEN 1900 AND 2100),
@@ -37,13 +24,21 @@ CREATE TABLE album (
 CREATE TABLE chapter (
     id TEXT PRIMARY KEY NOT NULL,
     album_id TEXT NOT NULL REFERENCES album (id) ON DELETE CASCADE,
-    destination_id TEXT NOT NULL REFERENCES destination (id),
+    name TEXT NOT NULL,
     description TEXT NOT NULL,
     start_ms INTEGER NOT NULL,
     end_ms INTEGER NOT NULL,
     position INTEGER NOT NULL,
     source_folder TEXT NOT NULL,
     UNIQUE (album_id, position)
+) STRICT;
+
+CREATE TABLE chapter_country (
+    chapter_id TEXT NOT NULL REFERENCES chapter (id) ON DELETE CASCADE,
+    country_id TEXT NOT NULL REFERENCES country (id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    PRIMARY KEY (chapter_id, country_id),
+    UNIQUE (chapter_id, position)
 ) STRICT;
 
 CREATE TABLE photo (
@@ -59,7 +54,6 @@ CREATE TABLE photo (
     thumbnail_quality TEXT NOT NULL CHECK (thumbnail_quality IN ('low', 'standard', 'high')),
     thumbnail_bytes INTEGER NOT NULL CHECK (thumbnail_bytes BETWEEN 1 AND
         CASE thumbnail_quality WHEN 'low' THEN 75000 WHEN 'standard' THEN 150000 WHEN 'high' THEN 300000 END),
-    captured_at_ms INTEGER,
     width INTEGER NOT NULL CHECK (width > 0),
     height INTEGER NOT NULL CHECK (height > 0),
     caption TEXT,
@@ -205,24 +199,7 @@ CREATE TABLE placement (
     )
 ) STRICT;
 
-CREATE TABLE editor_session (
-    id TEXT PRIMARY KEY NOT NULL,
-    owner TEXT NOT NULL UNIQUE,
-    last_heartbeat_ms INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE spread_editing_lock (
-    spread_id TEXT PRIMARY KEY NOT NULL REFERENCES spread (id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL REFERENCES editor_session (id)
-) STRICT;
-
-CREATE TABLE cover_editing_lock (
-    album_id TEXT PRIMARY KEY NOT NULL REFERENCES cover (album_id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL REFERENCES editor_session (id)
-) STRICT;
-
 CREATE INDEX album_created_at_id ON album (created_at_ms DESC, id DESC);
-CREATE INDEX chapter_destination ON chapter (destination_id);
 CREATE INDEX photo_chapter_id ON photo (chapter_id, id);
 CREATE INDEX chapter_camera_camera ON chapter_camera (camera_id);
 CREATE INDEX chapter_camera_lens_lens ON chapter_camera_lens (lens_id);

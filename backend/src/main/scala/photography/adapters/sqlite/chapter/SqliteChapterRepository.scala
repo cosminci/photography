@@ -68,8 +68,8 @@ object SqliteChapterRepository:
         for
           _ <- initial.liftTo[ConnectionIO]
           _ <- validateOpening(opening.template, photos = opening.photoSlots.map(_.box), opening.textSlot.box)
-          _ <- insertDestination(chapter.destinationId.value, chapter.name, countries = chapter.countries)
-          _ <- insertChapter(album, chapter.id, chapter.destinationId, description = chapter.description, chapter.period, chapter.sourceFolder)
+          _ <- insertChapter(album, chapter)
+          _ <- insertCountries(chapter.id, countries = chapter.countries)
           _ <- insertOpening(chapter.id, opening.id, opening.template, photos = opening.photoSlots, opening.textSlot)
           _ <- persistOrder(album, order = order)
         yield CreateResult.Saved: CreateResult
@@ -78,22 +78,21 @@ object SqliteChapterRepository:
         case true  =>
           countryReferencesExist(countries = chapter.countries).ifM(ifTrue = write, ifFalse = CreateResult.UnknownCountries.pure[ConnectionIO])
 
-    override def update(command: Update): ConnectionIO[UpdateResult] = command match
-      case Update(album, chapter, destination, name, countries, period, sourceFolder, order) =>
-        albumExists(album).flatMap:
-          case false => UpdateResult.AlbumNotFound.pure[ConnectionIO]
-          case true  =>
-            sql"SELECT destination_id FROM chapter WHERE id = ${chapter.value} AND album_id = ${album.value}".query[UUID].option.flatMap:
-              case None           => UpdateResult.ChapterNotFound.pure[ConnectionIO]
-              case Some(previous) =>
-                val write =
-                  for
-                    _ <- insertDestination(destination.value, name, countries = countries)
-                    _ <- updateMetadata(album, chapter, destination.value, period, sourceFolder)
-                    _ <- deleteUnreferencedDestination(previous)
-                    _ <- persistOrder(album, order = order)
-                  yield UpdateResult.Saved: UpdateResult
-                countryReferencesExist(countries = countries).ifM(ifTrue = write, ifFalse = UpdateResult.UnknownCountries.pure[ConnectionIO])
+    override def update(command: Update): ConnectionIO[UpdateResult] =
+      albumExists(command.album).flatMap:
+        case false => UpdateResult.AlbumNotFound.pure[ConnectionIO]
+        case true  =>
+          chapterExists(command.album, command.chapter).flatMap:
+            case false => UpdateResult.ChapterNotFound.pure[ConnectionIO]
+            case true  =>
+              val write =
+                for
+                  _ <- updateMetadata(command)
+                  _ <- sql"DELETE FROM chapter_country WHERE chapter_id = ${command.chapter.value}".update.run
+                  _ <- insertCountries(command.chapter, countries = command.countries)
+                  _ <- persistOrder(command.album, order = command.order)
+                yield UpdateResult.Saved: UpdateResult
+              countryReferencesExist(countries = command.countries).ifM(ifTrue = write, ifFalse = UpdateResult.UnknownCountries.pure[ConnectionIO])
 
     private def writeDescription(album: AlbumId, chapter: ChapterId, text: String) =
       val update = sql"UPDATE chapter SET description = $text WHERE id = ${chapter.value} AND album_id = ${album.value}".update.run
@@ -160,39 +159,27 @@ object SqliteChapterRepository:
         val matchesTemplate = expected.size === supplied.size && expected.toSet === supplied.toSet
         Either.cond(matchesTemplate, (), new IllegalArgumentException("Opening slots must represent their chapter template")).liftTo[ConnectionIO]
 
-    private def deleteUnreferencedDestination(id: UUID) =
-      sql"DELETE FROM destination WHERE id = $id AND NOT EXISTS (SELECT 1 FROM chapter WHERE destination_id = $id)".update.run.void
-
-    private def insertDestination(id: UUID, name: DestinationName, countries: NonEmptyList[CountryId]) =
-      val insert          = sql"INSERT INTO destination (id, name) VALUES ($id, ${name: String})"
-      val insertCountries = countries.toList.zipWithIndex.traverse_ { case (country, position) =>
-        val insert = sql"""INSERT INTO destination_country (destination_id, country_id, position)
-          VALUES ($id, ${country.value}, $position)"""
+    private def insertCountries(chapter: ChapterId, countries: NonEmptyList[CountryId]) =
+      countries.toList.zipWithIndex.traverse_ { case (country, position) =>
+        val insert = sql"""INSERT INTO chapter_country (chapter_id, country_id, position)
+          VALUES (${chapter.value}, ${country.value}, $position)"""
         persistRow(insert)
       }
-      persistRow(insert) >> insertCountries
 
-    private def insertChapter(
-        album: AlbumId,
-        chapter: ChapterId,
-        destination: DestinationId,
-        description: String,
-        period: VisitPeriod,
-        folder: PhotoSource
-    ) =
-      val start  = period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
-      val end    = period.firstDay.plusDays(period.days).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
-      val insert = sql"""INSERT INTO chapter (id, album_id, destination_id, description, start_ms, end_ms, position, source_folder)
-        VALUES (${chapter.value}, ${album.value}, ${destination.value}, $description,
+    private def insertChapter(album: AlbumId, chapter: NewChapter) =
+      val start  = chapter.period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
+      val end    = chapter.period.firstDay.plusDays(chapter.period.days).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
+      val insert = sql"""INSERT INTO chapter (id, album_id, name, description, start_ms, end_ms, position, source_folder)
+        VALUES (${chapter.id.value}, ${album.value}, ${chapter.name: String}, ${chapter.description},
                 $start, $end, (SELECT coalesce(max(position), -1) + 1 FROM chapter WHERE album_id = ${album.value}),
-                ${folder: String})"""
+                ${chapter.sourceFolder: String})"""
       persistRow(insert)
 
-    private def updateMetadata(album: AlbumId, chapter: ChapterId, destination: UUID, period: VisitPeriod, folder: PhotoSource) =
-      val start  = period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
-      val end    = period.firstDay.plusDays(period.days).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
-      val update = sql"""UPDATE chapter SET destination_id = $destination, start_ms = $start, end_ms = $end, source_folder = ${folder: String}
-            WHERE id = ${chapter.value} AND album_id = ${album.value}"""
+    private def updateMetadata(command: Update) =
+      val start  = command.period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
+      val end    = command.period.firstDay.plusDays(command.period.days).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
+      val update = sql"""UPDATE chapter SET name = ${command.name: String}, start_ms = $start, end_ms = $end,
+        source_folder = ${command.sourceFolder: String} WHERE id = ${command.chapter.value} AND album_id = ${command.album.value}"""
       persistRow(update)
 
     private def persistOrder(album: AlbumId, order: NonEmptyList[ChapterId]) =
