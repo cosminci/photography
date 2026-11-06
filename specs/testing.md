@@ -22,6 +22,10 @@ Reversible editing needs cross-owner journeys to establish chronological intent 
 
 Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
 
+Print export needs application proof of saved-data projection, readiness decisions and schema-valid output, plus HTTP seams for download and failure delivery. Browser components establish confirmation, diagnostic navigation and dismissal without altering saved content or editing history.
+
+Execute the shipped InDesign script logic directly to establish decoding, exact source mapping and import orchestration rather than testing a parallel implementation. Actual InDesign imports and final PDF inspection establish native framing, bleed, typography and text composition; small fixtures isolate rendering questions before representative complete-book proof.
+
 Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.
 
 HTTP seams prove credential translation and exact-generation stream finalization; SQLite seams prove persistence and rollback rather than recreating lock policy. Browser components establish retained drafts and fail-closed editing across ownership loss.
