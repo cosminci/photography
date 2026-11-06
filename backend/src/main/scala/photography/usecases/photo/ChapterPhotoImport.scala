@@ -1,15 +1,12 @@
 package photography.usecases.photo
 
-import photography.ports.photo.PhotoThumbnailGenerator
-
-import cats.{Eq, MonadThrow}
+import cats.Eq
 import cats.effect.{Async, Fiber, Ref, Resource}
-import cats.effect.std.{Mutex, Supervisor}
+import cats.effect.std.{Mutex, Semaphore, Supervisor}
 import cats.syntax.all.*
 import org.typelevel.log4cats.Logger
-import photography.capabilities.{IdGenerator, Transaction}
+import photography.capabilities.Transaction
 import photography.domain.album.*
-import photography.ports.photo.{PhotoRepository, PhotoStorage}
 import photography.usecases.photo.ChapterPhotoImport.*
 
 trait ChapterPhotoImport[F[_]]:
@@ -20,22 +17,20 @@ trait ChapterPhotoImport[F[_]]:
   def status(chapter: ChapterId): F[ExecutionOutcome]
 
 object ChapterPhotoImport:
-  def make[F[_]: Async: IdGenerator: Logger: Mutex, Db[_]: MonadThrow](
-      storage: PhotoStorage[F],
-      photos: PhotoRepository[Db],
-      generator: PhotoThumbnailGenerator[F],
+  def make[F[_]: Async: Logger: Mutex, Db[_]](
+      buildManager: Transaction[Db, F] => PhotoManager[F],
+      recovery: PhotoWriteRecovery[F],
       events: AlbumPhotoEvents[F]
   )(using Transaction[Db, F]): Resource[F, ChapterPhotoImport[F]] =
-    val recovery     = PhotoWriteRecovery.make(photos, storage)
-    val buildManager = (guarded: Transaction[Db, F]) =>
-      given Transaction[Db, F] = guarded
-      PhotoManager.make(storage, photos, generator)
     for
       state      <- Resource.eval(Ref.of[F, Map[ChapterId, Feedback[F]]](Map.empty))
+      processing <- Resource.eval(Semaphore[F](1L))
       supervisor <- Supervisor[F](await = false)
-    yield new LiveChapterPhotoImport(buildManager, recovery, state, events, supervisor)
+    yield
+      given Semaphore[F] = processing
+      new LiveChapterPhotoImport(buildManager, recovery, state, events, supervisor)
 
-  final private class LiveChapterPhotoImport[F[_]: Async: Logger: Mutex, Db[_]](
+  final private class LiveChapterPhotoImport[F[_]: Async: Logger: Mutex: Semaphore, Db[_]](
       buildManager: Transaction[Db, F] => PhotoManager[F],
       recovery: PhotoWriteRecovery[F],
       state: Ref[F, Map[ChapterId, Feedback[F]]],
@@ -98,7 +93,9 @@ object ChapterPhotoImport:
       val guarded = ImportTransaction.make(request)
       val manager = buildManager(guarded)
       val started = summon[Mutex[F]].lock.surround(recordStatus(request, Status.Running))
-      started >> manager.refresh(request.chapter, request.source).flatMap(result => recordStatus(request, Status.Finished(result)))
+      summon[Semaphore[F]].permit.use: _ =>
+        started.flatMap: current =>
+          manager.refresh(request.chapter, request.source).flatMap(result => recordStatus(request, Status.Finished(result))).void.whenA(current)
 
     private object ImportTransaction:
       def make(request: Request): Transaction[Db, F] = new LiveImportTransaction(request)
@@ -130,7 +127,7 @@ object ChapterPhotoImport:
           current.updatedWith(request.chapter):
             _.map(feedback => feedback.copy(maybeEntry = feedback.maybeEntry.map(_.copy(status = status))))
         (updated, applies)
-      }.flatMap(changed => invalidateInventory(request.album, request.chapter).whenA(changed))
+      }.flatMap(changed => invalidateInventory(request.album, request.chapter).whenA(changed).as(changed))
 
     private def invalidateInventory(album: AlbumId, chapter: ChapterId) =
       events.invalidate(album, chapter).handleErrorWith(error => Logger[F].error(error)("Photo invalidation delivery failed"))

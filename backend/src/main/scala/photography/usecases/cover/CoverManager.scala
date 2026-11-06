@@ -9,7 +9,6 @@ import photography.capabilities.{IdGenerator, Transaction}
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.layout.*
 import photography.ports.cover.CoverRepository
-import photography.ports.cover.CoverRepository.Composition
 import photography.ports.photo.PhotoPlacementRepository
 import photography.usecases.cover.CoverManager.*
 
@@ -28,16 +27,20 @@ object CoverManager:
       covers: CoverRepository[Db],
       photos: PhotoPlacementRepository[Db]
   )(using Transaction[Db, F]) extends CoverManager[F]:
+    private def compose(stored: CoverRepository.Stored) =
+      Composition(stored.cover, stored.placements, CoverDimensions.forSpreads(stored.interiorSpreads, stored.specifications))
+
     override def read(album: AlbumId): F[ReadResult] =
       val read = covers.read(album).map:
-        case CoverRepository.ReadResult.Found(value) => ReadResult.Found(value)
+        case CoverRepository.ReadResult.Found(value) => ReadResult.Found(compose(value))
         case CoverRepository.ReadResult.NotFound     => ReadResult.CoverNotFound
       coordinate(ReadResult.Failed)(Transaction[Db, F].run(read))
 
     override def setSpineOwner(album: AlbumId, owner: SpineOwner): F[SetSpineOwnerResult] =
       val mutation = covers.read(album).flatMap:
-        case CoverRepository.ReadResult.NotFound       => SetSpineOwnerResult.CoverNotFound.pure[Db]
-        case CoverRepository.ReadResult.Found(current) =>
+        case CoverRepository.ReadResult.NotFound      => SetSpineOwnerResult.CoverNotFound.pure[Db]
+        case CoverRepository.ReadResult.Found(stored) =>
+          val current = compose(stored)
           covers.setSpineOwner(album, owner).map[SetSpineOwnerResult]:
             case CoverRepository.SetSpineOwnerResult.NotFound => SetSpineOwnerResult.CoverNotFound
             case CoverRepository.SetSpineOwnerResult.Updated  =>
@@ -48,8 +51,9 @@ object CoverManager:
       coordinate(Result.Failed):
         prepareEdit(request).flatMap: change =>
           val mutation = covers.read(album).flatMap:
-            case CoverRepository.ReadResult.NotFound       => Result.CoverNotFound.pure[Db]
-            case CoverRepository.ReadResult.Found(current) =>
+            case CoverRepository.ReadResult.NotFound      => Result.CoverNotFound.pure[Db]
+            case CoverRepository.ReadResult.Found(stored) =>
+              val current = compose(stored)
               checkPhoto(album, request).flatMap: permission =>
                 val slots = Set(current.cover.front.id, current.cover.back.id)
                 permission.flatMap(_ => change(slots, current.placements)) match
@@ -126,6 +130,8 @@ object CoverManager:
   enum ReadResult:
     case Found(composition: Composition)
     case CoverNotFound, Failed
+
+  final case class Composition(cover: Cover, placements: Vector[CoverPlacement], dimensions: CoverDimensions)
 
   enum Result:
     case Saved(composition: Composition)

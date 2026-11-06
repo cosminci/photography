@@ -59,7 +59,7 @@ object AlbumApi:
         decode,
         (text: String) =>
           albums.saveSynopsis(album, text = text).flatMap {
-            case SaveSynopsisResult.Saved(updated) => Ok(buildMetadata(updated))
+            case SaveSynopsisResult.Saved(updated) => Ok(updated)
             case SaveSynopsisResult.NotFound       => respondAlbumNotFound
             case SaveSynopsisResult.Failed         => respondServiceFailure
             case SaveSynopsisResult.Uncertain      => respondUncertain
@@ -78,15 +78,12 @@ object AlbumApi:
         decode,
         (authors: AlbumAuthors) =>
           albums.saveAuthors(album, authors).flatMap {
-            case SaveAuthorsResult.Saved(updated) => Ok(buildMetadata(updated))
+            case SaveAuthorsResult.Saved(updated) => Ok(updated)
             case SaveAuthorsResult.NotFound       => respondAlbumNotFound
             case SaveAuthorsResult.Failed         => respondServiceFailure
             case SaveAuthorsResult.Uncertain      => respondUncertain
           }
       )
-
-    private def buildMetadata(album: Album) =
-      AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
 
     private val authorsDecoder = Decoder.decodeVector[Author].emap { authors =>
       Either.cond(authors.distinct.size === authors.size, authors.toSet, "Select each author only once")
@@ -114,7 +111,7 @@ object AlbumApi:
       case _ => BadRequest(Map("message" -> "Supply page once as a 32-bit integer"))
 
     private def create(request: Request[F]) =
-      request.as[(AlbumYear, AlbumTitle)].flatMap { case (year, title) => albums.create(year, title) }.flatMap {
+      request.as[AlbumYear].flatMap(albums.create).flatMap {
         case CreateAlbumResult.Created(album)  => Created(album)
         case CreateAlbumResult.YearAlreadyUsed => BadRequest(Map("message" -> "An album already exists for that year"))
         case CreateAlbumResult.Failed          => respondServiceFailure
@@ -122,7 +119,7 @@ object AlbumApi:
 
     private def rename(id: AlbumId, request: Request[F]) =
       request.as[AlbumTitle].flatMap(title => albums.rename(id, title)).flatMap {
-        case RenameResult.Renamed(album) => Ok(album)
+        case RenameResult.Renamed(album) => Ok(encodeSummary(album))
         case RenameResult.NotFound       => respondAlbumNotFound
         case RenameResult.Failed         => respondServiceFailure
       }.recoverWith { case _: MessageBodyFailure => BadRequest(invalidTitle) }
@@ -170,11 +167,16 @@ object AlbumApi:
 
     private given Decoder[AlbumTitle] = Decoder.decodeString.emap(_.trim.refineEither[Not[Empty] & Not[Blank]]).prepare(_.downField("title"))
 
-    private given Decoder[(AlbumYear, AlbumTitle)] = Decoder[AlbumYear].emap: year =>
-      s"Journey of the Shepherds $year".refineEither[Not[Empty] & Not[Blank]].map(title => (year, title))
-
     private given Encoder[Album] = Encoder.forProduct4("id", "year", "title", "createdAt"): album =>
       (album.id.value.toString, album.year: Int, album.title: String, album.createdAt.toString)
 
     private given Encoder[AlbumPage] = Encoder.forProduct5("albums", "page", "pageSize", "totalAlbums", "totalPages"): page =>
-      (page.albums, page.page, page.pageSize, page.totalAlbums, page.totalPages)
+      (page.albums.map(encodeSummary), page.page, page.pageSize, page.totalAlbums, page.totalPages)
+
+    private def encodeSummary(album: AlbumRepository.Metadata) =
+      Json.obj(
+        "id"        -> Json.fromString(album.id.value.toString),
+        "year"      -> Json.fromInt(album.year),
+        "title"     -> Json.fromString(album.title),
+        "createdAt" -> Json.fromString(album.createdAt.toString)
+      )

@@ -20,7 +20,7 @@ import photography.domain.layout.SpreadTemplateId
 import java.util.UUID
 import photography.ports.photo.{PhotoRepository, ThumbnailStorage}
 import photography.usecases.album.{AlbumManager, AlbumPageSize, BookExport}
-import photography.usecases.photo.{ChapterPhotoInventory, PhotoManager}
+import photography.usecases.photo.{ChapterPhotoInventory, PhotoManager, PhotoWriteRecovery}
 import photography.ports.album.{AlbumRepository, AlbumCompositionRepository, CountryRepository}
 import photography.usecases.chapter.ChapterMetadataManager
 import photography.usecases.photo.ChapterPhotoImport
@@ -83,10 +83,11 @@ object ProgramsBuilder:
     private val templates         = SqliteSpreadTemplateRepository.make[F](sqlite)
     private val albumComposition  = SqliteAlbumCompositionRepository.make
     private val chapterRepository = SqliteChapterRepository.make
-    private val albumRepository   = SqliteAlbumRepository.make[F](sqlite, albumComposition, chapterRepository)
+    private val albumRepository   = SqliteAlbumRepository.make[F](sqlite)
     private val placements        = SqlitePhotoPlacementRepository.make
     private val spreadRepository  = SqliteSpreadRepository.make
     private val coverRepository   = SqliteCoverRepository.make
+    private val coverManager      = CoverManager.make(coverRepository, placements)
     private val inventory         = PhotoInventory.make[F, ConnectionIO](photoRepository, placements, chapterRepository)
     private val planning          = ChapterPlanning.make(templates)
     private val gearRepository    = SqliteGearRepository.make[F](sqlite)
@@ -101,7 +102,7 @@ object ProgramsBuilder:
         sessions <- Resource.eval(buildSessions(using mutex))
         events   <- Resource.eval(AlbumPhotoEvents.make(albumRepository))
         imports  <- buildImports(events)(using mutex)
-        exports  <- Resource.eval(BookExport.make(albumRepository, coverRepository, photoRepository, gearRepository))
+        exports <- Resource.eval(BookExport.make(albumRepository, albumComposition, chapterRepository, coverManager, photoRepository, gearRepository))
       yield
         given Mutex[F] = mutex
         val gear       = GearManager.make(gearRepository, chapterRepository)
@@ -119,14 +120,17 @@ object ProgramsBuilder:
           countries = SqliteCountryRepository.make[F](sqlite),
           photoEvents = events,
           spreads = SpreadManager.make(templates, albumComposition, spreadRepository, placements, defaultPhotoLayout),
-          coverPlacements = CoverManager.make(coverRepository, placements),
+          coverPlacements = coverManager,
           editorSessions = sessions,
           editingAccess = EditingAccess.make(sessions, membership, photoTargets),
           bookExport = exports
         )
 
     private def buildImports(events: AlbumPhotoEvents[F])(using Mutex[F]) =
-      ChapterPhotoImport.make(storage, photoRepository, generator, events)
+      val buildManager = (guarded: Transaction[ConnectionIO, F]) =>
+        given Transaction[ConnectionIO, F] = guarded
+        PhotoManager.make(storage, photoRepository, generator)
+      ChapterPhotoImport.make(buildManager, PhotoWriteRecovery.make(photoRepository, storage), events)
 
     private def buildSessions(using Mutex[F]) =
       EditorSessionManager.make[F](lease = 30L)

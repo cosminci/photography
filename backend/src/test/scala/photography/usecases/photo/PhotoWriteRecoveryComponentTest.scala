@@ -53,13 +53,15 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
 
       for
         first     <- recovery.recover
+        resolved  <- recovery.resolve(intent)
         second    <- recovery.recover
         deletions <- refs.removed.get
         pending   <- refs.pending.get
       yield
         assertEquals(first, RecoveryResult.Recovered)
+        assertEquals(resolved, RecoveryResult.Recovered)
         assertEquals(second, RecoveryResult.Recovered)
-        assertEquals(deletions, removed)
+        assertEquals(deletions, removed ++ removed)
         assertEquals(pending, Vector.empty[PhotoWriteIntent])
     }
 
@@ -83,7 +85,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       val refs = Refs(initial = Vector(publication))
 
       for
-        result  <- buildRecovery(refs, listed = listed).recover
+        result  <- buildRecovery(refs, listed = listed).resolve(publication)
         removed <- refs.removed.get
         writes  <- refs.pending.get
       yield

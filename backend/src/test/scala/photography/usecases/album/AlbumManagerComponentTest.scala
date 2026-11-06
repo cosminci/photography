@@ -29,12 +29,12 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   private val fullBox                 = SlotBox(x = 0.0.refineUnsafe, y = 0.0.refineUnsafe, width = 1.0.refineUnsafe, height = 1.0.refineUnsafe)
   private val photoBox                = SlotBox(x = 0.0.refineUnsafe, y = 0.0.refineUnsafe, width = 0.5.refineUnsafe, height = 1.0.refineUnsafe)
   private val selectedYear: AlbumYear = 2026
-  private val thirteenAlbums          = Vector.tabulate(13)(buildAlbum).reverse
+  private val thirteenAlbums          = Vector.tabulate(13)(buildMetadata).reverse
 
   test(s"should page albums newest-first with $pageSize per page and clamp requests to the last page"):
     val refs      = Refs()
-    val lastPage  = AlbumPage(Vector(buildAlbum(index = 0)), page = 3, pageSize = 6, totalAlbums = 13, totalPages = 3)
-    val emptyPage = AlbumPage(albums = Vector.empty[Album], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)
+    val lastPage  = AlbumPage(Vector(buildMetadata(index = 0)), page = 3, pageSize = 6, totalAlbums = 13, totalPages = 3)
+    val emptyPage = AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)
 
     for
       manager      <- buildManager(refs, albums = thirteenAlbums)
@@ -46,7 +46,10 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     yield
       assertEquals(selected, ListAlbumsResult.Listed(lastPage))
       assertEquals(calls, Vector(0 -> 6, 12 -> 6))
-      assertEquals(firstPage, ListAlbumsResult.Listed(AlbumPage(thirteenAlbums.take(6), page = 1, pageSize = 6, totalAlbums = 13, totalPages = 3)))
+      assertEquals(
+        firstPage,
+        ListAlbumsResult.Listed(AlbumPage(thirteenAlbums.take(6), page = 1, pageSize = 6, totalAlbums = 13, totalPages = 3))
+      )
       assertEquals(empty, ListAlbumsResult.Listed(emptyPage))
 
   test("should report failure when either album page query fails"):
@@ -73,7 +76,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       val expectedStart             = Spread.AlbumStart(SpreadId(buildUuid(index = 11)), templateId, Vector(photoSlot), textSlot, emptyPlacements)
       val expectedCreatedAt         = Instant.parse("2026-10-07T12:00:00.123Z")
       val emptyChapters             = Vector.empty[Chapter]
-      val expectedTitle: AlbumTitle = "Asian capitals"
+      val expectedTitle: AlbumTitle = s"Journey of the Shepherds $year".refineUnsafe
       val expectedAlbum = Album(expectedAlbumId, year, expectedTitle, synopsis = "", Author.all, expectedCreatedAt, expectedStart, emptyChapters)
       val front         = CoverSlot(CoverSlotId(buildUuid(index = 14)))
       val back          = CoverSlot(CoverSlotId(buildUuid(index = 15)))
@@ -81,7 +84,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
       for
         manager <- buildManager(refs, listResult = listed, currentTime = suppliedTime)
-        result  <- manager.create(year, title = expectedAlbum.title)
+        result  <- manager.create(year)
         created <- refs.maybeCreated.get
       yield
         assertEquals(result, CreateAlbumResult.Created(expectedAlbum))
@@ -90,7 +93,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
   test("should report failure when the atomic creation write fails"):
     buildManager(Refs(), createResult = AlbumRepository.CreateResult.Failed(Failure.DatabaseFailure))
-      .flatMap(_.create(year = selectedYear, title = "Asian capitals"))
+      .flatMap(_.create(year = selectedYear))
       .map(assertEquals(_, CreateAlbumResult.Failed))
 
   test("should reject creation without writing when the AlbumStart template listing fails"):
@@ -99,7 +102,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
     for
       manager <- buildManager(refs, listResult = failedTemplates)
-      result  <- manager.create(year = selectedYear, title = "Asian capitals")
+      result  <- manager.create(year = selectedYear)
       created <- refs.maybeCreated.get
     yield
       assertEquals(result, CreateAlbumResult.Failed)
@@ -108,11 +111,11 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   test("should report an occupied year as a creation conflict rather than a service failure"):
     val manager = buildManager(Refs(), createResult = AlbumRepository.CreateResult.Failed(Failure.YearAlreadyUsed))
 
-    manager.flatMap(_.create(year = selectedYear, title = "Asian capitals")).map(assertEquals(_, CreateAlbumResult.YearAlreadyUsed))
+    manager.flatMap(_.create(year = selectedYear)).map(assertEquals(_, CreateAlbumResult.YearAlreadyUsed))
 
   test("should rename an album and preserve missing and failed write outcomes"):
     val refs  = Refs()
-    val album = buildAlbum(index = 1).copy(title = "Asian capitals")
+    val album = buildMetadata(index = 1).copy(title = "Asian capitals")
 
     val cases: Vector[(response: AlbumRepository.RenameResult, expected: RenameResult)] = Vector(
       AlbumRepository.RenameResult.Renamed(album)                  -> RenameResult.Renamed(album),
@@ -143,7 +146,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       assertEquals(failed, DeleteAlbumResult.Failed)
 
   test("should save synopsis and authors once and preserve every repository outcome"):
-    val album         = buildAlbum(index = 1)
+    val album         = buildMetadata(index = 1)
     val text          = "Șir 日本語\n🙂"
     val updated       = album.copy(synopsis = text)
     val synopsisCases = Vector(
@@ -203,10 +206,10 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
       refs: Refs,
-      albums: Vector[Album] = Vector.empty[Album],
+      albums: Vector[AlbumRepository.Metadata] = Vector.empty[AlbumRepository.Metadata],
       maybeListFailureOffset: Option[Int] = None,
       createResult: AlbumRepository.CreateResult = AlbumRepository.CreateResult.Created,
-      getResult: AlbumRepository.GetResult = AlbumRepository.GetResult.NotFound,
+      getResult: AlbumRepository.PlanningResult = AlbumRepository.PlanningResult.NotFound,
       renameResult: AlbumRepository.RenameResult = AlbumRepository.RenameResult.NotFound,
       deleteResult: AlbumRepository.DeleteResult = AlbumRepository.DeleteResult.NotFound,
       synopsisResult: AlbumRepository.SaveSynopsisResult = AlbumRepository.SaveSynopsisResult.NotFound,
@@ -245,10 +248,10 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
   private def buildRepository(
       refs: Refs,
-      albums: Vector[Album],
+      albums: Vector[AlbumRepository.Metadata],
       maybeListFailureOffset: Option[Int],
       createResult: AlbumRepository.CreateResult,
-      getResult: AlbumRepository.GetResult,
+      getResult: AlbumRepository.PlanningResult,
       renameResult: AlbumRepository.RenameResult,
       deleteResult: AlbumRepository.DeleteResult,
       synopsisResult: AlbumRepository.SaveSynopsisResult,
@@ -268,7 +271,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def create(album: Album, cover: Cover): IO[AlbumRepository.CreateResult] =
         refs.maybeCreated.set((album, cover).some).as(createResult)
 
-      override def get(id: AlbumId): IO[AlbumRepository.GetResult] =
+      override def readPlanning(id: AlbumId): IO[AlbumRepository.PlanningResult] =
         refs.maybeLastReadId.set(id.some).as(getResult)
 
       override def rename(id: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult] =
@@ -282,17 +285,12 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     val name = s"Template $index".refineUnsafe[Not[Empty]]
     SpreadTemplate.AlbumStart(SpreadTemplateId(buildUuid(index = index)), name, photoSlots = Vector(photoBox), textSlot = fullBox)
 
-  private def buildAlbum(index: Int) =
+  private def buildMetadata(index: Int) =
     val albumId           = AlbumId(buildUuid(index = index))
-    val templateId        = SpreadTemplateId(buildUuid(index = 20))
-    val photoSlot         = SpreadSlot.Photo(PhotoSpreadSlotId(buildUuid(index = index + 200)), photoBox, bleed = Set.empty)
-    val textSlot          = SpreadSlot.Text(TextSpreadSlotId(buildUuid(index = index + 300)), fullBox)
-    val emptyPlacements   = Vector.empty[SpreadPlacement]
-    val start             = Spread.AlbumStart(SpreadId(buildUuid(index = index + 100)), templateId, Vector(photoSlot), textSlot, emptyPlacements)
     val year              = (1900 + index).refineUnsafe[AlbumYearConstraint]
     val title: AlbumTitle = s"Album $index".refineUnsafe
     val albumCreatedAt    = createdAt.plusSeconds(index.toLong)
-    Album(albumId, year, title, synopsis = s"Synopsis $index", Author.all, albumCreatedAt, start, chapters = Vector.empty[Chapter])
+    AlbumRepository.Metadata(albumId, year, title, synopsis = s"Synopsis $index", Author.all, albumCreatedAt)
 
   private def buildUuid(index: Int) =
     val suffix = index.toString.reverse.padTo(12, '0').reverse

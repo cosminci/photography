@@ -35,6 +35,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val emptyChapters     = Vector.empty[Chapter]
     val title: AlbumTitle = "Journey of the Shepherds 2026"
     Album(id, year = 2026, title, synopsis = "A synopsis", authors = Author.all, createdAt, start, chapters = emptyChapters)
+  private val albumMetadata = AlbumRepository.Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
   private val metadata      = s"""{"id":"${id.value}","year":2026,"title":"Journey of the Shepherds 2026","createdAt":"2026-10-24T10:00:00.123Z"}"""
   private val albumPath     = s"/api/albums/${id.value}"
   private val jsonMediaType = MediaType.application.json.some
@@ -47,7 +48,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private val grant = GrantId(new UUID(0L, 13L))
 
   Vector("Cluj — 山\nSecond line", "", " \t\n ").foreach { text =>
-    val savedAlbum = album.copy(synopsis = text)
+    val savedAlbum = albumMetadata.copy(synopsis = text)
     val result     = SaveSynopsisResult.Saved(savedAlbum)
     test(s"should deliver ${result.productPrefix} synopsis with exact text ${Json.fromString(text).noSpaces}"):
       val refs     = Refs()
@@ -76,7 +77,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val selected              = Author.values.toVector.filter(selection.contains)
     val encodedAuthors        = Json.arr(selected.map(encodeAuthor)*)
     val authors: AlbumAuthors = selection.refineUnsafe
-    val result                = SaveAuthorsResult.Saved(album.copy(authors = authors))
+    val result                = SaveAuthorsResult.Saved(albumMetadata.copy(authors = authors))
     test(s"should deliver ${result.productPrefix} authors ${encodedAuthors.noSpaces} in canonical display order"):
       val refs        = Refs()
       val server      = buildAlbumApi(refs, authorsResult = result.pure[IO])
@@ -222,7 +223,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
 
   test("should list exact album metadata and forward default and explicit pages"):
     val refs         = Refs()
-    val page         = AlbumPage(albums = Vector(album), page = 2, pageSize = 6, totalAlbums = 7, totalPages = 2)
+    val page         = AlbumPage(albums = Vector(albumMetadata), page = 2, pageSize = 6, totalAlbums = 7, totalPages = 2)
     val server       = buildAlbumApi(refs, listAlbumsResult = ListAlbumsResult.Listed(page))
     val paths        = Vector("/api/albums", "/api/albums?page=99", "/api/albums?page=0", "/api/albums?page=-1")
     val emptyServer  = buildAlbumApi(Refs())
@@ -266,7 +267,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     yield
       assertEquals(created, ApiResponse(Status.Created, jsonMediaType, expectedMetadata))
       assertEquals(renamed, ApiResponse(Status.Ok, jsonMediaType, expectedMetadata))
-      assertEquals(calls, Vector("create:2026:Journey of the Shepherds 2026", s"rename:${id.value}:Asian capitals"))
+      assertEquals(calls, Vector("create:2026", s"rename:${id.value}:Asian capitals"))
 
   test("should return validation feedback for invalid title bodies without calling the application"):
     val refs         = Refs()
@@ -376,19 +377,11 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   private def buildAlbumApi(
       refs: Refs,
       listAlbumsResult: ListAlbumsResult =
-        ListAlbumsResult.Listed(AlbumPage(albums = Vector.empty[Album], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)),
+        ListAlbumsResult.Listed(AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)),
       createAlbumResult: CreateAlbumResult = CreateAlbumResult.Created(album),
-      renameResult: RenameResult = RenameResult.Renamed(album),
+      renameResult: RenameResult = RenameResult.Renamed(albumMetadata),
       deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted,
-      metadataResult: AlbumRepository.MetadataResult =
-        AlbumRepository.MetadataResult.Found(AlbumRepository.Metadata(
-          album.id,
-          album.year,
-          album.title,
-          album.synopsis,
-          album.authors,
-          album.createdAt
-        )),
+      metadataResult: AlbumRepository.MetadataResult = AlbumRepository.MetadataResult.Found(albumMetadata),
       synopsisResult: IO[SaveSynopsisResult] = IO.raiseError[SaveSynopsisResult](new AssertionError("Unexpected synopsis mutation")),
       authorsResult: IO[SaveAuthorsResult] = IO.raiseError[SaveAuthorsResult](new AssertionError("Unexpected author mutation"))
   ) =
@@ -397,9 +390,9 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         refs.contentCalls.update(_ :+ ContentCall.Synopsis(id, text = text)) >> synopsisResult
       override def saveAuthors(id: AlbumId, authors: AlbumAuthors): IO[AlbumManager.SaveAuthorsResult] =
         refs.contentCalls.update(_ :+ ContentCall.Authors(id, authors)) >> authorsResult
-      override def list(page: Int): IO[ListAlbumsResult]                             = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
-      override def create(year: AlbumYear, title: AlbumTitle): IO[CreateAlbumResult] =
-        refs.calls.update(_ :+ s"create:$year:$title").as(createAlbumResult)
+      override def list(page: Int): IO[ListAlbumsResult]          = refs.calls.update(_ :+ s"list:$page").as(listAlbumsResult)
+      override def create(year: AlbumYear): IO[CreateAlbumResult] =
+        refs.calls.update(_ :+ s"create:$year").as(createAlbumResult)
       override def rename(albumId: AlbumId, title: AlbumTitle): IO[RenameResult] =
         refs.calls.update(_ :+ s"rename:${albumId.value}:$title").as(renameResult)
       override def delete(albumId: AlbumId): IO[DeleteAlbumResult] = refs.calls.update(_ :+ s"delete:${albumId.value}").as(deleteAlbumResult)

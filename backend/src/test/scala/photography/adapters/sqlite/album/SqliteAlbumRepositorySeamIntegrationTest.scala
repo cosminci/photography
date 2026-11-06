@@ -1,5 +1,6 @@
 package photography.adapters.sqlite.album
-import photography.adapters.sqlite.chapter.SqliteChapterRepository
+import photography.adapters.sqlite.AlbumSnapshotFixture
+import photography.adapters.sqlite.AlbumSnapshotFixture.readAlbum
 import photography.domain.gear.CameraSelection
 
 import photography.adapters.sqlite.FlywayMigrator
@@ -39,7 +40,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should read metadata and ordered chapters without acquiring unrelated Cover or spread geometry"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val album      = buildAlbum(index = 1)
       val expected   = Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
 
@@ -48,16 +49,18 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         _        <- sql"DELETE FROM cover_slot".update.run.transact(xa)
         metadata <- repository.metadata(album.id)
         chapters <- repository.chapters(album.id)
+        planning <- repository.readPlanning(album.id)
         _        <- sql"DELETE FROM spread".update.run.transact(xa)
         retained <- repository.metadata(album.id)
       yield
         assertEquals(metadata, MetadataResult.Found(expected))
         assertEquals(chapters, ChaptersResult.Found(Vector.empty[ChapterMetadata]))
+        assertEquals(planning, PlanningResult.Found(PlanningSnapshot(album.year, Vector.empty[ChapterMetadata], 1)))
         assertEquals(retained, metadata)
 
-  test("should validate lightweight chapter periods and countries without acquiring their spread composition"):
+  test("should read saved chapter periods and countries without acquiring their spread composition"):
     buildTransactor.use: xa =>
-      val repository  = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository  = SqliteAlbumRepository.make[IO](xa)
       val album       = buildAlbum(index = 1)
       val chapter     = buildUuid(index = 902)
       val destination = buildUuid(index = 901)
@@ -73,21 +76,10 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           _       <- insertChapter
           _ <- sql"INSERT INTO destination_country (destination_id, country_id, position) VALUES ($destination, ${country.id.value}, 0)".update.run
         yield country
-      val invalidBounds      = Vector((start = 0L, end = 0L), (start = 1L, end = 86400000L), (start = 86400000L, end = 0L))
-      val readInvalidPeriods = invalidBounds.traverse { case (start, end) =>
-        sql"UPDATE chapter SET start_ms = $start, end_ms = $end WHERE id = $chapter".update.run.transact(xa) *> repository.chapters(album.id)
-      }
-      val removeCountries =
-        (sql"UPDATE chapter SET start_ms = 0, end_ms = 86400000 WHERE id = $chapter".update.run >>
-          sql"DELETE FROM destination_country WHERE destination_id = $destination".update.run).transact(xa)
-
       for
-        _              <- repository.create(album, buildCover(album))
-        country        <- saveMetadata.transact(xa)
-        valid          <- repository.chapters(album.id)
-        periods        <- readInvalidPeriods
-        _              <- removeCountries
-        emptyCountries <- repository.chapters(album.id)
+        _       <- repository.create(album, buildCover(album))
+        country <- saveMetadata.transact(xa)
+        valid   <- repository.chapters(album.id)
       yield
         val expected = ChapterMetadata(
           ChapterId(chapter),
@@ -96,52 +88,34 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           "/photos/coast",
           "Coast text"
         )
-        val failed = ChaptersResult.Failed(Failure.DatabaseFailure)
         assertEquals(valid, ChaptersResult.Found(Vector(expected)))
-        assertEquals(periods, Vector.fill(3)(failed))
-        assertEquals(emptyCountries, failed)
-
-  test("should retain absent resource outcomes and explicit storage failures"):
-    buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val album      = buildAlbum(index = 1).id
-
-      for
-        metadata <- repository.metadata(album)
-        chapters <- repository.chapters(album)
-        _        <- sql"DROP TABLE album".update.run.transact(xa)
-        failed   <- repository.metadata(album)
-      yield
-        assertEquals(metadata, MetadataResult.NotFound)
-        assertEquals(chapters, ChaptersResult.AlbumNotFound)
-        assertEquals(failed, MetadataResult.Failed(Failure.DatabaseFailure))
 
   test("should persist the complete initial album and preserve year and composition when renamed"):
     Vector(SpineOwner.Front -> "front", SpineOwner.Back -> "back").traverse_ { case (spineOwner, expectedSpine) =>
       buildTransactor.use: xa =>
-        val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository = SqliteAlbumRepository.make[IO](xa)
         val album      = buildAlbum(index = 1)
         val cover      = buildCover(album).copy(spineOwner = spineOwner)
 
         for
           created  <- repository.create(album, cover)
-          found    <- repository.get(album.id)
+          found    <- readAlbum(xa, album.id)
           spine    <- sql"SELECT spine_owner FROM cover".query[String].unique.transact(xa)
           sides    <- sql"SELECT side FROM cover_slot ORDER BY side".query[String].to[Vector].transact(xa)
           renamed  <- repository.rename(album.id, title = changedTitle)
-          reloaded <- repository.get(album.id)
+          reloaded <- readAlbum(xa, album.id)
         yield
           assertEquals(created, CreateResult.Created)
-          assertEquals(found, GetResult.Found(album))
+          assertEquals(found, AlbumSnapshotFixture.Result.Found(album))
           assertEquals(spine, expectedSpine)
           assertEquals(sides, Vector("back", "front"))
-          assertEquals(renamed, RenameResult.Renamed(album.copy(title = changedTitle)))
-          assertEquals(reloaded, GetResult.Found(album.copy(title = changedTitle)))
+          assertEquals(renamed, RenameResult.Renamed(buildMetadata(album.copy(title = changedTitle))))
+          assertEquals(reloaded, AlbumSnapshotFixture.Result.Found(album.copy(title = changedTitle)))
     }
 
   test("should list newest-first slices with stable ordering for equal creation instants and an empty collection"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val albums     = Vector(1, 2, 3).map(buildAlbum)
 
       for
@@ -151,15 +125,15 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         last   <- repository.list(offset = 2, limit = 2)
         beyond <- repository.list(offset = 3, limit = 2)
       yield
-        val newestFirst = albums.take(1) ++ albums.drop(1).reverse
-        assertEquals(empty, ListResult.Listed(AlbumPageSlice(totalAlbums = 0, albums = Vector.empty[Album])))
+        val newestFirst = (albums.take(1) ++ albums.drop(1).reverse).map(buildMetadata)
+        assertEquals(empty, ListResult.Listed(AlbumPageSlice(totalAlbums = 0, albums = Vector.empty[Metadata])))
         assertEquals(first, ListResult.Listed(AlbumPageSlice(totalAlbums = 3, albums = newestFirst.take(2))))
         assertEquals(last, ListResult.Listed(AlbumPageSlice(totalAlbums = 3, albums = newestFirst.drop(2))))
-        assertEquals(beyond, ListResult.Listed(AlbumPageSlice(totalAlbums = 3, albums = Vector.empty[Album])))
+        assertEquals(beyond, ListResult.Listed(AlbumPageSlice(totalAlbums = 3, albums = Vector.empty[Metadata])))
 
   test("should enforce unique required years atomically under concurrent creation"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val first      = buildAlbum(index = 1)
       val second     = buildAlbum(index = 2).copy(year = first.year)
       val later      = buildAlbum(index = 3)
@@ -168,41 +142,45 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         results <- Vector(first, second).parTraverse(album => repository.create(album, buildCover(album)))
         before  <- countInitialRows.transact(xa)
         _       <- repository.create(later, buildCover(later))
-        loaded  <- repository.get(later.id)
+        loaded  <- readAlbum(xa, later.id)
         after   <- countInitialRows.transact(xa)
       yield
         assertEquals(results.collect { case CreateResult.Created => () }.size, 1)
         assertEquals(results.collect { case CreateResult.Failed(Failure.YearAlreadyUsed) => () }.size, 1)
-        assertEquals(loaded, GetResult.Found(later))
+        assertEquals(loaded, AlbumSnapshotFixture.Result.Found(later))
         assertEquals(after, before * 2L)
 
   test("should report unknown albums consistently and delete all initial owned rows without deleting shared templates"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val unknownId  = AlbumId(buildUuid(index = 999))
       val album      = buildAlbum(index = 1)
 
       for
-        _             <- repository.create(album, buildCover(album))
-        missing       <- repository.get(unknownId)
-        missingRename <- repository.rename(unknownId, title = changedTitle)
-        missingDelete <- repository.delete(unknownId)
-        deleted       <- repository.delete(album.id)
-        removed       <- repository.get(album.id)
-        owned         <- countInitialRows.transact(xa)
-        templates     <- sql"SELECT count(*) FROM spread_template".query[Long].unique.transact(xa)
+        _               <- repository.create(album, buildCover(album))
+        missing         <- readAlbum(xa, unknownId)
+        missingChapters <- repository.chapters(unknownId)
+        missingPlanning <- repository.readPlanning(unknownId)
+        missingRename   <- repository.rename(unknownId, title = changedTitle)
+        missingDelete   <- repository.delete(unknownId)
+        deleted         <- repository.delete(album.id)
+        removed         <- readAlbum(xa, album.id)
+        owned           <- countInitialRows.transact(xa)
+        templates       <- sql"SELECT count(*) FROM spread_template".query[Long].unique.transact(xa)
       yield
-        assertEquals(missing, GetResult.NotFound)
+        assertEquals(missing, AlbumSnapshotFixture.Result.NotFound)
+        assertEquals(missingChapters, ChaptersResult.AlbumNotFound)
+        assertEquals(missingPlanning, PlanningResult.NotFound)
         assertEquals(missingRename, RenameResult.NotFound)
         assertEquals(missingDelete, DeleteResult.NotFound)
         assertEquals(deleted, DeleteResult.Deleted)
-        assertEquals(removed, GetResult.NotFound)
+        assertEquals(removed, AlbumSnapshotFixture.Result.NotFound)
         assertEquals(owned, 0L)
         assertEquals(templates, 99L)
 
   test("should roll back every album-owned row when a late cover write fails"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val failCover  = sql"""CREATE TRIGGER fail_cover BEFORE INSERT ON cover_slot WHEN NEW.side = 'back'
                            BEGIN SELECT RAISE(ABORT, 'injected cover failure'); END"""
       val album = buildAlbum(index = 1)
@@ -217,7 +195,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should reject noninitial composition or a foreign cover without writing owned rows"):
     buildTransactor.use: xa =>
-      val repository      = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository      = SqliteAlbumRepository.make[IO](xa)
       val album           = buildAlbum(index = 1)
       val templateId      = SpreadTemplateId(buildUuid(index = 1))
       val textSlot        = SpreadSlot.Text(TextSpreadSlotId(buildUuid(index = 11)), SlotBox(x = 0.0, y = 0.0, width = 100.0, height = 100.0))
@@ -253,7 +231,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           assertEquals(count, 0L)
       }
 
-  test("should reject incomplete or invalid persisted albums rather than returning partial success"):
+  test("should validate each owner's saved representation without coupling metadata writes to book geometry or Cover"):
     Vector(
       "DELETE FROM cover",
       "DELETE FROM cover_slot WHERE side = 'front'",
@@ -270,75 +248,79 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       "UPDATE spread_text_slot SET id = '0-0-0-0-1'"
     ).traverse_ { corruption =>
       buildTransactor.use: xa =>
-        val repository       = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository       = SqliteAlbumRepository.make[IO](xa)
         val album            = buildAlbum(index = 1)
-        val expectedMetadata = if corruption.startsWith("UPDATE album") then MetadataResult.Failed(Failure.DatabaseFailure)
-        else MetadataResult.Found(Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt))
+        val invalidMetadata  = corruption.startsWith("UPDATE album")
+        val coverOnly        = corruption.startsWith("DELETE FROM cover")
+        val original         = buildMetadata(album)
+        val renamed          = original.copy(title = changedTitle)
+        val revised          = renamed.copy(synopsis = "Replacement")
+        val expectedMetadata = if invalidMetadata then MetadataResult.Failed(Failure.DatabaseFailure) else MetadataResult.Found(original)
 
         for
-          _        <- repository.create(album, buildCover(album))
-          _        <- (sql"PRAGMA ignore_check_constraints=ON".update.run >> Fragment.const(corruption).update.run).transact(xa)
-          found    <- repository.get(album.id)
-          metadata <- repository.metadata(album.id)
-          listed   <- repository.list(offset = 0, limit = 6)
-          before   <- sql"SELECT title FROM album".query[String].unique.transact(xa)
-          changed  <- repository.rename(album.id, title = changedTitle)
-          synopsis <- repository.saveSynopsis(album.id, text = "Replacement")
-          authors  <- repository.saveAuthors(album.id, Author.all)
-          after    <- sql"SELECT title FROM album".query[String].unique.transact(xa)
-          deleted  <- repository.delete(album.id)
-          removed  <- repository.get(album.id)
+          _             <- repository.create(album, buildCover(album))
+          _             <- (sql"PRAGMA ignore_check_constraints=ON".update.run >> Fragment.const(corruption).update.run).transact(xa)
+          found         <- readAlbum(xa, album.id)
+          savedMetadata <- repository.metadata(album.id)
+          listed        <- repository.list(offset = 0, limit = 6)
+          before        <- sql"SELECT title FROM album".query[String].unique.transact(xa)
+          changed       <- repository.rename(album.id, title = changedTitle)
+          synopsis      <- repository.saveSynopsis(album.id, text = "Replacement")
+          authors       <- repository.saveAuthors(album.id, Author.all)
+          after         <- sql"SELECT title FROM album".query[String].unique.transact(xa)
+          deleted       <- repository.delete(album.id)
+          removed       <- readAlbum(xa, album.id)
         yield
-          assertEquals(found, GetResult.Failed(Failure.DatabaseFailure))
-          assertEquals(metadata, expectedMetadata)
-          assertEquals(listed, ListResult.Failed(Failure.DatabaseFailure))
-          assertEquals(changed, RenameResult.Failed(Failure.DatabaseFailure))
-          assertEquals(synopsis, SaveSynopsisResult.Failed(Failure.DatabaseFailure))
-          assertEquals(authors, SaveAuthorsResult.Failed(Failure.DatabaseFailure))
-          assertEquals(after, before)
+          assertEquals(found, if coverOnly then AlbumSnapshotFixture.Result.Found(album) else AlbumSnapshotFixture.Result.Failed)
+          assertEquals(savedMetadata, expectedMetadata)
+          assertEquals(
+            listed,
+            if invalidMetadata then ListResult.Failed(Failure.DatabaseFailure)
+            else ListResult.Listed(AlbumPageSlice(1, Vector(original)))
+          )
+          assertEquals(changed, if invalidMetadata then RenameResult.Failed(Failure.DatabaseFailure) else RenameResult.Renamed(renamed))
+          assertEquals(synopsis, if invalidMetadata then SaveSynopsisResult.Failed(Failure.DatabaseFailure) else SaveSynopsisResult.Saved(revised))
+          assertEquals(authors, if invalidMetadata then SaveAuthorsResult.Failed(Failure.DatabaseFailure) else SaveAuthorsResult.Saved(revised))
+          assertEquals(after, if invalidMetadata then before else changedTitle: String)
           assertEquals(deleted, DeleteResult.Deleted)
-          assertEquals(removed, GetResult.NotFound)
+          assertEquals(removed, AlbumSnapshotFixture.Result.NotFound)
     }
 
   test("should report database failures explicitly for every operation"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val album      = buildAlbum(index = 1)
 
       for
-        _       <- sql"DROP TABLE album".update.run.transact(xa)
-        listed  <- repository.list(offset = 0, limit = 6)
-        created <- repository.create(album, buildCover(album))
-        found   <- repository.get(album.id)
-        renamed <- repository.rename(album.id, title = changedTitle)
-        deleted <- repository.delete(album.id)
+        _        <- sql"DROP TABLE album".update.run.transact(xa)
+        listed   <- repository.list(offset = 0, limit = 6)
+        created  <- repository.create(album, buildCover(album))
+        found    <- readAlbum(xa, album.id)
+        planning <- repository.readPlanning(album.id)
+        renamed  <- repository.rename(album.id, title = changedTitle)
+        deleted  <- repository.delete(album.id)
       yield
         assertEquals(listed, ListResult.Failed(Failure.DatabaseFailure))
         assertEquals(created, CreateResult.Failed(Failure.DatabaseFailure))
-        assertEquals(found, GetResult.Failed(Failure.DatabaseFailure))
+        assertEquals(found, AlbumSnapshotFixture.Result.Failed)
+        assertEquals(planning, PlanningResult.Failed(Failure.DatabaseFailure))
         assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
         assertEquals(deleted, DeleteResult.Failed(Failure.DatabaseFailure))
 
   test("should preserve persisted photo-slot bleed when reading an album"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
-      val album      = buildAlbum(index = 1)
+      val repository = SqliteAlbumRepository.make[IO](xa)
+      val initial    = buildAlbum(index = 1)
+      val album = initial.copy(opening = initial.opening.copy(photoSlots = initial.opening.photoSlots.map(_.copy(bleed = SpreadEdge.values.toSet))))
 
       for
-        _      <- repository.create(album, buildCover(album))
-        slotId <- sql"SELECT id FROM spread_photo_slot ORDER BY id LIMIT 1".query[String].unique.transact(xa)
-        _      <- sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES ($slotId, 'left')".update.run.transact(xa)
-        found  <- repository.get(album.id)
-      yield
-        val expectedSlots = album.opening.photoSlots.map:
-          case slot if slot.id.value.toString === slotId => slot.copy(bleed = slot.bleed + SpreadEdge.Left)
-          case slot                                      => slot
-        val expectedAlbum = album.copy(opening = album.opening.copy(photoSlots = expectedSlots))
-        assertEquals(found, GetResult.Found(expectedAlbum))
+        _     <- repository.create(album, buildCover(album))
+        found <- readAlbum(xa, album.id)
+      yield assertEquals(found, AlbumSnapshotFixture.Result.Found(album))
 
   test("should read chapter spreads and placements in domain order and cascade deletion through the owned graph"):
     buildTransactor.use: xa =>
-      val repository         = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository         = SqliteAlbumRepository.make[IO](xa)
       val countryId          = buildUuid(index = 400).toString
       val destinationId      = buildUuid(index = 401).toString
       val chapterId          = buildUuid(index = 402).toString
@@ -450,9 +432,9 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
           for
             _       <- xa.rawTrans.apply(corrupt)
-            invalid <- repository.get(album.id)
+            invalid <- readAlbum(xa, album.id)
             _       <- Fragment.const(repair).update.run.transact(xa)
-          yield assertEquals(invalid, GetResult.Failed(Failure.DatabaseFailure))
+          yield assertEquals(invalid, AlbumSnapshotFixture.Result.Failed)
         }
       val album           = buildAlbum(index = 1)
       val selectedAuthors = Set(Author.Mara).refineUnsafe[MinLength[1]]
@@ -460,9 +442,9 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       for
         _             <- repository.create(album, buildCover(album))
         _             <- initialiseChapter.transact(xa)
-        found         <- repository.get(album.id)
+        found         <- readAlbum(xa, album.id)
         renamed       <- repository.rename(album.id, title = changedTitle)
-        reloaded      <- repository.get(album.id)
+        reloaded      <- readAlbum(xa, album.id)
         _             <- rejectCorruptions(album)
         savedSynopsis <- repository.saveSynopsis(album.id, text = "Retained references\nȘ")
         savedAuthors  <- repository.saveAuthors(album.id, selectedAuthors)
@@ -532,11 +514,11 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         val expectedAlbum    = album.copy(chapters = Vector(chapter, secondChapter))
         val expectedSynopsis = expectedAlbum.copy(title = changedTitle, synopsis = "Retained references\nȘ")
         val expectedAuthors  = expectedSynopsis.copy(authors = selectedAuthors)
-        assertEquals(found, GetResult.Found(expectedAlbum))
-        assertEquals(renamed, RenameResult.Renamed(expectedAlbum.copy(title = changedTitle)))
-        assertEquals(reloaded, GetResult.Found(expectedAlbum.copy(title = changedTitle)))
-        assertEquals(savedSynopsis, SaveSynopsisResult.Saved(expectedSynopsis))
-        assertEquals(savedAuthors, SaveAuthorsResult.Saved(expectedAuthors))
+        assertEquals(found, AlbumSnapshotFixture.Result.Found(expectedAlbum))
+        assertEquals(renamed, RenameResult.Renamed(buildMetadata(expectedAlbum.copy(title = changedTitle))))
+        assertEquals(reloaded, AlbumSnapshotFixture.Result.Found(expectedAlbum.copy(title = changedTitle)))
+        assertEquals(savedSynopsis, SaveSynopsisResult.Saved(buildMetadata(expectedSynopsis)))
+        assertEquals(savedAuthors, SaveAuthorsResult.Saved(buildMetadata(expectedAuthors)))
         assertEquals(expectedAlbum.collectCountries, Vector(expectedCountry, japan))
         assertEquals(deleted, DeleteResult.Deleted)
         assertEquals(owned, 0L)
@@ -544,7 +526,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should preserve the complete aggregate through all nonempty author combinations and Unicode synopsis clearing"):
     buildTransactor.use: xa =>
-      val repository             = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository             = SqliteAlbumRepository.make[IO](xa)
       val album                  = buildAlbum(index = 1)
       val text                   = "Ș 日本語\n🙂"
       val combinations           = Author.all.subsets().filter(_.nonEmpty).toVector.map(_.refineUnsafe[MinLength[1]])
@@ -554,11 +536,11 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
         for
           result   <- repository.saveAuthors(album.id, authors)
-          found    <- repository.get(album.id)
+          found    <- readAlbum(xa, album.id)
           metadata <- repository.metadata(album.id)
         yield
-          assertEquals(result, SaveAuthorsResult.Saved(expected))
-          assertEquals(found, GetResult.Found(expected))
+          assertEquals(result, SaveAuthorsResult.Saved(expectedMetadata))
+          assertEquals(found, AlbumSnapshotFixture.Result.Found(expected))
           assertEquals(metadata, MetadataResult.Found(expectedMetadata))
       }
 
@@ -571,15 +553,15 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         unknownSynopsis <- repository.saveSynopsis(AlbumId(buildUuid(index = 999)), text = text)
         unknownAuthors  <- repository.saveAuthors(AlbumId(buildUuid(index = 999)), Author.all)
       yield
-        assertEquals(saved, SaveSynopsisResult.Saved(album.copy(synopsis = text)))
-        assertEquals(cleared, SaveSynopsisResult.Saved(album))
+        assertEquals(saved, SaveSynopsisResult.Saved(buildMetadata(album.copy(synopsis = text))))
+        assertEquals(cleared, SaveSynopsisResult.Saved(buildMetadata(album)))
         assertEquals(unknownSynopsis, SaveSynopsisResult.NotFound)
         assertEquals(unknownAuthors, SaveAuthorsResult.NotFound)
 
   test("should reject field writes atomically without treating known rejection as uncertain"):
     Vector("RAISE(ABORT, 'rejected')", "RAISE(IGNORE)").traverse_ { rejection =>
       buildTransactor.use: xa =>
-        val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository = SqliteAlbumRepository.make[IO](xa)
         val album      = buildAlbum(index = 1)
         val reject     = Fragment.const(s"CREATE TRIGGER reject_album BEFORE UPDATE ON album BEGIN SELECT $rejection; END")
 
@@ -589,28 +571,28 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           synopsis <- repository.saveSynopsis(album.id, text = "changed")
           authors  <- repository.saveAuthors(album.id, Set(Author.Mara).refineUnsafe[MinLength[1]])
           renamed  <- repository.rename(album.id, title = changedTitle)
-          found    <- repository.get(album.id)
+          found    <- readAlbum(xa, album.id)
         yield
           assertEquals(synopsis, SaveSynopsisResult.Failed(Failure.DatabaseFailure))
           assertEquals(authors, SaveAuthorsResult.Failed(Failure.DatabaseFailure))
           assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
-          assertEquals(found, GetResult.Found(album))
+          assertEquals(found, AlbumSnapshotFixture.Result.Found(album))
     }
 
   test("should reject empty domain authors and invalid stored representations without changing retained data"):
     buildTransactor.use: xa =>
-      val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+      val repository = SqliteAlbumRepository.make[IO](xa)
       val album      = buildAlbum(index = 1)
       val invalid    = Vector("0", "8", "'Cosmin'", "1.5")
 
       for
         _        <- repository.create(album, buildCover(album))
         failures <- invalid.traverse(value => (fr"UPDATE album SET authors = " ++ Fragment.const(value)).update.run.transact(xa).attempt)
-        retained <- repository.get(album.id)
+        retained <- readAlbum(xa, album.id)
       yield
         assert(Set.empty[Author].refineEither[MinLength[1]].isLeft)
         assert(failures.forall(_.isLeft))
-        assertEquals(retained, GetResult.Found(album))
+        assertEquals(retained, AlbumSnapshotFixture.Result.Found(album))
 
   test("should retain authored album content and composition across connection reopening"):
     val acquireDatabase = IO.blocking(Files.createTempFile(Path.of("target"), "album-history-", ".sqlite"))
@@ -623,29 +605,29 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       val albums      = Vector(original, later)
       val selected    = Set(Author.Iacob).refineUnsafe[MinLength[1]]
       val saveAuthors = buildConnection(path).use: xa =>
-        val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository = SqliteAlbumRepository.make[IO](xa)
 
         for
           _       <- albums.traverse_(album => repository.create(album, buildCover(album)))
-          first   <- repository.get(original.id)
-          current <- repository.get(later.id)
+          first   <- readAlbum(xa, original.id)
+          current <- readAlbum(xa, later.id)
           saved   <- repository.saveAuthors(original.id, selected)
         yield
-          assertEquals(first, GetResult.Found(original))
-          assertEquals(current, GetResult.Found(later))
-          assertEquals(saved, SaveAuthorsResult.Saved(original.copy(authors = selected)))
+          assertEquals(first, AlbumSnapshotFixture.Result.Found(original))
+          assertEquals(current, AlbumSnapshotFixture.Result.Found(later))
+          assertEquals(saved, SaveAuthorsResult.Saved(buildMetadata(original.copy(authors = selected))))
       val verifyRestartRetention = buildConnection(path).use: xa =>
-        val repository = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository = SqliteAlbumRepository.make[IO](xa)
 
         for
-          retained <- repository.get(original.id)
+          retained <- readAlbum(xa, original.id)
           renamed  <- repository.rename(original.id, title = changedTitle)
           cleared  <- repository.saveSynopsis(original.id, text = "")
           deleted  <- repository.delete(original.id)
         yield
-          assertEquals(retained, GetResult.Found(original.copy(authors = selected)))
-          assertEquals(renamed, RenameResult.Renamed(original.copy(title = changedTitle, authors = selected)))
-          assertEquals(cleared, SaveSynopsisResult.Saved(original.copy(title = changedTitle, synopsis = "", authors = selected)))
+          assertEquals(retained, AlbumSnapshotFixture.Result.Found(original.copy(authors = selected)))
+          assertEquals(renamed, RenameResult.Renamed(buildMetadata(original.copy(title = changedTitle, authors = selected))))
+          assertEquals(cleared, SaveSynopsisResult.Saved(buildMetadata(original.copy(title = changedTitle, synopsis = "", authors = selected))))
           assertEquals(deleted, DeleteResult.Deleted)
 
       saveAuthors >> verifyRestartRetention
@@ -658,10 +640,10 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
 
     acknowledgements.traverse_ { error =>
       buildTransactor.use: xa =>
-        val repository  = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val repository  = SqliteAlbumRepository.make[IO](xa)
         val album       = buildAlbum(index = 1)
         val interrupted = Transactor.after.set(xa, xa.strategy.after >> error.raiseError[ConnectionIO, Unit])
-        val uncertain   = SqliteAlbumRepository.make[IO](interrupted, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
+        val uncertain   = SqliteAlbumRepository.make[IO](interrupted)
         val selected    = Set(Author.Mara).refineUnsafe[MinLength[1]]
 
         for
@@ -676,13 +658,13 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           synopsis <- uncertain.saveSynopsis(album.id, text = "Saved once")
           authors  <- uncertain.saveAuthors(album.id, selected)
           renamed  <- uncertain.rename(album.id, title = changedTitle)
-          found    <- repository.get(album.id)
+          found    <- readAlbum(xa, album.id)
           writes   <- sql"SELECT field, count(*) FROM field_audit GROUP BY field ORDER BY field".query[(String, Long)].to[Vector].transact(xa)
         yield
           assertEquals(synopsis, SaveSynopsisResult.Uncertain)
           assertEquals(authors, SaveAuthorsResult.Uncertain)
           assertEquals(renamed, RenameResult.Failed(Failure.DatabaseFailure))
-          assertEquals(found, GetResult.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
+          assertEquals(found, AlbumSnapshotFixture.Result.Found(album.copy(title = changedTitle, synopsis = "Saved once", authors = selected)))
           assertEquals(writes, Vector(("authors", 1L), ("synopsis", 1L), ("title", 1L)))
     }
 
@@ -697,6 +679,9 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
       _    <- FlywayMigrator.make[IO](path).evalMap(_.migrate)
       xa   <- SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 2, maxSessions = 2)).buildTransactor
     yield xa
+
+  private def buildMetadata(album: Album) =
+    Metadata(album.id, album.year, album.title, album.synopsis, album.authors, album.createdAt)
 
   private def buildAlbum(index: Int) =
     val albumId  = AlbumId(buildUuid(index = index))

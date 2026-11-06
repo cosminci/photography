@@ -38,7 +38,6 @@ lazy val root = (project in file("."))
     coverageFailOnMinimum      := true,
     coverageExcludedPackages   := Seq(
       "photography\\.app\\.runtime\\..*", // composition root; exercised by the packaged runtime, not unit tests
-      "photography\\.adapters\\.sqlite\\..*",
       ".*photography\\.domain\\..*(AbsoluteLocation|AlbumId|ChapterId|CountryId|DestinationId|PhotoId|RelativeLocation|EditorId|SessionId|CameraId|LensId|CoverSlotId|CoverPlacementId|PhotoSpreadSlotId|SpreadId|SpreadPlacementId|SpreadTemplateId|TextSpreadSlotId).*"
     ).mkString(";"),
     libraryDependencies ++= Seq(

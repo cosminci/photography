@@ -220,3 +220,11 @@ CREATE TABLE cover_editing_lock (
     album_id TEXT PRIMARY KEY NOT NULL REFERENCES cover (album_id) ON DELETE CASCADE,
     session_id TEXT NOT NULL REFERENCES editor_session (id)
 ) STRICT;
+
+CREATE INDEX album_created_at_id ON album (created_at_ms DESC, id DESC);
+CREATE INDEX chapter_destination ON chapter (destination_id);
+CREATE INDEX photo_chapter_id ON photo (chapter_id, id);
+CREATE INDEX chapter_camera_camera ON chapter_camera (camera_id);
+CREATE INDEX chapter_camera_lens_lens ON chapter_camera_lens (lens_id);
+CREATE INDEX spread_photo_slot_spread ON spread_photo_slot (spread_id);
+CREATE INDEX spread_text_slot_spread ON spread_text_slot (spread_id);

@@ -18,7 +18,7 @@ import java.time.temporal.ChronoUnit
 
 trait AlbumManager[F[_]]:
   def list(page: Int): F[ListAlbumsResult]
-  def create(year: AlbumYear, title: AlbumTitle): F[CreateAlbumResult]
+  def create(year: AlbumYear): F[CreateAlbumResult]
   def rename(id: AlbumId, title: AlbumTitle): F[RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult]
   def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult]
@@ -57,10 +57,11 @@ object AlbumManager:
               ListAlbumsResult.Listed(result)
             case AlbumRepository.ListResult.Failed(_) => ListAlbumsResult.Failed
 
-    override def create(year: AlbumYear, title: AlbumTitle): F[CreateAlbumResult] =
+    override def create(year: AlbumYear): F[CreateAlbumResult] =
       spreads.listAlbumStartTemplates.flatMap:
         case ListAlbumStartTemplatesResult.Listed(templates) =>
           val template = templates.head
+          val title    = s"Journey of the Shepherds $year".refineUnsafe[Not[Empty] & Not[Blank]]
           buildInitialComposition(year, title, template.id, photoSlots = template.photoSlots, template.textSlot).flatMap { case (album, cover) =>
             repository.create(album, cover).map:
               case AlbumRepository.CreateResult.Created                                         => CreateAlbumResult.Created(album)
@@ -122,7 +123,7 @@ object AlbumManager:
         val cover = Cover(albumId, SpineOwner.Front, front = CoverSlot(frontId), back = CoverSlot(backId))
         (album, cover)
 
-  final case class AlbumPage(albums: Vector[Album], page: Int, pageSize: Int, totalAlbums: Long, totalPages: Int)
+  final case class AlbumPage(albums: Vector[AlbumRepository.Metadata], page: Int, pageSize: Int, totalAlbums: Long, totalPages: Int)
 
   enum ListAlbumsResult derives CanEqual:
     case Listed(page: AlbumPage)
@@ -133,7 +134,7 @@ object AlbumManager:
     case YearAlreadyUsed, Failed
 
   enum RenameResult derives CanEqual:
-    case Renamed(album: Album)
+    case Renamed(album: AlbumRepository.Metadata)
     case NotFound, Failed
 
   enum DeleteAlbumResult derives CanEqual:
@@ -142,9 +143,9 @@ object AlbumManager:
     case Failed
 
   enum SaveSynopsisResult derives CanEqual:
-    case Saved(album: Album)
+    case Saved(album: AlbumRepository.Metadata)
     case NotFound, Failed, Uncertain
 
   enum SaveAuthorsResult derives CanEqual:
-    case Saved(album: Album)
+    case Saved(album: AlbumRepository.Metadata)
     case NotFound, Failed, Uncertain

@@ -1,8 +1,8 @@
 package photography.adapters.sqlite.chapter
+import photography.adapters.sqlite.AlbumSnapshotFixture
+import photography.adapters.sqlite.AlbumSnapshotFixture.readAlbum
 import photography.domain.gear.*
 import photography.adapters.sqlite.gear.SqliteGearRepository
-
-import photography.adapters.sqlite.album.SqliteAlbumCompositionRepository
 
 import photography.adapters.sqlite.FlywayMigrator
 import photography.adapters.sqlite.SqliteConnection
@@ -67,7 +67,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
   test("should acquire and completely replace ordered chapter selections including empty gear and retain aggregate state"):
     buildTransactor.use: xa =>
       val chapters = SqliteChapterRepository.make
-      val albums   = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
       val catalog  = SqliteGearRepository.make[IO](xa)
 
       for
@@ -78,20 +77,20 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         _        <- chapters.create(albumId, second, order = NonEmptyList.of(first.id, second.id)).transact(xa)
         _        <- Vector(body, fixedBody).traverse_(catalog.createCamera)
         _        <- Vector(selectedLens, otherLens).traverse_(catalog.createLens)
-        before   <- albums.get(albumId)
+        before   <- readAlbum(xa, albumId)
         saved    <- chapters.replaceGear(albumId, first.id, selection = orderedGear).transact(xa)
         read     <- chapters.readGear(albumId, first.id).transact(xa)
         all      <- chapters.readSelections.transact(xa)
-        after    <- albums.get(albumId)
+        after    <- readAlbum(xa, albumId)
         cleared  <- chapters.replaceGear(albumId, first.id, selection = Vector.empty[CameraSelection]).transact(xa)
         empty    <- chapters.readGear(albumId, first.id).transact(xa)
-        restored <- albums.get(albumId)
+        restored <- readAlbum(xa, albumId)
       yield
         val expectedSelections =
           Vector(ChapterGearSelection(first.id, selection = orderedGear), ChapterGearSelection(second.id, selection = Vector.empty[CameraSelection]))
         val expectedAlbum = before match
-          case AlbumRepository.GetResult.Found(album) =>
-            AlbumRepository.GetResult.Found(album.copy(chapters =
+          case AlbumSnapshotFixture.Result.Found(album) =>
+            AlbumSnapshotFixture.Result.Found(album.copy(chapters =
               album.chapters.map(value => if value.id.value === first.id.value then value.copy(gear = orderedGear) else value)
             ))
           case result => fail(s"Expected complete album: $result")
@@ -160,7 +159,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
             _               <- chapters.replaceGear(albumId, first.id, selection = fixedSelection).transact(xa)
             before          <- chapters.readSelections.transact(xa)
             _               <- Fragment.const(trigger).update.run.transact(xa)
-            failed          <- replacement.transact(xa)
+            failed          <- replacement.transact(xa).attempt
             after           <- chapters.readSelections.transact(xa)
             description     <- sql"SELECT description FROM chapter".query[String].unique.transact(xa)
             _               <- sql"DROP TRIGGER reject_gear".update.run.transact(xa)
@@ -168,14 +167,39 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
             canceled        <- cancelCaller.transact(xa).start
             cancellation    <- canceled.join
             finalSelections <- chapters.readSelections.transact(xa)
+            rollbackFailure <-
+              if rejection === "ABORT" then
+                (sql"""CREATE TRIGGER abort_gear BEFORE INSERT ON chapter_camera_lens BEGIN
+                  SELECT RAISE(ROLLBACK, 'Gear transaction aborted'); END""".update.run >> replacement).transact(xa).attempt
+              else ChapterRepository.GearWriteResult.Saved.asRight[Throwable].pure[IO]
           yield
-            assertEquals(failed, ChapterRepository.GearWriteResult.Failed)
+            assertEquals(failed, ChapterRepository.GearWriteResult.Failed.asRight[Throwable])
             assertEquals(after, before)
             assertEquals(description, first.description)
             assert(aborted.isLeft)
             assert(cancellation.isCanceled)
             assertEquals(finalSelections, before)
+            if rejection === "ABORT" then
+              rollbackFailure match
+                case Left(cause) =>
+                  assert(cause.getMessage.contains("Gear transaction aborted"))
+                  assert(cause.getSuppressed.toVector.exists(_.getMessage.contains("savepoint")))
+                case other => fail(s"Expected the primary failure with rollback evidence, obtained $other")
     }
+
+  test("should report unavailable persistence before attempting chapter content writes"):
+    buildTransactor.use: xa =>
+      val chapters = SqliteChapterRepository.make
+      for
+        _           <- sql"ALTER TABLE chapter RENAME TO inaccessible_chapter".update.run.transact(xa)
+        gear        <- chapters.replaceGear(albumId, ChapterId(new UUID(0L, 1L)), selection = Vector.empty[CameraSelection]).transact(xa)
+        _           <- sql"ALTER TABLE album RENAME TO inaccessible_album".update.run.transact(xa)
+        description <- chapters.saveDescription(albumId, ChapterId(new UUID(0L, 1L)), text = "Saved text").transact(xa)
+      yield
+        assertEquals(gear, ChapterRepository.GearWriteResult.Failed)
+        description match
+          case ChapterRepository.SaveDescriptionResult.Failed(_) => ()
+          case other                                             => fail(s"Expected failed acquisition, obtained $other")
 
   test("should reject malformed saved use cardinality and missing references without empty or partial successful reads"):
     Vector(
@@ -391,7 +415,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
   test("should save exact scoped chapter descriptions and clear while retaining all metadata and composition"):
     buildTransactor.use: xa =>
       val chapters = SqliteChapterRepository.make
-      val albums   = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
       val camera   = new UUID(12L, 1L)
       val lens     = new UUID(12L, 2L)
       val gear     = sql"""SELECT c.chapter_id, c.camera_id, c.use_kind, l.lens_id FROM chapter_camera c
@@ -413,26 +436,26 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         _              <- insertLens
         _              <- sql"INSERT INTO chapter_camera VALUES (${first.id.value}, $camera, 'interchangeable_lenses')".update.run.transact(xa)
         _              <- sql"INSERT INTO chapter_camera_lens VALUES (${first.id.value}, $camera, $lens)".update.run.transact(xa)
-        before         <- albums.get(albumId)
+        before         <- readAlbum(xa, albumId)
         saved          <- chapters.saveDescription(albumId, first.id, text = "日本\nVacanță").transact(xa)
-        after          <- albums.get(albumId)
+        after          <- readAlbum(xa, albumId)
         missingAlbum   <- chapters.saveDescription(AlbumId(new UUID(0L, 99L)), first.id, text = "wrong album").transact(xa)
         missingChapter <- chapters.saveDescription(albumId, ChapterId(new UUID(0L, 99L)), text = "missing").transact(xa)
-        unchanged      <- albums.get(albumId)
+        unchanged      <- readAlbum(xa, albumId)
         cleared        <- chapters.saveDescription(albumId, first.id, text = "").transact(xa)
-        empty          <- albums.get(albumId)
+        empty          <- readAlbum(xa, albumId)
         retainedGear   <- gear.transact(xa)
       yield
         val expectedText = before match
-          case AlbumRepository.GetResult.Found(album) =>
+          case AlbumSnapshotFixture.Result.Found(album) =>
             val savedChapters =
               album.chapters.map(value => if value.id.value === first.id.value then value.copy(description = "日本\nVacanță") else value)
-            AlbumRepository.GetResult.Found(album.copy(chapters = savedChapters))
+            AlbumSnapshotFixture.Result.Found(album.copy(chapters = savedChapters))
           case other => fail(s"Expected complete album: $other")
         val expectedEmpty = before match
-          case AlbumRepository.GetResult.Found(album) =>
+          case AlbumSnapshotFixture.Result.Found(album) =>
             val savedChapters = album.chapters.map(value => if value.id.value === first.id.value then value.copy(description = "") else value)
-            AlbumRepository.GetResult.Found(album.copy(chapters = savedChapters))
+            AlbumSnapshotFixture.Result.Found(album.copy(chapters = savedChapters))
           case other => fail(s"Expected complete album: $other")
 
         assertEquals(saved, ChapterRepository.SaveDescriptionResult.Saved)
@@ -447,7 +470,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
   test("should reject cross-album description edits and roll back failed statements and surrounding transactions"):
     buildTransactor.use: xa =>
       val chapters   = SqliteChapterRepository.make
-      val albums     = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
       val otherAlbum = AlbumId(new UUID(0L, 99L))
       val reject     = sql"""CREATE TRIGGER reject_description BEFORE UPDATE OF description ON chapter BEGIN
         UPDATE chapter SET source_folder = '/partial' WHERE id = OLD.id;
@@ -471,18 +493,18 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         for
           _            <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
           _            <- insertOtherAlbum.transact(xa)
-          before       <- albums.get(albumId)
+          before       <- readAlbum(xa, albumId)
           scoped       <- chapters.saveDescription(otherAlbum, first.id, text = "Wrong owner").transact(xa)
           _            <- reject.transact(xa)
           failed       <- chapters.saveDescription(albumId, first.id, text = "Rejected").transact(xa)
-          retained     <- albums.get(albumId)
+          retained     <- readAlbum(xa, albumId)
           _            <- sql"DROP TRIGGER reject_description".update.run.transact(xa)
           _            <- ignore.transact(xa)
           ignored      <- chapters.saveDescription(albumId, first.id, text = "").transact(xa)
-          ignoredAlbum <- albums.get(albumId)
+          ignoredAlbum <- readAlbum(xa, albumId)
           _            <- sql"DROP TRIGGER reject_description".update.run.transact(xa)
           aborted      <- abortedDescription.transact(xa).attempt
-          finalAlbum   <- albums.get(albumId)
+          finalAlbum   <- readAlbum(xa, albumId)
           _            <- abortTransaction.transact(xa)
           uncertain    <- chapters.saveDescription(albumId, first.id, text = "").transact(xa).attempt
         yield
@@ -508,7 +530,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
     Vector(false, true).traverse_ { committed =>
       buildTransactor.use: xa =>
         val chapters  = SqliteChapterRepository.make
-        val albums    = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
+        val albums    = SqliteAlbumRepository.make[IO](xa)
         val templates = SqliteSpreadTemplateRepository.make[IO](xa)
         val imports   = new ChapterPhotoImport[IO]:
           override def prepare(parent: AlbumId, chapter: ChapterId, source: PhotoSource): IO[Request] =
@@ -536,13 +558,13 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
             _      <- seedAlbum(xa)
             first  <- buildChapter(xa, index = 1)
             _      <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
-            before <- albums.get(albumId)
+            before <- readAlbum(xa, albumId)
             result <- manager.saveDescription(albumId, first.id, text = "日本\nVacanță")
-            after  <- albums.get(albumId)
+            after  <- readAlbum(xa, albumId)
           yield
             val expected = before match
-              case AlbumRepository.GetResult.Found(album) if committed =>
-                AlbumRepository.GetResult.Found(album.copy(chapters = album.chapters.map(_.copy(description = "日本\nVacanță"))))
+              case AlbumSnapshotFixture.Result.Found(album) if committed =>
+                AlbumSnapshotFixture.Result.Found(album.copy(chapters = album.chapters.map(_.copy(description = "日本\nVacanță"))))
               case original => original
 
             assertEquals(result, ChapterMetadataManager.SaveDescriptionResult.Uncertain)
@@ -597,7 +619,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
     "should persist complete openings and supplied order, isolate shared destinations and preserve description, gear and composition on metadata edits"
   ):
     buildTransactor.use: xa =>
-      val albums                   = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
       val chapters                 = SqliteChapterRepository.make
       val newName: DestinationName = "Changed"
       val newCountries             = NonEmptyList.of(otherCountry, country)
@@ -627,14 +648,14 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
           _       <- seedAlbum(xa)
           created <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
           added   <- chapters.create(albumId, second, order = NonEmptyList.of(second.id, first.id)).transact(xa)
-          initial <- albums.get(albumId)
+          initial <- readAlbum(xa, albumId)
           _       <- sql"UPDATE chapter SET destination_id = ${first.destinationId.value} WHERE id = ${second.id.value}".update.run.transact(xa)
           _       <- insertPhotoComposition(first.id, first.opening.id).transact(xa)
           _       <- insertCamera
           _       <- selectCamera
-          before  <- albums.get(albumId)
+          before  <- readAlbum(xa, albumId)
           updated <- chapters.update(command).transact(xa)
-          loaded  <- albums.get(albumId)
+          loaded  <- readAlbum(xa, albumId)
         yield
           val originalDestination = Destination(first.destinationId, first.name, countries = NonEmptyList.of(country, otherCountry))
           val changedDestination  = originalDestination.copy(name = newName, countries = newCountries)
@@ -663,10 +684,10 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
               spreads = emptySpreads
             )
           initial match
-            case AlbumRepository.GetResult.Found(album) => assertEquals(album.chapters, Vector(expectedSecond, expectedFirst))
-            case result                                 => fail(s"Expected complete created chapters, obtained $result")
+            case AlbumSnapshotFixture.Result.Found(album) => assertEquals(album.chapters, Vector(expectedSecond, expectedFirst))
+            case result                                   => fail(s"Expected complete created chapters, obtained $result")
           (before, loaded) match
-            case (AlbumRepository.GetResult.Found(original), AlbumRepository.GetResult.Found(album)) =>
+            case (AlbumSnapshotFixture.Result.Found(original), AlbumSnapshotFixture.Result.Found(album)) =>
               val expected =
                 original.chapters.find(_.id.value === first.id.value).map(_.copy(destination = changedDestination, sourceFolder = newFolder))
               val actual = album.chapters.headOption.map(chapter => chapter.copy(destination = chapter.destination.copy(id = first.destinationId)))
@@ -691,19 +712,18 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
       "CREATE TRIGGER fail_write BEFORE UPDATE OF position ON chapter WHEN NEW.position = 0 BEGIN SELECT RAISE(ABORT, 'order failure'); END"
     ).traverse_ { trigger =>
       buildTransactor.use: xa =>
-        val albums   = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
         val chapters = SqliteChapterRepository.make
 
         for
           _       <- seedAlbum(xa)
           first   <- buildChapter(xa, index = 1)
           _       <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
-          before  <- albums.get(albumId)
+          before  <- readAlbum(xa, albumId)
           rows    <- countRows.transact(xa)
           second  <- buildChapter(xa, index = 2)
           _       <- Fragment.const(trigger).update.run.transact(xa)
           failed  <- chapters.create(albumId, second, order = NonEmptyList.of(second.id, first.id)).transact(xa).attempt
-          after   <- albums.get(albumId)
+          after   <- readAlbum(xa, albumId)
           counted <- countRows.transact(xa)
         yield
           assert(failed.isLeft)
@@ -738,7 +758,6 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should report missing ownership and roll back metadata when the final ordering write fails"):
     buildTransactor.use: xa =>
-      val albums                       = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make)
       val chapters                     = SqliteChapterRepository.make
       val missing                      = AlbumId(new UUID(2L, 2L))
       val revisedName: DestinationName = "Changed"
@@ -765,13 +784,13 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
           _           <- seedAlbum(xa)
           absentAlbum <- chapters.create(missing, first, order = NonEmptyList.one(first.id)).transact(xa)
           _           <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
-          before      <- albums.get(albumId)
+          before      <- readAlbum(xa, albumId)
           rows        <- countRows.transact(xa)
           absentEdit  <- chapters.update(command.copy(album = missing)).transact(xa)
           absentChild <- chapters.update(command.copy(chapter = unknownChapter)).transact(xa)
           _           <- trigger.update.run.transact(xa)
           failed      <- chapters.update(revised).transact(xa).attempt
-          after       <- albums.get(albumId)
+          after       <- readAlbum(xa, albumId)
           counted     <- countRows.transact(xa)
         yield
           assertEquals(absentAlbum, ChapterRepository.CreateResult.AlbumNotFound)
@@ -803,7 +822,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         val slots = sql"SELECT id, x, y, width, height FROM spread_photo_slot ORDER BY id".query[(String, Double, Double, Double, Double)].to[Vector]
         val coverSlots = sql"SELECT id, side FROM cover_slot ORDER BY id".query[(String, String)].to[Vector]
         val change     = buildConnection(path).use: xa =>
-          val albums    = SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, chapters)
+          val albums    = SqliteAlbumRepository.make[IO](xa)
           val templates = SqliteSpreadTemplateRepository.make[IO](xa)
           val calls     = Ref.unsafe[IO, Int](0)
           given Transaction[ConnectionIO, IO] with
@@ -843,12 +862,12 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
               _           <- chapters.create(albumId, first, order = NonEmptyList.one(first.id)).transact(xa)
               _           <- (insertPhotoComposition(first.id, first.opening.id) >> insertCoverPhoto(first.id)).transact(xa)
               _           <- locations.traverse_(location => storage.storeThumbnail(location, image))
-              before      <- albums.get(albumId)
+              before      <- readAlbum(xa, albumId)
               beforeSlots <- slots.transact(xa)
               beforeCover <- coverSlots.transact(xa)
               _           <- if trigger.isEmpty then IO.unit else Fragment.const(trigger).update.run.transact(xa).void
               result      <- manager.update(albumId, first.id, name = "Changed", countries = requestedCountries, visit, requestedSource)
-              after       <- albums.get(albumId)
+              after       <- readAlbum(xa, albumId)
               afterSlots  <- slots.transact(xa)
               afterCover  <- coverSlots.transact(xa)
               photoCount  <- sql"SELECT count(*) FROM photo".query[Int].unique.transact(xa)
@@ -862,7 +881,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
               assertEquals(placements, expectedPhotos)
               if !committed && stage =!= "unchanged" then assertEquals(after, before)
               after match
-                case AlbumRepository.GetResult.Found(saved) =>
+                case AlbumSnapshotFixture.Result.Found(saved) =>
                   if committed || stage === "unchanged" then
                     assertEquals(saved.chapters.map(_.sourceFolder), Vector(requestedSource))
                     assertEquals(saved.chapters.map(_.destination.countries.map(_.id)), Vector(NonEmptyList.one(otherCountry.id)))
@@ -983,7 +1002,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
       case SpreadTemplateRepository.ListAlbumStartTemplatesResult.Listed(values) =>
         val (album, cover) = buildAlbum(values.head)
         for
-          saved <- SqliteAlbumRepository.make[IO](xa, SqliteAlbumCompositionRepository.make, SqliteChapterRepository.make).create(album, cover)
+          saved <- SqliteAlbumRepository.make[IO](xa).create(album, cover)
           _     <- IO(assertEquals(saved, AlbumRepository.CreateResult.Created))
           _     <- insertCountries.update.run.transact(xa)
         yield ()

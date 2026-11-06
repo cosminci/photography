@@ -11,6 +11,7 @@ import photography.capabilities.{IdGenerator, Transaction}
 import org.typelevel.log4cats.Logger
 import photography.domain.album.*
 import photography.ports.album.AlbumRepository
+import photography.ports.album.AlbumRepository.{ChapterMetadata, PlanningSnapshot}
 import photography.ports.chapter.ChapterRepository
 import photography.ports.photo.PhotoRepository
 import photography.syntax.EitherSyntax.*
@@ -70,7 +71,7 @@ object ChapterMetadataManager:
         val program =
           for
             saved    <- readAlbum(album).eitherT
-            resolved <- checkCreate(saved.year, existing = saved.chapters, count = saved.collectSpreads.size, name, period, sourceFolder).eitherT[F]
+            resolved <- checkCreate(saved.year, existing = saved.chapters, count = saved.spreadCount, name, period, sourceFolder).eitherT[F]
             chapter  <- prepareChapter(name, countries = countries, resolved, sourceFolder).eitherT
             id       <- persistCreation(album, currentChapters = saved.chapters, chapter).eitherT
           yield id
@@ -129,17 +130,31 @@ object ChapterMetadataManager:
       launch.handleErrorWith(error => Logger[F].error(error)("Saved chapter photo import could not be launched").as(Scheduling.Failed))
 
     private def readAlbum(id: AlbumId) =
-      albums.get(id).map:
-        case AlbumRepository.GetResult.Found(album) => album.asRight[Failure]
-        case AlbumRepository.GetResult.NotFound     => Failure.AlbumNotFound.asLeft[Album]
-        case _: AlbumRepository.GetResult.Failed    => Failure.Unavailable.asLeft[Album]
+      albums.readPlanning(id).map:
+        case AlbumRepository.PlanningResult.Found(album) => album.asRight[Failure]
+        case AlbumRepository.PlanningResult.NotFound     => Failure.AlbumNotFound.asLeft[PlanningSnapshot]
+        case _: AlbumRepository.PlanningResult.Failed    => Failure.Unavailable.asLeft[PlanningSnapshot]
 
-    private def checkCreate(year: AlbumYear, existing: Vector[Chapter], count: Int, name: DestinationName, period: Period, folder: PhotoSource) =
+    private def checkCreate(
+        year: AlbumYear,
+        existing: Vector[ChapterMetadata],
+        count: Int,
+        name: DestinationName,
+        period: Period,
+        folder: PhotoSource
+    ) =
       planning.planCreation(year, chapters = existing, spreadCount = count, name, period, folder) match
         case ChapterPlanning.CreationResult.Planned(resolved) => resolved.asRight[Failure]
         case ChapterPlanning.CreationResult.Rejected(reason)  => Failure.Conflict(reason).asLeft[VisitPeriod]
 
-    private def planUpdate(year: AlbumYear, current: Vector[Chapter], id: ChapterId, name: DestinationName, period: Period, folder: PhotoSource) =
+    private def planUpdate(
+        year: AlbumYear,
+        current: Vector[ChapterMetadata],
+        id: ChapterId,
+        name: DestinationName,
+        period: Period,
+        folder: PhotoSource
+    ) =
       planning.planUpdate(year, chapters = current, id, name, period, folder) match
         case ChapterPlanning.UpdateResult.Planned(plan)    => plan.asRight[UpdateFailure]
         case ChapterPlanning.UpdateResult.Rejected(reason) => Failure.Conflict(reason).asLeft[ChapterPlanning.UpdatePlan]
@@ -150,7 +165,7 @@ object ChapterMetadataManager:
         case ChapterPlanning.BuildResult.Built(chapter) => chapter.asRight[Failure]
         case ChapterPlanning.BuildResult.Failed         => Failure.Unavailable.asLeft[ChapterRepository.NewChapter]
 
-    private def persistCreation(album: AlbumId, currentChapters: Vector[Chapter], chapter: ChapterRepository.NewChapter) =
+    private def persistCreation(album: AlbumId, currentChapters: Vector[ChapterMetadata], chapter: ChapterRepository.NewChapter) =
       val order = planning.orderChapters(chapters = currentChapters, chapter.id, isHome = (chapter.name: String) === "Home", chapter.period)
       Transaction[Db, F].run(chapters.create(album, chapter, order = order)).map:
         case ChapterRepository.CreateResult.Saved            => chapter.id.asRight[Failure]
@@ -218,8 +233,8 @@ object ChapterMetadataManager:
         .map(_.some)
 
     private def resolveUpdate(album: AlbumId, chapter: ChapterId, previousDestination: DestinationId, destination: DestinationId, error: Throwable) =
-      Logger[F].error(error)("Chapter update commit acknowledgement failed") >> albums.get(album).flatMap:
-        case AlbumRepository.GetResult.Found(current) =>
+      Logger[F].error(error)("Chapter update commit acknowledgement failed") >> albums.readPlanning(album).flatMap:
+        case AlbumRepository.PlanningResult.Found(current) =>
           current.chapters.find(_.id.value === chapter.value) match
             case Some(saved) if saved.destination.id.value === destination.value         => ChapterRepository.UpdateResult.Saved.pure[F]
             case Some(saved) if saved.destination.id.value === previousDestination.value => ChapterRepository.UpdateResult.Failed.pure[F]

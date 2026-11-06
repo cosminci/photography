@@ -74,7 +74,7 @@ object SpreadManager:
                 for
                   _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
                   order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
-                  target   <- composition.findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
+                  target   <- findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
                   _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
                   inserted <- insertAfter(order = order, after, fresh.id).orFail[Db, AddResult](ifEmpty = AddResult.SpreadNotFound)
                   count    <- composition.countInteriorSpreads(album).lift[AddResult]
@@ -97,7 +97,7 @@ object SpreadManager:
               val mutation =
                 for
                   _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
-                  target <- composition.findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
+                  target <- findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
                   fresh  <-
                     replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
                   count = target.spread.placements.size
@@ -116,7 +116,7 @@ object SpreadManager:
       val mutation =
         for
           _      <- composition.hasAlbum(album).map(Either.cond(_, (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
-          target <- composition.findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
+          target <- findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
           photo  <- findPhoto(target).orFail[Db, DeleteResult](ifEmpty = DeleteResult.Rejected(Conflict.OpeningDelete))
           count = photo.value.placements.size
           _     <- checkConfirmation(count = count, confirmed = confirmPlacements).leftMap(DeleteResult.Occupied(_): DeleteResult).eitherT[Db]
@@ -131,7 +131,7 @@ object SpreadManager:
       val read = composition.hasAlbum(album).flatMap:
         case false => PlacementReadResult.AlbumNotFound.pure[Db]
         case true  =>
-          composition.findSpread(album, spread).map(_.fold[PlacementReadResult](PlacementReadResult.SpreadNotFound)(value =>
+          findSpread(album, spread).map(_.fold[PlacementReadResult](PlacementReadResult.SpreadNotFound)(value =>
             PlacementReadResult.Found(value.spread)
           ))
       act(PlacementReadResult.Failed)(Transaction[Db, F].run(read))
@@ -142,7 +142,7 @@ object SpreadManager:
           val mutation = composition.hasAlbum(album).flatMap:
             case false => PlacementResult.AlbumNotFound.pure[Db]
             case true  =>
-              composition.findSpread(album, spread).flatMap:
+              findSpread(album, spread).flatMap:
                 case None         => PlacementResult.SpreadNotFound.pure[Db]
                 case Some(target) =>
                   checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
@@ -155,7 +155,7 @@ object SpreadManager:
       val mutation =
         for
           _       <- composition.hasAlbum(album).map(Either.cond(_, (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
-          target  <- composition.findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
+          target  <- findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
           changed <- target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult).eitherT[Db]
           _       <- spreads.replace(changed).lift[SetBleedResult]
         yield SetBleedResult.Saved(changed): SetBleedResult
@@ -167,6 +167,11 @@ object SpreadManager:
       val retainsOpening    = expected.head.value === order.head.value
       val retainsMembership = proposed.toSet === observed.toSet && proposed.distinct.size === proposed.size
       retainsOpening && retainsMembership
+
+    private def findSpread(album: AlbumId, spread: SpreadId) =
+      composition.findSpread(album, spread).map:
+        case AlbumCompositionRepository.SpreadResult.Found(value) => value.some
+        case AlbumCompositionRepository.SpreadResult.NotFound     => none[Located]
 
     private def replaceCurrent(album: AlbumId, chapter: ChapterId, expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId]) =
       Transaction[Db, F].resolve(composition.findChapterOrder(album, chapter)).attempt.flatMap:

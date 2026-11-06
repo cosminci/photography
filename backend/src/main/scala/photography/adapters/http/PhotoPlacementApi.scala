@@ -13,7 +13,7 @@ import photography.domain.editing.EditingTarget
 import photography.adapters.http.Routes.Route
 import photography.usecases.editing.EditingAccess.Protection
 import photography.domain.layout.*
-import photography.ports.cover.CoverRepository.Composition
+import photography.usecases.cover.CoverManager.Composition
 import photography.usecases.cover.CoverManager
 import photography.usecases.spread.SpreadManager
 import java.util.UUID

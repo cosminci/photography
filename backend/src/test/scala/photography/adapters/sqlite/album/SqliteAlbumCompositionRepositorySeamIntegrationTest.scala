@@ -5,6 +5,7 @@ import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import munit.CatsEffectSuite
 import org.typelevel.doobie.implicits.*
+import org.typelevel.doobie.ConnectionIO
 import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.adapters.sqlite.{FlywayMigrator, SqliteConnection}
@@ -17,13 +18,14 @@ import java.nio.file.{Files, Path}
 import java.util.UUID
 
 final class SqliteAlbumCompositionRepositorySeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO]   = Slf4jLogger.getLogger[IO]
-  private val album          = AlbumId(new UUID(0L, 1L))
-  private val chapter        = ChapterId(new UUID(0L, 2L))
-  private val opening        = SpreadId(new UUID(0L, 3L))
-  private val chapterOpening = SpreadId(new UUID(0L, 4L))
-  private val photo          = SpreadId(new UUID(0L, 5L))
-  private val destination    = new UUID(0L, 6L)
+  private given Logger[IO]           = Slf4jLogger.getLogger[IO]
+  private given Logger[ConnectionIO] = Slf4jLogger.getLogger[ConnectionIO]
+  private val album                  = AlbumId(new UUID(0L, 1L))
+  private val chapter                = ChapterId(new UUID(0L, 2L))
+  private val opening                = SpreadId(new UUID(0L, 3L))
+  private val chapterOpening         = SpreadId(new UUID(0L, 4L))
+  private val photo                  = SpreadId(new UUID(0L, 5L))
+  private val destination            = new UUID(0L, 6L)
 
   test("should acquire ordered membership without reading Cover or spread geometry"):
     buildTransactor.use: xa =>
@@ -37,7 +39,12 @@ final class SqliteAlbumCompositionRepositorySeamIntegrationTest extends CatsEffe
       for
         _       <- seed.transact(xa)
         members <- repository.composition(album)
-      yield assertEquals(members, expected)
+        exists  <- SqliteAlbumCompositionRepository.make.hasAlbum(album).transact(xa)
+        count   <- SqliteAlbumCompositionRepository.make.countInteriorSpreads(album).transact(xa)
+      yield
+        assertEquals(members, expected)
+        assertEquals(exists, true)
+        assertEquals(count, 3)
 
   test("should reject incomplete chapter membership and leave the stored rows unchanged"):
     buildTransactor.use: xa =>

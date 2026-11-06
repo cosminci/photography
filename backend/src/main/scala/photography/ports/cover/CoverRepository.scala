@@ -1,7 +1,8 @@
 package photography.ports.cover
 
-import photography.domain.album.AlbumId
-import photography.domain.layout.{Cover, CoverDimensions, CoverPlacement, SpineOwner}
+import photography.domain.album.{AlbumId, InteriorSpreadCount}
+import cats.data.NonEmptyVector
+import photography.domain.layout.{Cover, CoverPlacement, CoverSpecification, SpineOwner}
 
 trait CoverRepository[Db[_]]:
   def read(album: AlbumId): Db[CoverRepository.ReadResult]
@@ -10,10 +11,15 @@ trait CoverRepository[Db[_]]:
   def setSpineOwner(album: AlbumId, owner: SpineOwner): Db[CoverRepository.SetSpineOwnerResult]
 
 object CoverRepository:
-  final case class Composition(cover: Cover, placements: Vector[CoverPlacement], dimensions: CoverDimensions)
+  final case class Stored(
+      cover: Cover,
+      placements: Vector[CoverPlacement],
+      interiorSpreads: InteriorSpreadCount,
+      specifications: NonEmptyVector[CoverSpecification]
+  )
 
   enum ReadResult:
-    case Found(composition: Composition)
+    case Found(stored: Stored)
     case NotFound
 
   enum ReplaceResult:

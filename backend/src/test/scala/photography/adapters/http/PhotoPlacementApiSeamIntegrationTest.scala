@@ -15,7 +15,7 @@ import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.*
-import photography.ports.cover.CoverRepository.Composition
+import photography.usecases.cover.CoverManager.Composition
 import photography.usecases.cover.CoverManager
 import photography.usecases.editing.EditingAccess
 import photography.usecases.spread.SpreadManager

@@ -1,6 +1,4 @@
 package photography.usecases.chapter
-import photography.domain.gear.CameraSelection
-
 import photography.ports.spread.SpreadTemplateRepository
 
 import cats.data.NonEmptyList
@@ -10,7 +8,8 @@ import io.github.iltotore.iron.autoRefine
 import munit.FunSuite
 import photography.capabilities.IdGenerator
 import photography.domain.album.*
-import photography.domain.layout.*
+import photography.domain.layout.SpreadTemplateId
+import photography.ports.album.AlbumRepository.ChapterMetadata
 import photography.usecases.chapter.ChapterMetadataManager.Period
 import photography.usecases.chapter.ChapterPlanning.{CreationResult, UpdateResult}
 import photography.ports.spread.SpreadTemplateRepository.{ListAlbumStartTemplatesResult, ListChapterStartTemplatesResult}
@@ -22,28 +21,15 @@ final class ChapterPlanningComponentTest extends FunSuite:
   private given IdGenerator[IO] with
     override def generateId: IO[UUID] = new UUID(0L, 1L).pure[IO]
   private val country = Country(CountryId(new UUID(0L, 2L)), code = "JP", name = "Japan", AbsoluteLocation(Path.of("/flags/jp.svg")))
-  private val box     = SlotBox(x = 0.0, y = 0.0, width = 100.0, height = 100.0)
-  private val opening =
-    val slot = SpreadSlot.Text(TextSpreadSlotId(new UUID(0L, 3L)), box)
-    Spread.ChapterStart(
-      SpreadId(new UUID(0L, 4L)),
-      SpreadTemplateId(new UUID(0L, 5L)),
-      photoSlots = Vector.empty[SpreadSlot.Photo],
-      slot,
-      placements = Vector.empty[SpreadPlacement]
-    )
   private val chapter =
     val destination = Destination(DestinationId(new UUID(0L, 6L)), name = "Kyoto", countries = NonEmptyList.one(country))
     val period      = VisitPeriod(firstDay = LocalDate.of(2026, 5, 1), days = 2)
-    Chapter(
+    ChapterMetadata(
       ChapterId(new UUID(0L, 7L)),
       destination,
       period,
-      description = "",
-      gear = Vector.empty[CameraSelection],
       sourceFolder = "/photos/kyoto",
-      opening,
-      spreads = Vector.empty[Spread.PhotosOnly]
+      description = ""
     )
   private val planning =
     val templates = new SpreadTemplateRepository[IO]:
@@ -62,7 +48,14 @@ final class ChapterPlanningComponentTest extends FunSuite:
       val expected = VisitPeriod(firstDay = LocalDate.of(year, 1, 1), days = days)
 
       val result =
-        planning.planCreation(year, chapters = Vector.empty[Chapter], spreadCount = 1, name = "Home", Period.AlbumYear, folder = "/photos/home")
+        planning.planCreation(
+          year,
+          chapters = Vector.empty[ChapterMetadata],
+          spreadCount = 1,
+          name = "Home",
+          Period.AlbumYear,
+          folder = "/photos/home"
+        )
 
       assertEquals(result, CreationResult.Planned(expected))
     }
@@ -87,9 +80,9 @@ final class ChapterPlanningComponentTest extends FunSuite:
     val expectedOrder = NonEmptyList.one(chapter.id)
     val expected      = ChapterPlanning.UpdatePlan(chapter.destination.id, sourceChanged = false, chapter.period, order = expectedOrder)
 
-    val unchanged  = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, chapter.sourceFolder)
-    val changed    = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, folder = "/photos/new")
-    val missing    = planning.planUpdate(year = 2026, chapters = Vector.empty[Chapter], chapter.id, name = "Kyoto", period, chapter.sourceFolder)
+    val unchanged = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, chapter.sourceFolder)
+    val changed   = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, folder = "/photos/new")
+    val missing = planning.planUpdate(year = 2026, chapters = Vector.empty[ChapterMetadata], chapter.id, name = "Kyoto", period, chapter.sourceFolder)
     val typeChange = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Home", Period.AlbumYear, chapter.sourceFolder)
 
     assertEquals(unchanged, UpdateResult.Planned(expected))

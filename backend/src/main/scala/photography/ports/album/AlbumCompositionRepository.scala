@@ -5,9 +5,9 @@ import photography.domain.album.{AlbumId, ChapterId}
 import photography.domain.layout.{Spread, SpreadId}
 
 trait AlbumCompositionRepository[Db[_]]:
+  def findSpread(album: AlbumId, spread: SpreadId): Db[AlbumCompositionRepository.SpreadResult]
   def hasAlbum(album: AlbumId): Db[Boolean]
   def countInteriorSpreads(album: AlbumId): Db[Int]
-  def findSpread(album: AlbumId, spread: SpreadId): Db[Option[AlbumCompositionRepository.Located]]
   def findChapterOrder(album: AlbumId, chapter: ChapterId): Db[Option[NonEmptyList[SpreadId]]]
 
 object AlbumCompositionRepository:
@@ -21,6 +21,10 @@ object AlbumCompositionRepository:
 
   enum Failure:
     case Unavailable
+
+  enum SpreadResult:
+    case Found(value: Located)
+    case NotFound
 
   final case class Member(id: SpreadId, maybeChapter: Option[ChapterId])
 

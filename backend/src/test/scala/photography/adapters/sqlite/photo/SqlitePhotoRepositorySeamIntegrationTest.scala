@@ -258,6 +258,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
     Vector(
       sql"UPDATE photo SET source = '../escape.jpg'",
       sql"UPDATE photo SET captured_local = '2026-02-30T00:00:00.000000000'",
+      sql"UPDATE photo SET captured_local = 'not-a-date'",
       sql"UPDATE photo SET thumbnail_quality = 'low', thumbnail_width = 1025",
       sql"UPDATE photo SET thumbnail_quality = 'standard', thumbnail_height = 1537"
     )
@@ -271,6 +272,17 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
               result <- repository.listChapter(chapter).transact(xa).attempt
             yield assert(result.isLeft)
       }
+
+  test("should report unavailable photo storage as an explicit find failure"):
+    buildDatabase.use: path =>
+      buildTransactor(path).use: xa =>
+        val repository = SqlitePhotoRepository.make
+        for
+          _      <- sql"DROP TABLE photo".update.run.transact(xa)
+          result <- repository.find(photoId).transact(xa)
+        yield result match
+          case FindResult.Failed(_) => ()
+          case other                => fail(s"Expected failed acquisition, obtained $other")
 
   test("should reject malformed persisted write evidence"):
     Vector(
