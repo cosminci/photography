@@ -1,6 +1,8 @@
 # Import a saved book
 
-Export the album from its workspace. The single JSON contains its saved interior and cover; unsaved browser edits are not included.
+Use the InDesign icon beside Reader in the album workspace to export the saved book. The single JSON contains its interior and cover; unsaved browser edits are not included.
+
+For low-resolution photographs, follow the warning links to review the affected slots, then select Confirm export to export the current saved book and close the warning. X cancels without downloading.
 
 Copy this entire directory into InDesign's Scripts Panel folder, keeping the files together. No build step is required.
 

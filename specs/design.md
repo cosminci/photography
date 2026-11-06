@@ -4,7 +4,7 @@
 
 ## Purpose and system boundary
 
-Album Layout Studio turns a year's chapter-organized photographs into a persisted album composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
+Album Layout Studio turns a year's chapter-organized photographs into a persisted book for browser presentation and InDesign print composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
 
 ```mermaid
 flowchart LR
@@ -187,6 +187,8 @@ Acknowledged saved state takes precedence over older in-flight reads. Workspace 
 ## Architectural decisions
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
+
+Print export is a read-only projection across existing saved-data owners, retaining their independent read lifetimes. The application owns saved-book print readiness; InDesign owns local resources and final composition.
 
 One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
 

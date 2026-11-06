@@ -12,6 +12,7 @@ Tests follow responsibility boundaries. Most behavior is proved through domain a
 | Adapter seams | Faithful translation and failure behavior against real HTTP, SQLite, files, image codecs or configuration. |
 | Browser components | User-observable interaction, reactive state, accessibility and focus through rendered controls. |
 | Local application journeys | Integration, visual hierarchy and native browser behavior that isolated components cannot establish. |
+| Native publishing | InDesign and final-output inspection establish print fidelity; automated handoff and script checks establish representation and orchestration. |
 | Architecture and build gates | Dependency direction, type safety and reproducible delivery across supported components. |
 
 Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
