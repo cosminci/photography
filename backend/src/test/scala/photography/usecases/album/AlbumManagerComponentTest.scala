@@ -32,9 +32,10 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   private val thirteenAlbums          = Vector.tabulate(13)(buildMetadata).reverse
 
   test(s"should page albums newest-first with $pageSize per page and clamp requests to the last page"):
-    val refs      = Refs()
-    val lastPage  = AlbumPage(Vector(buildMetadata(index = 0)), page = 3, pageSize = 6, totalAlbums = 13, totalPages = 3)
-    val emptyPage = AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)
+    val refs              = Refs()
+    val lastPage          = AlbumPage(Vector(buildMetadata(index = 0)), page = 3, pageSize = 6, totalAlbums = 13, totalPages = 3)
+    val emptyPage         = AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)
+    val expectedFirstPage = ListAlbumsResult.Listed(AlbumPage(thirteenAlbums.take(6), page = 1, pageSize = 6, totalAlbums = 13, totalPages = 3))
 
     for
       manager      <- buildManager(refs, albums = thirteenAlbums)
@@ -46,10 +47,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     yield
       assertEquals(selected, ListAlbumsResult.Listed(lastPage))
       assertEquals(calls, Vector(0 -> 6, 12 -> 6))
-      assertEquals(
-        firstPage,
-        ListAlbumsResult.Listed(AlbumPage(thirteenAlbums.take(6), page = 1, pageSize = 6, totalAlbums = 13, totalPages = 3))
-      )
+      assertEquals(firstPage, expectedFirstPage)
       assertEquals(empty, ListAlbumsResult.Listed(emptyPage))
 
   test("should report failure when either album page query fails"):

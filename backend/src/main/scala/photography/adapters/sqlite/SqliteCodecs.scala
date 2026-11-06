@@ -21,11 +21,11 @@ private[sqlite] object SqliteCodecs:
   given Meta[AbsoluteLocation] = Meta[String].tiemap[AbsoluteLocation] { value =>
     Either.catchOnly[InvalidPathException](Path.of(value)).leftMap(_.getMessage).flatMap: path =>
       Either.cond(path.isAbsolute, AbsoluteLocation(path), "Expected absolute flag path")
-  }(
+  } {
     // $COVERAGE-OFF$
     _.value.toString
-      // $COVERAGE-ON$
-  )
+    // $COVERAGE-ON$
+  }
 
   private given Meta[PositionOnSpread] =
     Meta[Double].tiemap[PositionOnSpread](_.refineEither)(value => value: Double)

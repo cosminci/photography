@@ -64,6 +64,9 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
         val expectedForeign =
           ReadResult.Found(Stored(foreignCover, placements = Vector.empty[CoverPlacement], interiorSpreads = 0, specifications = specifications))
         val expectedMoved = ReadResult.Found(Stored(cover, placements = swapped, interiorSpreads = 1, specifications = specifications))
+        val expectedEmpty =
+          ReadResult.Found(Stored(cover, placements = Vector.empty[CoverPlacement], interiorSpreads = 1, specifications = specifications))
+        val expectedSaved = ReadResult.Found(Stored(cover, placements = Vector(first, second), interiorSpreads = 1, specifications = specifications))
         val cause         = new IllegalStateException("Lost commit acknowledgement")
         val interrupted   = Transactor.after.set(xa, xa.strategy.after >> cause.raiseError[ConnectionIO, Unit])
 
@@ -85,19 +88,13 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           removed            <- repository.read(album).transact(xa)
           title              <- sql"SELECT title FROM album WHERE id = ${album.value}".query[String].unique.transact(xa)
         yield
-          assertEquals(
-            empty,
-            ReadResult.Found(Stored(cover, placements = Vector.empty[CoverPlacement], interiorSpreads = 1, specifications = specifications))
-          )
+          assertEquals(empty, expectedEmpty)
           assertEquals(missing, ReadResult.NotFound)
           assertEquals(missingReplacement, ReplaceResult.NotFound)
           assertEquals(firstSave, ReplaceResult.Replaced)
           assertEquals(swapSave, ReplaceResult.Replaced)
           assertEquals(release, ReplaceResult.Replaced)
-          assertEquals(
-            saved,
-            ReadResult.Found(Stored(cover, placements = Vector(first, second), interiorSpreads = 1, specifications = specifications))
-          )
+          assertEquals(saved, expectedSaved)
           assertEquals(moved, expectedMoved)
           assert(failed.isLeft)
           assertEquals(retained, moved)
@@ -113,9 +110,11 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
 
     database.evalTap(path => FlywayMigrator.make[IO](path).use(_.migrate).void).use: path =>
       SqliteConnection.make[IO](SqliteConfig(path, connectionAcquisitionThreads = 1, maxSessions = 1)).buildTransactor.use: xa =>
-        val repository  = SqliteCoverRepository.make
-        val absent      = AlbumId(new UUID(0L, 99L))
-        val changed     = cover.copy(spineOwner = SpineOwner.Front)
+        val repository    = SqliteCoverRepository.make
+        val absent        = AlbumId(new UUID(0L, 99L))
+        val changed       = cover.copy(spineOwner = SpineOwner.Front)
+        val expectedSaved =
+          ReadResult.Found(Stored(changed, placements = Vector(first, second), interiorSpreads = 1, specifications = specifications))
         val cause       = new IllegalStateException("Lost owner acknowledgement")
         val interrupted = Transactor.after.set(xa, xa.strategy.after >> cause.raiseError[ConnectionIO, Unit])
 
@@ -131,10 +130,7 @@ class SqliteCoverRepositorySeamIntegrationTest extends CatsEffectSuite:
           finalRead <- repository.read(album).transact(xa)
         yield
           assertEquals(front, SetSpineOwnerResult.Updated)
-          assertEquals(
-            saved,
-            ReadResult.Found(Stored(changed, placements = Vector(first, second), interiorSpreads = 1, specifications = specifications))
-          )
+          assertEquals(saved, expectedSaved)
           assertEquals(later, ReadResult.Found(Stored(changed, placements = Vector(first), interiorSpreads = 1, specifications = specifications)))
           assertEquals(missing, SetSpineOwnerResult.NotFound)
           assertEquals(lost, cause.asLeft[SetSpineOwnerResult])

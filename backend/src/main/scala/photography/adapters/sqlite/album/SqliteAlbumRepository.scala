@@ -8,7 +8,7 @@ import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.Positive
 import io.github.iltotore.iron.constraint.collection.MinLength
-import org.typelevel.doobie.{ConnectionIO, Fragment, Transactor}
+import org.typelevel.doobie.{ConnectionIO, Fragment, Read, Transactor}
 import org.typelevel.doobie.implicits.*
 import org.typelevel.doobie.util.invariant.InvalidValue
 import org.typelevel.log4cats.Logger
@@ -38,7 +38,11 @@ object SqliteAlbumRepository:
       resolve: FunctionK[ConnectionIO, F],
       save: FunctionK[ConnectionIO, F]
   ) extends AlbumRepository[F] with AlbumRepository.MetadataRead[F] with AlbumRepository.ChapterRead[F]:
-    private type MetadataRow = (UUID, AlbumYear, AlbumTitle, String, Int, Instant)
+    private type MetadataRow = (UUID, AlbumYear, AlbumTitle, String, AlbumAuthors, Instant)
+    private given Read[AlbumAuthors] = Read[Int].emap(decodeAuthors)
+    private given Read[VisitPeriod]  = Read[(Long, Long)].emap { case (start, end) =>
+      decodePeriod(start = Instant.ofEpochMilli(start), end = Instant.ofEpochMilli(end))
+    }
     private val selectMetadata =
       fr"""SELECT id, year, title, synopsis, CASE WHEN typeof(authors) = 'integer' THEN authors ELSE 0 END, created_at_ms FROM album"""
 
@@ -54,10 +58,9 @@ object SqliteAlbumRepository:
     override def list(offset: Int, limit: Int): F[ListResult] =
       val query =
         for
-          total  <- sql"SELECT count(*) FROM album".query[Long].unique
-          rows   <- (selectMetadata ++ sql"ORDER BY created_at_ms DESC, id DESC LIMIT $limit OFFSET $offset").query[MetadataRow].to[Vector]
-          albums <- rows.traverse(decodeMetadata)
-        yield ListResult.Listed(AlbumPageSlice(totalAlbums = total, albums = albums)): ListResult
+          total <- sql"SELECT count(*) FROM album".query[Long].unique
+          rows  <- (selectMetadata ++ sql"ORDER BY created_at_ms DESC, id DESC LIMIT $limit OFFSET $offset").query[MetadataRow].to[Vector]
+        yield ListResult.Listed(AlbumPageSlice(totalAlbums = total, albums = rows.map(decodeMetadata))): ListResult
       execute(query, ListResult.Failed(_))
 
     override def create(album: Album, cover: Cover): F[CreateResult] =
@@ -147,13 +150,8 @@ object SqliteAlbumRepository:
       authors.foldLeft(0)((encoded, author) => encoded | (1 << author.ordinal))
 
     private def decodeAuthors(encoded: Int) =
-      Either.cond(encoded >= 1 && encoded <= 7, (), new IllegalArgumentException("Invalid album authors")).flatMap: _ =>
+      Either.cond(encoded >= 1 && encoded <= 7, (), "Invalid album authors").flatMap: _ =>
         Author.all.filter(author => (encoded & (1 << author.ordinal)) =!= 0).refineEither[MinLength[1]]
-          .leftMap(
-            // $COVERAGE-OFF$
-            new IllegalArgumentException(_)
-            // $COVERAGE-ON$
-          )
 
     private def insertInitialSpread(
         album: AlbumId,
@@ -164,57 +162,38 @@ object SqliteAlbumRepository:
     ) =
       val row = sql"""INSERT INTO spread (id, template_id, kind, album_id, position)
                         VALUES (${spread.value}, ${template.value}, 'album_start', ${album.value}, 0)"""
-      for
-        _ <- insert(row)
-        _ <- photos.traverse_(slot => insertSlot(spread, slot))
-        _ <- insertSlot(spread, text)
-      // $COVERAGE-OFF$
-      yield ()
-      // $COVERAGE-ON$
+      insert(row) >> photos.traverse_(slot => insertSlot(spread, slot)) >> insertSlot(spread, text)
 
     private def insertSlot(spread: SpreadId, slot: SpreadSlot) =
       slot match
         case SpreadSlot.Photo(id, box, bleed) =>
-          for
-            _ <- insert(sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)")
-            _ <- bleed.toList.traverse_(edge => insert(sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)"))
-          // $COVERAGE-OFF$
-          yield ()
-          // $COVERAGE-ON$
+          val photo = sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)"
+          val edges = bleed.toList.traverse_(edge => insert(sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)"))
+          insert(photo) >> edges
         case SpreadSlot.Text(id, box) =>
           insert(sql"INSERT INTO spread_text_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)")
 
-    private def load(id: UUID) = (selectMetadata ++ sql"WHERE id = $id").query[MetadataRow].option.flatMap(_.traverse(decodeMetadata))
+    private def load(id: UUID) = (selectMetadata ++ sql"WHERE id = $id").query[MetadataRow].option.map(_.map(decodeMetadata))
 
     private def decodeMetadata(row: MetadataRow) =
-      val (id, year, title, synopsis, encodedAuthors, createdAt) = row
-      decodeAuthors(encodedAuthors).liftTo[ConnectionIO].map(authors => Metadata(AlbumId(id), year, title, synopsis, authors, createdAt))
+      val (id, year, title, synopsis, authors, createdAt) = row
+      Metadata(AlbumId(id), year, title, synopsis, authors, createdAt)
 
     private def loadRequired(id: UUID) =
-      load(id).flatMap(_.toRight(
-        // $COVERAGE-OFF$
-        new IllegalArgumentException(s"Missing required album $id")
-        // $COVERAGE-ON$
-      ).liftTo[ConnectionIO])
+      val missingAlbum = new IllegalArgumentException(s"Missing required album $id")
+      load(id).flatMap(_.toRight(missingAlbum).liftTo[ConnectionIO])
 
     private def loadChapterMetadata(albumId: UUID) =
       val select = sql"""SELECT c.id, d.id, d.name, c.description, c.start_ms, c.end_ms, c.source_folder
                         FROM chapter c LEFT JOIN destination d ON d.id = c.destination_id
                         WHERE c.album_id = $albumId ORDER BY c.position"""
       validateChapters(albumId) >>
-        select.query[(UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)].to[Vector]
-          .flatMap(_.traverse(decodeChapterMetadata))
+        select.query[(UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)].to[Vector].flatMap(_.traverse(decodeChapterMetadata))
 
-    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, Instant, Instant, PhotoSource)) =
-      val (id, destination, name, description, start, end, folder) = row
-      for
-        period <- decodePeriod(start = start, end = end).leftMap(
-          // $COVERAGE-OFF$
-          new IllegalArgumentException(_)
-          // $COVERAGE-ON$
-        ).liftTo[ConnectionIO]
-        countries <- loadCountries(destination)
-      yield ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
+    private def decodeChapterMetadata(row: (UUID, UUID, DestinationName, String, VisitPeriod, PhotoSource)) =
+      val (id, destination, name, description, period, folder) = row
+      loadCountries(destination).map: countries =>
+        ChapterMetadata(ChapterId(id), Destination(DestinationId(destination), name = name, countries = countries), period, folder, description)
 
     private def decodePeriod(start: Instant, end: Instant) =
       val days    = ChronoUnit.DAYS.between(start, end)
@@ -238,20 +217,14 @@ object SqliteAlbumRepository:
       val spine   = cover.spineOwner match
         case SpineOwner.Front => "front"
         case SpineOwner.Back  => "back"
-      for
-        _ <- insert(sql"INSERT INTO cover (album_id, spine_owner) VALUES ($albumId, $spine)")
-        _ <- insert(sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.front.id.value}, $albumId, 'front')")
-        _ <- insert(sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.back.id.value}, $albumId, 'back')")
-      // $COVERAGE-OFF$
-      yield ()
-      // $COVERAGE-ON$
+      val row   = sql"INSERT INTO cover (album_id, spine_owner) VALUES ($albumId, $spine)"
+      val front = sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.front.id.value}, $albumId, 'front')"
+      val back  = sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.back.id.value}, $albumId, 'back')"
+      insert(row) >> insert(front) >> insert(back)
 
     private def insert(statement: Fragment) =
-      statement.update.run.ensure(
-        // $COVERAGE-OFF$
-        new IllegalStateException("Expected one inserted album-owned row")
-        // $COVERAGE-ON$
-      )(_ === 1).void
+      val incompleteWrite = new IllegalStateException("Expected one inserted album-owned row")
+      statement.update.run.ensure(incompleteWrite)(_ === 1).void
 
     private def execute[A](query: ConnectionIO[A], failed: Failure => A) =
       resolve(query).attempt.flatMap:

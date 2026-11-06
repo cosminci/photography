@@ -2,7 +2,7 @@ package photography.adapters.sqlite.cover
 
 import cats.data.NonEmptyVector
 import cats.syntax.all.*
-import org.typelevel.doobie.ConnectionIO
+import org.typelevel.doobie.{ConnectionIO, Read}
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
 import photography.adapters.sqlite.SqliteAlbumQueries
@@ -16,6 +16,8 @@ object SqliteCoverRepository:
   def make: CoverRepository[ConnectionIO] = new LiveSqliteCoverRepository
 
   final private class LiveSqliteCoverRepository extends CoverRepository[ConnectionIO]:
+    private given Read[CoverSpecification] = Read[(Int, Int, Int, Int)].emap(CoverSpecification.from.tupled)
+
     override def read(album: AlbumId): ConnectionIO[ReadResult] =
       sql"SELECT spine_owner FROM cover WHERE album_id = ${album.value}".query[String].option.flatMap:
         case None        => ReadResult.NotFound.pure[ConnectionIO]
@@ -45,16 +47,10 @@ object SqliteCoverRepository:
 
     private def loadSizing(album: AlbumId) =
       val count   = SqliteAlbumQueries.interiorSpreadCount(album).query[InteriorSpreadCount].unique
-      val catalog = sql"SELECT page_limit, width_pixels, height_pixels, spine_pixels FROM cover_specification"
-        .query[(Int, Int, Int, Int)].to[Vector]
+      val catalog = sql"SELECT page_limit, width_pixels, height_pixels, spine_pixels FROM cover_specification".query[CoverSpecification].to[Vector]
       for
         spreads        <- count
-        rows           <- catalog
-        specifications <- rows.traverse(CoverSpecification.from.tupled).leftMap(
-          // $COVERAGE-OFF$
-          new IllegalArgumentException(_)
-          // $COVERAGE-ON$
-        ).liftTo[ConnectionIO]
+        specifications <- catalog
         nonempty <- NonEmptyVector.fromVector(specifications).toRight(new IllegalStateException("Missing cover specifications")).liftTo[ConnectionIO]
       yield (spreads, nonempty)
 

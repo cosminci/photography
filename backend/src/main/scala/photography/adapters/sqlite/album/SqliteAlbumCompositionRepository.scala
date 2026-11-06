@@ -85,22 +85,13 @@ object SqliteAlbumCompositionRepository:
       case _ => new IllegalArgumentException("Chapter must begin with its opening").asLeft[Option[NonEmptyList[SpreadId]]]
 
     private def locateSpread(row: SpreadRow) =
+      val missingChapter = new IllegalArgumentException("Missing chapter")
       loadSpread(row).flatMap:
         case value: Spread.AlbumStart   => (Located.AlbumOpening(value): Located).pure[ConnectionIO]
         case value: Spread.ChapterStart =>
-          row.maybeChapter.toRight(
-            // $COVERAGE-OFF$
-            new IllegalArgumentException("Missing chapter")
-            // $COVERAGE-ON$
-          ).liftTo[ConnectionIO]
-            .map(id => Located.ChapterOpening(ChapterId(id), value): Located)
+          row.maybeChapter.toRight(missingChapter).liftTo[ConnectionIO].map(id => Located.ChapterOpening(ChapterId(id), value): Located)
         case value: Spread.PhotosOnly =>
-          row.maybeChapter.toRight(
-            // $COVERAGE-OFF$
-            new IllegalArgumentException("Missing chapter")
-            // $COVERAGE-ON$
-          ).liftTo[ConnectionIO]
-            .map(id => Located.Photo(ChapterId(id), value): Located)
+          row.maybeChapter.toRight(missingChapter).liftTo[ConnectionIO].map(id => Located.Photo(ChapterId(id), value): Located)
 
     private def loadRows(owner: Fragment) =
       val select =
@@ -126,7 +117,8 @@ object SqliteAlbumCompositionRepository:
       yield spread
 
     private def orderSlots(expected: List[(String, SlotBox)], stored: List[SlotRow]) =
-      val matchedSlots = expected.traverse { case (kind, box) =>
+      val duplicateIdentities = "Duplicate spread slot identities"
+      val matchedSlots        = expected.traverse { case (kind, box) =>
         stored.find { slot =>
           val storedBox = slot.box
           kind === slot.kind && (box.x: Double, box.y: Double, box.width: Double, box.height: Double) ===
@@ -134,14 +126,8 @@ object SqliteAlbumCompositionRepository:
         }.toRight("Missing required spread slot")
       }
       for
-        _ <- Either.cond(expected.nonEmpty && expected.size === stored.size, (), "Wrong spread slot count")
-        _ <- Either.cond(
-          stored.map(_.id).distinct.size === stored.size,
-          (),
-          // $COVERAGE-OFF$
-          "Duplicate spread slot identities"
-          // $COVERAGE-ON$
-        )
+        _     <- Either.cond(expected.nonEmpty && expected.size === stored.size, (), "Wrong spread slot count")
+        _     <- Either.cond(stored.map(_.id).distinct.size === stored.size, (), duplicateIdentities)
         slots <- matchedSlots
       yield slots
 

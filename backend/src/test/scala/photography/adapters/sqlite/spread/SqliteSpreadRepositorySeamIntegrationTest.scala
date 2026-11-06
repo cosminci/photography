@@ -88,13 +88,12 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(afterSpreads.map(_.template), Vector(singleLayout))
         assertEquals(afterSpreads.flatMap(_.placements).map(_.transform), Vector(identity))
         assertEquals(afterSpreads.flatMap(_.placements).map(_.slot), afterSpreads.flatMap(_.photoSlots.toList).map(_.id))
+        val commitFailures = Vector(uncertainInsert.swap.toOption, uncertainReplace.swap.toOption, uncertainRemove.swap.toOption)
+
         assertEquals(removed, Vector.empty[Spread.PhotosOnly])
         assertEquals(photos, 1L)
         assertEquals(placements, 0L)
-        assertEquals(
-          Vector(uncertainInsert.swap.toOption, uncertainReplace.swap.toOption, uncertainRemove.swap.toOption),
-          Vector.fill(3)(cause.some)
-        )
+        assertEquals(commitFailures, Vector.fill(3)(cause.some))
         assertEquals(inserted, Vector(photo))
         assertEquals(committed, Vector(replaced))
         assertEquals(finalSpreads, Vector.empty[Spread.PhotosOnly])

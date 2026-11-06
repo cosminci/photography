@@ -201,14 +201,9 @@ object SqliteChapterRepository:
         val update = sql"UPDATE chapter SET position = $position WHERE album_id = ${album.value} AND id = $id"
         persistRow(update)
       }
-      for
-        stored <- sql"SELECT id FROM chapter WHERE album_id = ${album.value}".query[UUID].to[List]
-        _      <- validateOrder(stored = stored, supplied = supplied).liftTo[ConnectionIO]
-        _      <- sql"UPDATE chapter SET position = -position - 1 WHERE album_id = ${album.value}".update.run
-        _      <- writePositions
-      // $COVERAGE-OFF$
-      yield ()
-      // $COVERAGE-ON$
+      sql"SELECT id FROM chapter WHERE album_id = ${album.value}".query[UUID].to[List].flatMap: stored =>
+        validateOrder(stored = stored, supplied = supplied).liftTo[ConnectionIO] >>
+          sql"UPDATE chapter SET position = -position - 1 WHERE album_id = ${album.value}".update.run >> writePositions
 
     private def validateOrder(stored: List[UUID], supplied: List[UUID]) =
       val containsEveryChapter = stored.size === supplied.size && stored.toSet === supplied.toSet

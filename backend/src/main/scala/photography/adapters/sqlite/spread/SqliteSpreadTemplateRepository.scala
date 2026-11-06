@@ -48,15 +48,12 @@ object SqliteSpreadTemplateRepository:
         case Left(error)           => Logger[F].error(error)("Could not find spread template").as(FindTemplateResult.Failed(Failure.DatabaseFailure))
 
     private def loadPhotoLayouts =
-      val select = sql"SELECT id, name FROM spread_template WHERE kind = 'photos_only' ORDER BY id"
+      val select           = sql"SELECT id, name FROM spread_template WHERE kind = 'photos_only' ORDER BY id"
+      val missingTemplates = new IllegalArgumentException("No photos_only templates")
       for
         rows      <- select.query[(UUID, SpreadTemplateName)].to[List]
         templates <- rows.traverse { case (id, name) => loadPhotoTemplate(id, name) }
-        nonEmpty  <- NonEmptyList.fromList(templates).toRight(
-          // $COVERAGE-OFF$
-          new IllegalArgumentException("No photos_only templates")
-          // $COVERAGE-ON$
-        ).liftTo[ConnectionIO]
+        nonEmpty  <- NonEmptyList.fromList(templates).toRight(missingTemplates).liftTo[ConnectionIO]
       yield nonEmpty
 
     private def loadPhotoTemplate(id: UUID, name: SpreadTemplateName) =

@@ -145,10 +145,10 @@ class ArchitectureTest extends FunSuite:
     )
     val httpCalls = seams.iterator.asScala.filter(_.getPackageName === "photography.adapters.http")
       .flatMap(_.getMethodCallsFromSelf.asScala).toVector
+    val authorityViolations =
+      httpCalls.filter(call => call.getTarget.getName === "make" && authorityFactories.contains(call.getTarget.getOwner.getName))
+        .map(_.getDescription)
+    val boundaryViolations = persistenceBoundary.evaluate(seams).getFailureReport.getDetails.asScala.toVector
+
     assert(httpCalls.nonEmpty)
-    assertEquals(
-      persistenceBoundary.evaluate(seams).getFailureReport.getDetails.asScala.toVector ++
-        httpCalls.filter(call => call.getTarget.getName === "make" && authorityFactories.contains(call.getTarget.getOwner.getName))
-          .map(_.getDescription),
-      Vector.empty[String]
-    )
+    assertEquals(boundaryViolations ++ authorityViolations, Vector.empty[String])

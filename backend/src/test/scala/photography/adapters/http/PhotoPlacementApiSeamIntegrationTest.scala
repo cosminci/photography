@@ -147,12 +147,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       val saved = spread.copy(photoSlots = NonEmptyList.one(slot.copy(bleed = directions)))
       val api   = buildApi(result = CoverManager.Result.Failed, spreadRead = SpreadManager.PlacementReadResult.Found(saved))
       send(api, Request[IO](Method.GET, Uri.unsafeFromString(spreadPath))).map { case (status, body) =>
+        val savedDirections = body.hcursor.downField("slots").downArray.get[Vector[String]]("bleed").toOption.map(_.toSet)
+
         assertEquals(status, Status.Ok)
         assertEquals(body.hcursor.get[String]("bleedState").toOption, state.some)
-        assertEquals(
-          body.hcursor.downField("slots").downArray.get[Vector[String]]("bleed").toOption.map(_.toSet),
-          expectedDirections.some
-        )
+        assertEquals(savedDirections, expectedDirections.some)
       }
     }
     val invalid = spread.copy(photoSlots = NonEmptyList.one(slot.copy(box = SlotBox(x = 0.0, y = 0.0, width = 0.1, height = 100.0))))

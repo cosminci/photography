@@ -95,11 +95,17 @@ final class BookExportComponentTest extends CatsEffectSuite:
       yield
         result match
           case Result.Ready(json, filename) =>
+            val expectedSections = Set("formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings")
+            val chapterGear      = json.hcursor.downField("chapters").downN(0).downField("gear")
+            val selectedLenses   = chapterGear.downN(0).get[Vector[String]]("lensIds")
+            val fixedLenses      = chapterGear.downN(1).get[Vector[String]]("lensIds")
+            val schema           = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
+              .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
+            val config           = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
+            val schemaViolations = schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).asScala.toVector
+
             assertEquals(filename, "album-2025-indesign.json")
-            assertEquals(
-              json.asObject.map(_.keys.toSet),
-              Set("formatVersion", "album", "sources", "interior", "chapters", "cover", "gear", "warnings").some
-            )
+            assertEquals(json.asObject.map(_.keys.toSet), expectedSections.some)
             assertEquals(json.hcursor.downField("album").get[String]("synopsis"), album.synopsis.asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("album").get[String]("title"), (album.title: String).asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("album").get[Vector[String]]("authors"), Vector("Cosmin", "Mara", "Iacob").asRight[DecodingFailure])
@@ -108,24 +114,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
             assertEquals(json.hcursor.downField("sources").downN(0).get[String]("filename"), (original.filename: String).asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("sources").downN(0).get[Option[String]]("caption"), none[String].asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("chapters").downN(0).get[String]("description"), chapter.description.asRight[DecodingFailure])
-            assertEquals(
-              json.hcursor.downField("chapters").downN(0).downField("gear").downN(0).get[Vector[String]]("lensIds"),
-              Vector(lens.id.value.toString).asRight[DecodingFailure]
-            )
-            assertEquals(
-              json.hcursor.downField("chapters").downN(0).downField("gear").downN(1).get[Vector[String]]("lensIds"),
-              Vector.empty[String].asRight[DecodingFailure]
-            )
+            assertEquals(selectedLenses, Vector(lens.id.value.toString).asRight[DecodingFailure])
+            assertEquals(fixedLenses, Vector.empty[String].asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("cameras").map(_.size), 2.asRight[DecodingFailure])
             assertEquals(json.hcursor.downField("gear").get[Vector[Json]]("lenses").map(_.size), 1.asRight[DecodingFailure])
             assertEquals(json.hcursor.get[Vector[Json]]("warnings"), Vector.empty[Json].asRight[DecodingFailure])
-            val schema = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
-              .getSchema(SchemaLocation.of("classpath:indesign-book.schema.json"))
-            val config = ExecutionConfig.builder().formatAssertionsEnabled(true).build()
-            assertEquals(
-              schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(config)).asScala.toVector,
-              Vector.empty
-            )
+            assertEquals(schemaViolations, Vector.empty)
           case other => fail(s"Expected validated artifact, got $other")
         assertEquals(reads, Vector(album.id))
 
@@ -442,16 +436,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
               assertEquals(json.hcursor.downField("cover").get[String]("spineOwner"), encodedOwner.asRight[DecodingFailure])
               val slot = json.hcursor.downField("interior").downField("spreads").downN(0).downField("slots").downN(0)
               Vector("xPt" -> -3.5, "yPt" -> -3.5, "widthPt" -> 2388.102, "heightPt" -> 772.354).foreach { case (key, expected) =>
-                assertEquals(
-                  slot.downField("frame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
-                  true.asRight[DecodingFailure]
-                )
+                val matchesFrame = slot.downField("frame").get[Double](key).map(value => math.abs(value - expected) < 0.000001)
+                assertEquals(matchesFrame, true.asRight[DecodingFailure])
               }
               Vector("xPt" -> 23.81102, "yPt" -> 7.65354, "widthPt" -> 2142.9918, "heightPt" -> 688.8186).foreach { case (key, expected) =>
-                assertEquals(
-                  slot.downField("captionFrame").get[Double](key).map(value => math.abs(value - expected) < 0.000001),
-                  true.asRight[DecodingFailure]
-                )
+                val matchesCaptionFrame = slot.downField("captionFrame").get[Double](key).map(value => math.abs(value - expected) < 0.000001)
+                assertEquals(matchesCaptionFrame, true.asRight[DecodingFailure])
               }
               val projected = json.hcursor.downField("interior").downField("spreads").downN(0).downField("placements").downN(0)
               assertEquals(projected.get[String]("captionCorner"), encodedCorner.asRight[DecodingFailure])
