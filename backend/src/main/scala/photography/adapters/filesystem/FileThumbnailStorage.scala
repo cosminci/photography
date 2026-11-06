@@ -38,7 +38,7 @@ object FileThumbnailStorage:
       write.map: version =>
         val size = image.bytes.size.refineUnsafe[ThumbnailByteCountConstraint]
         StoreResult.Stored(Thumbnail(location, version = version, dimensions = image.dimensions, quality = image.quality, bytes = size))
-      .handleErrorWith(error => Logger[F].error(error)("Thumbnail storage failed").as(StoreResult.Failed))
+      .handleError(error => StoreResult.Failed(error))
 
     override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): F[ReadResult] =
       val read = checkRoot().liftTo[F] >> resolveThumbnail(location).flatMap:
@@ -62,7 +62,7 @@ object FileThumbnailStorage:
           exists <- Files.exists(root).blocking[F]
           _      <- if exists then force(root, StandardOpenOption.READ) else ().pure[F]
         yield RemoveResult.Removed
-      remove.handleErrorWith(error => Logger[F].error(error)("Thumbnail cleanup failed").as(RemoveResult.Failed))
+      remove.handleError(error => RemoveResult.Failed(error))
 
     private def force(path: Path, access: StandardOpenOption) =
       Resource.fromAutoCloseable(FileChannel.open(path, access).blocking[F])

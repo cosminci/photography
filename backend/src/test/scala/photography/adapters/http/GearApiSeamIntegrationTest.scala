@@ -406,8 +406,6 @@ final class GearApiSeamIntegrationTest extends CatsEffectSuite:
         refs.calls.update(_ :+ Call.CreateLens(code, name, mount, coverage)).as(lensCreate)
       override def updateLens(value: Lens): IO[LensUpdateResult] = refs.calls.update(_ :+ Call.UpdateLens(value)).as(lensUpdate)
       override def deleteLens(id: LensId): IO[LensDeleteResult]  = refs.calls.update(_ :+ Call.DeleteLens(id)).as(lensDelete)
-      override def validateSelection(catalog: GearCatalog, selection: GearSelection): ValidationResult =
-        fail(message = "HTTP must not validate business selections")
     PublicRoutes(GearApi.make(manager)).orNotFound
   // scalafix:on DisableSyntax.defaultArgs
 

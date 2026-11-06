@@ -15,7 +15,6 @@ import photography.usecases.chapter.ChapterMetadataManager
 import photography.domain.gear.*
 import photography.usecases.chapter.ChapterManager
 import photography.usecases.chapter.ChapterManager.{GearReadResult, GearReplaceResult}
-import photography.usecases.gear.GearManager
 import org.typelevel.ci.CIString
 import photography.usecases.chapter.ChapterMetadataManager.{CreateResult, Period, UpdateResult}
 import photography.usecases.photo.ChapterPhotoImport.Scheduling
@@ -436,7 +435,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(otherCalls, expected = Vector.empty[String])
         assertEquals(calls, expected = Vector(GearCall.Replace(album.id, chapter.id, selection = selection)))
   }
-  GearManager.Failure.values.foreach { reason =>
+  GearCatalog.Failure.values.foreach { reason =>
     test(s"should translate chapter gear rejection $reason"):
       val refs         = Refs()
       val server       = buildApi(refs, gearReplaceResult = GearReplaceResult.Rejected(reason).pure[IO])
@@ -670,13 +669,13 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
   private def encodeErrorResponse(status: Status, code: String) =
     (status, Json.obj("code" -> Json.fromString(value = code)).noSpaces, MediaType.application.json.some, None)
 
-  private def explain(reason: GearManager.Failure) = reason match
-    case GearManager.Failure.DuplicateCamera    => "Select each camera only once"
-    case GearManager.Failure.UnknownCamera      => "Select a camera from the current catalog"
-    case GearManager.Failure.CameraKindMismatch => "Select lenses only for interchangeable cameras"
-    case GearManager.Failure.DuplicateLens      => "Select each lens only once per camera"
-    case GearManager.Failure.UnknownLens        => "Select a lens from the current catalog"
-    case GearManager.Failure.IncompatibleLens   => "Select lenses with a compatible mount and coverage"
+  private def explain(reason: GearCatalog.Failure) = reason match
+    case GearCatalog.Failure.DuplicateCamera    => "Select each camera only once"
+    case GearCatalog.Failure.UnknownCamera      => "Select a camera from the current catalog"
+    case GearCatalog.Failure.CameraKindMismatch => "Select lenses only for interchangeable cameras"
+    case GearCatalog.Failure.DuplicateLens      => "Select each lens only once per camera"
+    case GearCatalog.Failure.UnknownLens        => "Select a lens from the current catalog"
+    case GearCatalog.Failure.IncompatibleLens   => "Select lenses with a compatible mount and coverage"
 
   private def json(value: String)     = parse(value).fold(error => fail(error.message), identity)
   private def hasFeedback(body: Json) =

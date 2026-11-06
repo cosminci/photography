@@ -248,13 +248,10 @@ describe("same-origin album HTTP client", () => {
 
     expect(await client.chapters("album", signal)).toEqual([chapter]);
     expect(await client.composition("album", signal)).toEqual(composition);
-    expect(await client.spread("album", "spread", "chapter", signal)).toEqual({
+    expect(await client.readPlacements("album", { kind: "spread", id: "spread" }, signal)).toEqual({
       id: spread.id,
-      kind: spread.kind,
-      templateId: spread.templateId,
-      bleed: { state: "disabled", available: false },
-      chapter: "chapter",
-      slots: [],
+      kind: "spread",
+      layout: { kind: spread.kind, templateId: spread.templateId, bleed: { state: "disabled", available: false }, slots: [] },
       placements: [],
     });
     expect(await client.countries(signal)).toEqual([country]);

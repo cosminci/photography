@@ -14,7 +14,14 @@ import {
   type AlbumClient,
   type Author,
 } from "../../../src/features/albums/model/Album";
-import type { Chapter, ChapterDetails, Spread, SpreadContext as TemplateContext, Workspace } from "../../../src/features/albums/model/Workspace";
+import {
+  snapshotSpread,
+  type Chapter,
+  type ChapterDetails,
+  type Spread,
+  type SpreadContext as TemplateContext,
+  type Workspace,
+} from "../../../src/features/albums/model/Workspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
 import type {
   PlacementContext,
@@ -318,7 +325,9 @@ describe("album workspace browser boundary", () => {
         frontSlotId: "front",
         backSlotId: "back",
       };
-      vi.mocked(built.client.readPlacements).mockImplementation(() => Promise.resolve(cover));
+      vi.mocked(built.client.readPlacements).mockImplementation((_album, context) =>
+        Promise.resolve(context.kind === "cover" ? cover : readSavedSpread(built.spreads(), context.id)),
+      );
       vi.mocked(built.client.editPlacements).mockImplementation(() => {
         if (outcome === "saved" || outcome === "uncertain-saved") cover = { ...cover, spineOwner: "back", geometry: coverGeometries.back };
         if (outcome === "rejected") return Promise.reject(new AlbumRequestError(400, "Rejected composition"));
@@ -1837,20 +1846,9 @@ describe("album workspace browser boundary", () => {
         spreads: [interior, ...workspace.spreads.slice(1)],
         photoInventories: { ...workspace.photoInventories, vacation: { ...inventory, photos: [photo] } },
       };
-      const snapshot = {
-        kind: "spread" as const,
-        id: interior.id,
-        placements: [placed],
-        layout: {
-          kind: interior.kind,
-          bleed: { state: "disabled" as const, available: true },
-          templateId: interior.templateId,
-          slots: interior.slots,
-        },
-      };
+      const snapshot = snapshotSpread(interior);
       const client = buildClient(
         {
-          readPlacements: vi.fn().mockResolvedValue(snapshot),
           editPlacements: vi.fn().mockResolvedValue(snapshot),
         },
         saved,
@@ -1880,7 +1878,8 @@ describe("album workspace browser boundary", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Retry photos" }));
       await waitFor(() => {
-        expect(client.readPlacements).toHaveBeenCalledOnce();
+        const reads = vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "spread" && context.id === interior.id);
+        expect(reads).toHaveLength(4);
         expect(screen.getByRole("button", { name: "Apply retained photo adjustments" })).toBeEnabled();
       });
       expect(client.editPlacements).not.toHaveBeenCalled();
@@ -2199,7 +2198,10 @@ describe("album workspace browser boundary", () => {
       geometry: coverGeometries.front,
     };
     const receive = vi.fn<(event: PhotoEvent) => void>();
-    const client = buildClient({ readPlacements: vi.fn().mockResolvedValue(cover) }, saved);
+    const client = buildClient({}, saved);
+    vi.mocked(client.readPlacements).mockImplementation((_album, context) =>
+      Promise.resolve(context.kind === "cover" ? cover : readSavedSpread(saved.spreads, context.id)),
+    );
     const liveEvents: AlbumPhotoEvents = {
       subscribe: (_id, callback) => {
         receive.mockImplementation(callback);
@@ -2216,12 +2218,12 @@ describe("album workspace browser boundary", () => {
     fireEvent(surface, new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 100, clientY: 100 }));
     fireEvent(surface, new MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 100 }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeDisabled());
-    vi.mocked(client.spread).mockImplementation((_album, id) => {
-      const spread = saved.spreads.find((candidate) => candidate.id === id);
+    vi.mocked(client.readPlacements).mockImplementation((_album, context) => {
+      if (context.kind === "cover") return Promise.resolve({ ...cover, placements: [] });
+      const spread = saved.spreads.find((candidate) => candidate.id === context.id);
       if (spread === undefined) throw new Error("Unknown spread");
-      return Promise.resolve({ ...spread, placements: [] });
+      return Promise.resolve(snapshotSpread({ ...spread, placements: [] }));
     });
-    vi.mocked(client.readPlacements).mockResolvedValue({ ...cover, placements: [] });
 
     receive({ kind: "subscribed" });
     await waitFor(() => {
@@ -2234,7 +2236,7 @@ describe("album workspace browser boundary", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /: Mountain.jpg$/ })).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByRole("button", { name: "Reader mode" })).toBeEnabled());
     expect(client.editPlacements).not.toHaveBeenCalled();
-    expect(client.readPlacements).toHaveBeenCalledTimes(kind === "cover" ? 2 : 0);
+    expect(vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "cover")).toHaveLength(kind === "cover" ? 2 : 0);
   });
 
   it("should retain book nodes and unchanged template and gear acquisitions through a caption-position save and workspace readback", async () => {
@@ -2276,7 +2278,9 @@ describe("album workspace browser boundary", () => {
     };
     const client = buildClient(
       {
-        spread: vi.fn().mockImplementation((_album: string, id: string) => Promise.resolve(readSpread(id))),
+        readPlacements: vi
+          .fn()
+          .mockImplementation((_album: string, context: { id: string }) => Promise.resolve(snapshotSpread(readSpread(context.id)))),
         editPlacements: vi.fn().mockImplementation((_album: string, _context: PlacementContext, command: PlacementEdit) => {
           if (command.operation !== "captionCorner") throw new Error("Expected caption corner edit");
           selectedCorner = command.captionCorner;
@@ -2301,13 +2305,7 @@ describe("album workspace browser boundary", () => {
     expect(screen.getByRole("button", { name: "Add chapter" })).toHaveAccessibleDescription("Saving photos. Please wait.");
     expect(screen.getByRole("region", { name: "Spread details" })).toBe(metadata);
     expect(screen.getByRole("complementary", { name: "Spread navigator" })).toBe(navigator);
-    const spread = readSpread(vacationOpening.id);
-    acknowledge({
-      kind: "spread",
-      id: spread.id,
-      placements: spread.placements,
-      layout: { kind: spread.kind, bleed: { state: "disabled" as const, available: true }, templateId: spread.templateId, slots: spread.slots },
-    });
+    acknowledge(snapshotSpread(readSpread(vacationOpening.id)));
     await waitFor(() => {
       expect(client.chapters).toHaveBeenCalledTimes(2);
     });
@@ -2764,10 +2762,11 @@ describe("album workspace browser boundary", () => {
       fireEvent(window, new MouseEvent("pointermove", { clientX: -1, clientY: -1 }));
       await screen.findByRole("button", { name: "Read saved caption" });
     }
-    vi.mocked(client.spread).mockImplementation((_album, id) => {
-      const spread = workspace.spreads.find((candidate) => candidate.id === id);
+    vi.mocked(client.readPlacements).mockImplementation((_album, context) => {
+      if (context.kind === "cover") throw new Error("Unexpected cover");
+      const spread = workspace.spreads.find((candidate) => candidate.id === context.id);
       if (spread === undefined) throw new Error("Unknown spread");
-      return Promise.resolve(spread);
+      return Promise.resolve(snapshotSpread(spread));
     });
     vi.mocked(client.chapterPhotos).mockResolvedValue(inventory);
     receive({ kind: "subscribed" });
@@ -3069,27 +3068,24 @@ describe("album workspace browser boundary", () => {
     };
     const client = buildClient({
       chapterPhotos: vi.fn().mockResolvedValueOnce(photos).mockResolvedValueOnce(inventory).mockResolvedValue(used.photoInventories.vacation),
-      spread: vi
+      readPlacements: vi
         .fn()
-        .mockImplementation((_album, id) => {
-          const spread = changed.spreads.find((candidate) => candidate.id === id);
+        .mockImplementation((_album, context: { id: string }) => {
+          const spread = changed.spreads.find((candidate) => candidate.id === context.id);
           if (spread === undefined) throw new Error("Unknown spread");
-          return Promise.resolve(spread.id === opening.id ? { ...spread, placements: [{ ...placement, slotId: "new-slot" }] } : spread);
+          return Promise.resolve(
+            snapshotSpread(spread.id === opening.id ? { ...spread, placements: [{ ...placement, slotId: "new-slot" }] } : spread),
+          );
         })
-        .mockResolvedValueOnce(opening)
-        .mockResolvedValueOnce(vacationOpening)
-        .mockResolvedValueOnce(vacationPhoto)
-        .mockResolvedValueOnce(workspace.spreads[3])
-        .mockResolvedValueOnce({ ...opening, placements: [placement] })
-        .mockResolvedValueOnce(vacationOpening)
-        .mockResolvedValueOnce(vacationPhoto)
-        .mockResolvedValueOnce(workspace.spreads[3]),
-      editPlacements: vi.fn().mockResolvedValue({
-        kind: "spread",
-        id: opening.id,
-        placements: [placement],
-        layout: { kind: opening.kind, bleed: { state: "disabled" as const, available: true }, templateId: opening.templateId, slots: opening.slots },
-      } satisfies SpreadSnapshot),
+        .mockResolvedValueOnce(snapshotSpread(opening))
+        .mockResolvedValueOnce(snapshotSpread(vacationOpening))
+        .mockResolvedValueOnce(snapshotSpread(vacationPhoto))
+        .mockResolvedValueOnce(readSavedSpread(workspace.spreads, "home-opening"))
+        .mockResolvedValueOnce(snapshotSpread({ ...opening, placements: [placement] }))
+        .mockResolvedValueOnce(snapshotSpread(vacationOpening))
+        .mockResolvedValueOnce(snapshotSpread(vacationPhoto))
+        .mockResolvedValueOnce(readSavedSpread(workspace.spreads, "home-opening")),
+      editPlacements: vi.fn().mockResolvedValue(snapshotSpread({ ...opening, placements: [placement] })),
       templates: vi.fn().mockResolvedValue([
         { id: "layout", name: "Applied", slots: [photoSlot, textSlot] },
         { id: "new", name: "New layout", slots: [photoSlot, textSlot] },
@@ -3118,21 +3114,26 @@ describe("album workspace browser boundary", () => {
     const expectedContext = { kind: "spread", id: opening.id };
     const expectedEdit = { operation: "place", photoId: photo.id, slotId: photoSlot.id };
     expect(client.editPlacements).toHaveBeenCalledWith(album.id, expectedContext, expectedEdit);
-    expect(client.readPlacements).not.toHaveBeenCalled();
+    expect(vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "cover")).toHaveLength(0);
   });
 
   it("shows failed Cover reads and retries through the authoritative read boundary", async () => {
     window.history.replaceState(null, "", "?part=cover");
+    const coverRead = vi.fn<() => Promise<CoverSnapshot>>().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({
+      kind: "cover",
+      placements: [],
+      frontSlotId: "front",
+      backSlotId: "back",
+      spineOwner: "front",
+      pageCount: 30,
+      geometry: coverGeometries.front,
+    });
     const client = buildClient({
-      readPlacements: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({
-        kind: "cover",
-        placements: [],
-        frontSlotId: "front",
-        backSlotId: "back",
-        spineOwner: "front",
-        pageCount: 30,
-        geometry: coverGeometries.front,
-      }),
+      readPlacements: vi
+        .fn()
+        .mockImplementation((_album, context: PlacementContext) =>
+          context.kind === "spread" ? Promise.resolve(readSavedSpread(workspace.spreads, context.id)) : coverRead(),
+        ),
     });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     fireEvent.click(await screen.findByRole("button", { name: "Cover" }));
@@ -3141,13 +3142,19 @@ describe("album workspace browser boundary", () => {
       expect(screen.queryByRole("button", { name: "Retry photos" })).not.toBeInTheDocument();
     });
 
-    expect(client.readPlacements).toHaveBeenCalledTimes(2);
+    expect(coverRead).toHaveBeenCalledTimes(2);
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
   it("should preserve unresolved Cover state against navigation and page departure", async () => {
     window.history.replaceState(null, "", "/albums/album?part=cover");
-    const client = buildClient({ readPlacements: vi.fn().mockRejectedValue(new Error("offline")) });
+    const client = buildClient({
+      readPlacements: vi
+        .fn()
+        .mockImplementation((_album, context: PlacementContext) =>
+          context.kind === "spread" ? Promise.resolve(readSavedSpread(workspace.spreads, context.id)) : Promise.reject(new Error("offline")),
+        ),
+    });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     await screen.findByRole("button", { name: "Retry photos" });
     const before = window.location.search;
@@ -3222,7 +3229,6 @@ describe("album workspace browser boundary", () => {
         .fn()
         .mockResolvedValueOnce(album)
         .mockResolvedValue({ ...album, authors: ["Mara"] }),
-      readPlacements: vi.fn().mockRejectedValue(new Error("A second spread GET is unnecessary")),
     });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
 
@@ -3236,8 +3242,8 @@ describe("album workspace browser boundary", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit chapter description" })).toBeEnabled());
 
     expect(screen.getByRole("group", { name: "Kyoto composition" })).toHaveTextContent("Newly saved description");
-    expect(client.spread).toHaveBeenCalledTimes(workspace.spreads.length * 2);
-    expect(client.readPlacements).not.toHaveBeenCalled();
+    expect(vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "spread")).toHaveLength(workspace.spreads.length * 2);
+    expect(vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "cover")).toHaveLength(0);
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
 
@@ -3258,23 +3264,29 @@ describe("album workspace browser boundary", () => {
           id === vacation.id ? { ...inventory, photos: [photograph], placedPhotoIds: [photograph.id], counts: { total: 1, unplaced: 0 } } : inventory,
         ),
       ),
-      readPlacements: vi.fn().mockResolvedValue({
-        kind: "cover",
-        placements: [
-          {
-            kind: "cover",
-            id: "back-placement",
-            slotId: "back",
-            photoId: photograph.id,
-            transform: { x: 10, y: -5, zoom: 2, mirrored: true },
-          },
-        ],
-        frontSlotId: "front",
-        backSlotId: "back",
-        spineOwner: owner,
-        pageCount: 30,
-        geometry: coverGeometries[owner],
-      }),
+      readPlacements: vi.fn().mockImplementation((_album, context: PlacementContext) =>
+        Promise.resolve(
+          context.kind === "spread"
+            ? readSavedSpread(workspace.spreads, context.id)
+            : {
+                kind: "cover",
+                placements: [
+                  {
+                    kind: "cover",
+                    id: "back-placement",
+                    slotId: "back",
+                    photoId: photograph.id,
+                    transform: { x: 10, y: -5, zoom: 2, mirrored: true },
+                  },
+                ],
+                frontSlotId: "front",
+                backSlotId: "back",
+                spineOwner: owner,
+                pageCount: 30,
+                geometry: coverGeometries[owner],
+              },
+        ),
+      ),
     });
     render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
     expect(await screen.findByText(`Spine/gutter: ${owner} cover`)).toBeInTheDocument();
@@ -3359,7 +3371,7 @@ describe("album workspace browser boundary", () => {
 
     expect(screen.getByRole("group", { name: /Cover: back on the left; front on the right/ })).toHaveAccessibleName(/Title saved in another browser/);
     expect(screen.getByText("by Mara · 2026")).toBeInTheDocument();
-    expect(client.readPlacements).toHaveBeenCalledExactlyOnceWith(album.id, { kind: "cover" });
+    expect(vi.mocked(client.readPlacements).mock.calls.filter(([, context]) => context.kind === "cover")).toEqual([[album.id, { kind: "cover" }]]);
     expect(client.open).toHaveBeenCalledTimes(2);
     expect(client.editPlacements).not.toHaveBeenCalled();
   });
@@ -4540,12 +4552,7 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
               pageCount: 30,
               geometry: coverGeometries.front,
             }
-          : {
-              kind: "spread",
-              id: context.id,
-              placements: [],
-              layout: { kind: "photos_only", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [photoSlot] },
-            },
+          : readSavedSpread(saved.spreads, context.id),
       ),
     ),
     editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
@@ -4560,12 +4567,7 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
               pageCount: 30,
               geometry: coverGeometries.front,
             }
-          : {
-              kind: "spread",
-              id: context.id,
-              placements: [],
-              layout: { kind: "photos_only", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [photoSlot] },
-            },
+          : { ...readSavedSpread(saved.spreads, context.id), placements: [] },
       ),
     ),
     list: vi.fn(),
@@ -4579,11 +4581,6 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
     saveCaption: vi.fn().mockResolvedValue(undefined),
     chapters: vi.fn().mockResolvedValue(saved.chapters),
     composition: vi.fn().mockResolvedValue(membership(saved.spreads)),
-    spread: vi.fn().mockImplementation((_album: string, id: string) => {
-      const spread = saved.spreads.find((candidate) => candidate.id === id);
-      if (spread === undefined) throw new Error("Unknown spread");
-      return Promise.resolve(spread);
-    }),
     countries: vi.fn().mockResolvedValue(saved.countries),
     photoSource: vi.fn().mockResolvedValue(saved.photoRoot),
     chapterPhotos: vi.fn().mockImplementation((id: string) => {
@@ -4605,6 +4602,11 @@ function buildClient(overrides: Partial<AlbumClient> = {}, saved: Workspace = wo
 
 function membership(spreads: readonly Spread[]) {
   return spreads.map(({ id, chapter }) => ({ id, chapter }));
+}
+function readSavedSpread(spreads: readonly Spread[], id: string): SpreadSnapshot {
+  const saved = spreads.find((spread) => spread.id === id);
+  if (saved === undefined) throw new Error("Missing test spread");
+  return snapshotSpread(saved);
 }
 import { coverGeometries } from "./CoverGeometry";
 
@@ -4633,11 +4635,6 @@ function buildHistoryBook(initialSpreads: readonly Spread[] = workspace.spreads,
     open: vi.fn(() => Promise.resolve(metadata)),
     chapters: vi.fn(() => Promise.resolve(chapters)),
     composition: vi.fn(() => Promise.resolve(membership(spreads))),
-    spread: vi.fn((_album: string, id: string) => {
-      const saved = spreads.find((spread) => spread.id === id);
-      if (saved === undefined) throw new Error("Missing test spread.");
-      return Promise.resolve(saved);
-    }),
     readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> => {
       if (context.kind === "cover")
         return Promise.resolve({
@@ -4649,14 +4646,7 @@ function buildHistoryBook(initialSpreads: readonly Spread[] = workspace.spreads,
           frontSlotId: "front",
           backSlotId: "back",
         });
-      const saved = spreads.find((spread) => spread.id === context.id);
-      if (saved === undefined) throw new Error("Missing test spread.");
-      return Promise.resolve({
-        kind: "spread",
-        id: saved.id,
-        placements: saved.placements,
-        layout: { kind: saved.kind, templateId: saved.templateId, slots: saved.slots, bleed: saved.bleed },
-      });
+      return Promise.resolve(readSavedSpread(spreads, context.id));
     }),
     saveAuthors: vi.fn((_id: string, authors: readonly Author[]) => {
       metadata = { ...metadata, authors };

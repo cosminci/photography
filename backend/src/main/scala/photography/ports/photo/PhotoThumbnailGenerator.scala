@@ -9,4 +9,4 @@ trait PhotoThumbnailGenerator[F[_]]:
 object PhotoThumbnailGenerator:
   enum GenerationResult:
     case Generated(image: EncodedThumbnail)
-    case Failed
+    case Failed(cause: Throwable)

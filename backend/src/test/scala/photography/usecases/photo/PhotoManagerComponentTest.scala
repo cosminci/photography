@@ -182,7 +182,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
   test("should retain inventory when discovery or inventory reading fails"):
     Vector(
-      (PhotoStorage.DiscoveryResult.Failed.pure[IO], PhotoRepository.ListResult.Listed(Vector(existing)).pure[IO], Issue.Discovery),
+      (PhotoStorage.DiscoveryResult.Failed(error).pure[IO], PhotoRepository.ListResult.Listed(Vector(existing)).pure[IO], Issue.Discovery),
       (IO.raiseError[PhotoStorage.DiscoveryResult](error), PhotoRepository.ListResult.Failed.pure[IO], Issue.Unexpected),
       (complete.pure[IO], PhotoRepository.ListResult.Failed.pure[IO], Issue.Persistence),
       (complete.pure[IO], IO.raiseError[PhotoRepository.ListResult](error), Issue.Persistence)
@@ -196,7 +196,11 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
   test("should retain previous photos and continue after individual read or generation failures"):
     Vector(
-      (PhotoStorage.ReadResult.Failed.pure[IO], PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO], Issue.Read(original.filename)),
+      (
+        PhotoStorage.ReadResult.Failed(error).pure[IO],
+        PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO],
+        Issue.Read(original.filename)
+      ),
       (
         PhotoStorage.ReadResult.Unstable.pure[IO],
         PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO],
@@ -208,7 +212,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         Issue.Undecodable(original.filename)
       ),
       (IO.raiseError[PhotoStorage.ReadResult](error), PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO], Issue.Unexpected),
-      (read.pure[IO], PhotoThumbnailGenerator.GenerationResult.Failed.pure[IO], Issue.Generation(original.filename))
+      (read.pure[IO], PhotoThumbnailGenerator.GenerationResult.Failed(error).pure[IO], Issue.Generation(original.filename))
     ).traverse_ { case (reading, generation, issue) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
         val discovery = PhotoStorage.DiscoveryResult.Complete(Vector(original, original.copy(filename = "two.jpg")), unsupportedCount = 0)
@@ -226,7 +230,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
     val storedImage = ThumbnailStorage.StoreResult.Stored(stored).pure[IO]
     val rejected    = PhotoRepository.WriteResult.Failed.pure[IO]
     val failures    = Vector(
-      (storage = ThumbnailStorage.StoreResult.Failed.pure[IO], writing = rejected, primary = Issue.Storage),
+      (storage = ThumbnailStorage.StoreResult.Failed(error).pure[IO], writing = rejected, primary = Issue.Storage),
       (storage = IO.raiseError[ThumbnailStorage.StoreResult](error), writing = rejected, primary = Issue.Storage),
       (storage = storedImage, writing = rejected, primary = Issue.Persistence),
       (storage = storedImage, writing = IO.raiseError[PhotoRepository.WriteResult](error), primary = Issue.Persistence)
@@ -343,11 +347,12 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       override def run[A](program: Db[A]): IO[A]     = events.update(_ :+ "transaction") >> program.run(())
       override def resolve[A](program: Db[A]): IO[A] = resolving >> program.run(())
     val photoStorage = new PhotoStorage[IO]:
-      override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-        IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
       override def discoverOriginals(source: PhotoSource): IO[PhotoStorage.DiscoveryResult] = IO(assertEquals(source, original.source)) >>
         discovery
       override def readOriginal(location: OriginalPhotoLocation): IO[PhotoStorage.ReadResult] = events.update(_ :+ "read") >> readResult
+    val thumbnailStorage = new ThumbnailStorage[IO]:
+      override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
+        IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
       override def storeThumbnail(location: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
         IO(assertEquals(location, stored.location)) >> IO(assertEquals(value, image)) >> events.update(_ :+ "store") >> storage
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
@@ -388,5 +393,5 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         IO.raiseError[PhotoWriteRecovery.RecoveryResult](new AssertionError("Unexpected startup recovery"))
       override def resolve(intent: PhotoWriteIntent): IO[PhotoWriteRecovery.RecoveryResult] =
         events.update(_ :+ "resolve") >> finalization(intent)
-    PhotoManager.make(photoStorage, repository, generator, recovery)
+    PhotoManager.make(photoStorage, thumbnailStorage, repository, generator, recovery)
   // scalafix:on DisableSyntax.defaultArgs

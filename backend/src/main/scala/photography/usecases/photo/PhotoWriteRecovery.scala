@@ -48,10 +48,10 @@ object PhotoWriteRecovery:
       .handleErrorWith(error => Logger[F].error(error)("Photo write reference read failed").as(Vector(Issue.References(intent.id))))
 
     private def cleanup(id: PhotoWriteIntentId, location: ThumbnailLocation) =
-      storage.removeThumbnail(location).flatMap:
-        case ThumbnailStorage.RemoveResult.Removed => Vector.empty[Issue].pure[F]
-        case ThumbnailStorage.RemoveResult.Failed  => Vector(Issue.Cleanup(id, location)).pure[F]
-      .handleErrorWith(error => Logger[F].error(error)("Photo write cleanup failed").as(Vector(Issue.Cleanup(id, location))))
+      storage.removeThumbnail(location).handleError(ThumbnailStorage.RemoveResult.Failed(_)).flatMap:
+        case ThumbnailStorage.RemoveResult.Removed       => Vector.empty[Issue].pure[F]
+        case ThumbnailStorage.RemoveResult.Failed(cause) =>
+          Logger[F].error(cause)(s"Photo write cleanup failed for ${id.value}, thumbnail ${location.value}").as(Vector(Issue.Cleanup(id, location)))
 
     private def complete(id: PhotoWriteIntentId) =
       Transaction[Db, F].resolve(photos.completeWrite(id)).flatMap:

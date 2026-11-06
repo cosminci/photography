@@ -1,10 +1,12 @@
 package photography.usecases.chapter
 
 import cats.data.NonEmptyList
+import cats.data.NonEmptyVector
 import cats.effect.{Deferred, IO, Ref}
 import cats.effect.std.Mutex
 import cats.effect.testkit.TestControl
 import cats.syntax.all.*
+import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
 import photography.domain.album.*
 import photography.capabilities.Transaction
@@ -12,7 +14,8 @@ import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.domain.gear.*
 import photography.ports.chapter.ChapterRepository
-import photography.usecases.gear.GearManager
+import photography.ports.gear.GearRepository
+import photography.domain.gear.GearCatalog.Failure
 import photography.usecases.chapter.ChapterManager.*
 import java.util.UUID
 import scala.concurrent.duration.*
@@ -21,8 +24,10 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
   private val album        = AlbumId(new UUID(0L, 1L))
   private val chapter      = ChapterId(new UUID(0L, 2L))
-  private val selection    = Vector(CameraSelection(CameraId(new UUID(0L, 3L)), CameraUse.FixedLens))
-  private val catalog      = GearCatalog(cameras = Vector.empty[Camera], lenses = Vector.empty[Lens])
+  private val camera       = Camera(CameraId(new UUID(0L, 3L)), code = "camera", friendlyName = "Camera", kind = CameraKind.FixedLens)
+  private val lens      = Lens(LensId(new UUID(0L, 4L)), code = "lens", friendlyName = "Lens", mount = LensMount.SonyE, coverage = SensorFormat.ApsC)
+  private val selection = Vector(CameraSelection(camera.id, CameraUse.FixedLens))
+  private val catalog   = GearCatalog(cameras = Vector(camera), lenses = Vector(lens))
 
   test("should read saved chapter gear without disguising missing or failed reads as empty selections"):
     val cases = Vector(
@@ -37,7 +42,7 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       buildManager(Refs(), read = response).flatMap(_.readGear(album, chapter)).map(assertEquals(_, expected))
     }
 
-  test("should replace complete ordered gear once after the shared owner validates the loaded catalog"):
+  test("should replace complete ordered gear once after validating the loaded catalog"):
     val cases = Vector(
       ChapterRepository.GearWriteResult.Saved     -> GearReplaceResult.Saved,
       ChapterRepository.GearWriteResult.NotFound  -> GearReplaceResult.NotFound,
@@ -57,26 +62,79 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
         assertEquals(events, Vector("catalog", "replace"))
     }
 
-  test("should reject each shared validation failure and unavailable catalogs before persistence"):
-    val cases = GearManager.Failure.values.toVector.map { failure =>
-      (
-        GearManager.CatalogResult.Found(catalog),
-        GearManager.ValidationResult.Rejected(failure),
-        GearReplaceResult.Rejected(failure),
-        Vector("catalog")
-      )
-    } :+ (GearManager.CatalogResult.Failed, GearManager.ValidationResult.Valid, GearReplaceResult.Failed, Vector("catalog"))
+  test("should accept empty selections and preserve order when compatible bodies share lenses"):
+    val second =
+      camera.copy(id = CameraId(new UUID(0L, 5L)), kind = CameraKind.InterchangeableLens(mount = LensMount.SonyE, sensor = SensorFormat.ApsC))
+    val third   = second.copy(id = CameraId(new UUID(0L, 6L)))
+    val current = GearRepository.CatalogReadResult.Found(catalog.copy(cameras = Vector(camera, second, third)))
+    val cases   = Vector(
+      Vector.empty[CameraSelection],
+      selection,
+      Vector(
+        CameraSelection(second.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id))),
+        CameraSelection(third.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id)))
+      ) ++ selection
+    )
 
-    cases.traverse_ { case (current, validation, expected, expectedEvents) =>
+    cases.traverse_ { values =>
+      buildManager(
+        Refs(),
+        current = current,
+        requested = values
+      ).flatMap(_.replaceGear(album, chapter, values)).map(assertEquals(_, GearReplaceResult.Saved))
+    }
+
+  test("should require matching mounts and sufficient coverage for every sensor format"):
+    val cases: Vector[(CameraKind.InterchangeableLens, Lens)] =
+      for
+        mount     <- LensMount.values.toVector
+        sensor    <- SensorFormat.values.toVector
+        lensMount <- LensMount.values.toVector
+        coverage  <- SensorFormat.values.toVector
+      yield (CameraKind.InterchangeableLens(mount, sensor), lens.copy(mount = lensMount, coverage = coverage))
+    val selected = Vector(CameraSelection(camera.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id))))
+
+    cases.traverse_ { case (kind, lens) =>
+      val current  = GearCatalog(cameras = Vector(camera.copy(kind = kind)), lenses = Vector(lens))
+      val accepted = kind.mount === lens.mount && (kind.sensor === SensorFormat.ApsC || lens.coverage === SensorFormat.FullFrame)
+      val expected = if accepted then GearReplaceResult.Saved else GearReplaceResult.Rejected(Failure.IncompatibleLens)
+      buildManager(Refs(), current = GearRepository.CatalogReadResult.Found(current), requested = selected)
+        .flatMap(_.replaceGear(album, chapter, selected)).map(assertEquals(_, expected))
+    }
+
+  test("should reject invalid selections and unavailable catalogs before persistence"):
+    val interchangeable = camera.copy(kind = CameraKind.InterchangeableLens(mount = LensMount.SonyE, sensor = SensorFormat.FullFrame))
+    val selected        = CameraSelection(camera.id, CameraUse.Interchangeable(NonEmptyVector.one(lens.id)))
+    val current         = GearRepository.CatalogReadResult.Found(catalog.copy(cameras = Vector(interchangeable)))
+    val cases           = Vector(
+      (current, selection ++ selection, GearReplaceResult.Rejected(Failure.DuplicateCamera)),
+      (current, Vector(selected.copy(camera = CameraId(new UUID(0L, 99L)))), GearReplaceResult.Rejected(Failure.UnknownCamera)),
+      (current, selection, GearReplaceResult.Rejected(Failure.CameraKindMismatch)),
+      (GearRepository.CatalogReadResult.Found(catalog), Vector(selected), GearReplaceResult.Rejected(Failure.CameraKindMismatch)),
+      (
+        current,
+        Vector(selected.copy(use = CameraUse.Interchangeable(NonEmptyVector.of(lens.id, lens.id)))),
+        GearReplaceResult.Rejected(Failure.DuplicateLens)
+      ),
+      (
+        current,
+        Vector(selected.copy(use = CameraUse.Interchangeable(NonEmptyVector.one(LensId(new UUID(0L, 99L)))))),
+        GearReplaceResult.Rejected(Failure.UnknownLens)
+      ),
+      (current, Vector(selected), GearReplaceResult.Rejected(Failure.IncompatibleLens)),
+      (GearRepository.CatalogReadResult.Failed, selection, GearReplaceResult.Failed)
+    )
+
+    cases.traverse_ { case (current, values, expected) =>
       val refs = Refs()
 
       for
-        manager <- buildManager(refs, current = current, validation = validation)
-        result  <- manager.replaceGear(album, chapter, selection = selection)
+        manager <- buildManager(refs, current = current)
+        result  <- manager.replaceGear(album, chapter, selection = values)
         events  <- refs.events.get
       yield
         assertEquals(result, expected)
-        assertEquals(events, expectedEvents)
+        assertEquals(events, Vector("catalog"))
     }
 
   test("should coordinate catalog validation and replacement while preserving cancellation-safe handoff"):
@@ -125,8 +183,8 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       refs: Refs,
       read: ChapterRepository.GearReadResult = ChapterRepository.GearReadResult.Found(selection = selection),
       write: ChapterRepository.GearWriteResult = ChapterRepository.GearWriteResult.Saved,
-      current: GearManager.CatalogResult = GearManager.CatalogResult.Found(catalog),
-      validation: GearManager.ValidationResult = GearManager.ValidationResult.Valid,
+      current: GearRepository.CatalogReadResult = GearRepository.CatalogReadResult.Found(catalog),
+      requested: GearSelection = selection,
       maybeMutex: Option[Mutex[IO]] = None,
       beforeCatalog: IO[Unit] = IO.unit,
       beforeTransaction: IO[Unit] = IO.unit
@@ -138,25 +196,21 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       override def readGear(owner: AlbumId, id: ChapterId): IO[ChapterRepository.GearReadResult] =
         IO(assertEquals((owner, id), (album, chapter))).as(read)
       override def replaceGear(owner: AlbumId, id: ChapterId, values: GearSelection): IO[ChapterRepository.GearWriteResult] =
-        IO(assertEquals((owner, id, values), (album, chapter, selection))) >> refs.events.update(_ :+ "replace").as(write)
+        IO(assertEquals((owner, id, values), (album, chapter, requested))) >> refs.events.update(_ :+ "replace").as(write)
       override def readSelections: IO[ChapterRepository.SelectionsReadResult]                                                = unexpected
       override def saveDescription(owner: AlbumId, id: ChapterId, text: String): IO[ChapterRepository.SaveDescriptionResult] = unexpected
       override def findSource(id: ChapterId): IO[ChapterRepository.SourceResult]                                             = unexpected
       override def create(owner: AlbumId, value: ChapterRepository.NewChapter, order: NonEmptyList[ChapterId]): IO[ChapterRepository.CreateResult] =
         unexpected
       override def update(command: ChapterRepository.Update): IO[ChapterRepository.UpdateResult] = unexpected
-    val gear = new GearManager[IO]:
-      override def readCatalog: IO[GearManager.CatalogResult] = refs.events.update(_ :+ "catalog") >> beforeCatalog.as(current)
-      override def validateSelection(current: GearCatalog, values: GearSelection): GearManager.ValidationResult =
-        assertEquals((current, values), (catalog, selection))
-        validation
-      override def createCamera(code: CameraExifCode, name: CameraName, kind: CameraKind): IO[GearManager.CameraCreateResult] = unexpected
-      override def updateCamera(camera: Camera): IO[GearManager.CameraUpdateResult]                                           = unexpected
-      override def deleteCamera(id: CameraId): IO[GearManager.CameraDeleteResult]                                             = unexpected
-      override def createLens(code: LensExifCode, name: LensName, mount: LensMount, coverage: SensorFormat): IO[GearManager.LensCreateResult] =
-        unexpected
-      override def updateLens(lens: Lens): IO[GearManager.LensUpdateResult] = unexpected
-      override def deleteLens(id: LensId): IO[GearManager.LensDeleteResult] = unexpected
+    val gear = new GearRepository[IO]:
+      override def readCatalog: IO[GearRepository.CatalogReadResult] = refs.events.update(_ :+ "catalog") >> beforeCatalog.as(current)
+      override def createCamera(value: Camera): IO[GearRepository.CameraCreateResult] = unexpected
+      override def updateCamera(value: Camera): IO[GearRepository.CameraUpdateResult] = unexpected
+      override def deleteCamera(id: CameraId): IO[GearRepository.CameraDeleteResult]  = unexpected
+      override def createLens(value: Lens): IO[GearRepository.LensCreateResult]       = unexpected
+      override def updateLens(value: Lens): IO[GearRepository.LensUpdateResult]       = unexpected
+      override def deleteLens(id: LensId): IO[GearRepository.LensDeleteResult]        = unexpected
     maybeMutex.fold(Mutex[IO])(_.pure[IO]).map { mutex =>
       given Mutex[IO] = mutex
       ChapterManager.make(chapters, gear)

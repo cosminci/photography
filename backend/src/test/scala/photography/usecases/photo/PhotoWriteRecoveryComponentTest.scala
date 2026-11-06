@@ -104,7 +104,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
         val cleaning =
           if failCompletion then ThumbnailStorage.RemoveResult.Removed.pure[IO]
           else if throwError then IO.raiseError[ThumbnailStorage.RemoveResult](error)
-          else ThumbnailStorage.RemoveResult.Failed.pure[IO]
+          else ThumbnailStorage.RemoveResult.Failed(error).pure[IO]
         val completing =
           if !failCompletion then PhotoRepository.CompleteWriteResult.Completed.pure[IO]
           else if throwError then IO.raiseError[PhotoRepository.CompleteWriteResult](error)
@@ -130,7 +130,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
     val otherWrite    = PhotoWriteIntent.Retirement(otherId, chapter, photoId, otherLocation)
     val refs          = Refs(initial = Vector(publication, otherWrite))
     val cleaning      = (location: ThumbnailLocation) =>
-      (if location.value === fresh.value then ThumbnailStorage.RemoveResult.Failed else ThumbnailStorage.RemoveResult.Removed).pure[IO]
+      (if location.value === fresh.value then ThumbnailStorage.RemoveResult.Failed(error) else ThumbnailStorage.RemoveResult.Removed).pure[IO]
     val empty = PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo]).pure[IO]
 
     for

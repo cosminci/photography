@@ -8,9 +8,8 @@ import com.drew.metadata.Metadata
 import com.drew.metadata.exif.{ExifDirectoryBase, ExifIFD0Directory, ExifSubIFDDirectory}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import org.typelevel.log4cats.Logger
 import photography.domain.album.*
-import photography.ports.photo.{PhotoStorage, ThumbnailStorage}
+import photography.ports.photo.PhotoStorage
 import photography.ports.photo.PhotoStorage.*
 import photography.syntax.SyncSyntax.*
 import java.awt.image.BufferedImage
@@ -29,14 +28,14 @@ import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
 object FilePhotoStorage:
-  def make[F[_]: Async: Logger](thumbnails: ThumbnailStorage[F]): PhotoStorage[F] = new LiveFilePhotoStorage(thumbnails)
+  def make[F[_]: Async]: PhotoStorage[F] = new LiveFilePhotoStorage
 
-  final private class LiveFilePhotoStorage[F[_]: Async: Logger](thumbnails: ThumbnailStorage[F]) extends PhotoStorage[F]:
+  final private class LiveFilePhotoStorage[F[_]: Async] extends PhotoStorage[F]:
     override def discoverOriginals(source: PhotoSource): F[DiscoveryResult] =
       resolveSource(source).blocking[F].flatMap: root =>
         Resource.fromAutoCloseable(Files.newDirectoryStream(root).blocking[F]).use: entries =>
           enumerate(root, entries = entries.iterator().asScala.toVector).blocking[F]
-      .handleErrorWith(error => Logger[F].error(error)("Original discovery failed").as(DiscoveryResult.Failed))
+      .handleError(error => DiscoveryResult.Failed(error))
 
     override def readOriginal(location: OriginalPhotoLocation): F[ReadResult] =
       val read =
@@ -50,16 +49,7 @@ object FilePhotoStorage:
           after    <- inspectOriginal(path).blocking[F]
           stable   <- (before === middle && middle === after && bytes === repeated).blocking[F]
         yield if stable then decoded else ReadResult.Unstable
-      read.handleErrorWith(error => Logger[F].error(error)("Original read failed").as(ReadResult.Failed))
-
-    override def storeThumbnail(location: ThumbnailLocation, image: EncodedThumbnail): F[ThumbnailStorage.StoreResult] =
-      thumbnails.storeThumbnail(location, image)
-
-    override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): F[ThumbnailStorage.ReadResult] =
-      thumbnails.readThumbnail(location, version = version)
-
-    override def removeThumbnail(location: ThumbnailLocation): F[ThumbnailStorage.RemoveResult] =
-      thumbnails.removeThumbnail(location)
+      read.handleError(error => ReadResult.Failed(error))
 
     private given Eq[Object] = Eq.fromUniversalEquals
 

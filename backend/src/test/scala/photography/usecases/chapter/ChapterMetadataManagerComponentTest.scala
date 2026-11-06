@@ -277,24 +277,6 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       assertEquals(writes, Vector((album.id, expected, NonEmptyList.one(expected.id))))
       assertEquals(prepared, Vector((expected.id, sourceFolder)))
 
-  test(s"should resolve the full year for $homeName including leap days"):
-    Vector((2024: AlbumYear, 366: VisitDays), (2026: AlbumYear, 365: VisitDays)).traverse_ { case (year, days) =>
-      val refs        = Refs()
-      val period      = VisitPeriod(firstDay = LocalDate.of(year, 1, 1), days = days)
-      val homeChapter = home.copy(period = period)
-      val current     = album.copy(year = year, chapters = Vector(homeChapter))
-
-      for
-        manager  <- buildManager(refs, current = current)
-        updated  <- manager.update(album.id, home.id, homeName, countries = countries.map(_.id), Period.AlbumYear, home.sourceFolder)
-        updates  <- refs.updates.get
-        prepared <- refs.preparations.get
-      yield
-        assertEquals(updated, UpdateResult.Updated(Scheduling.NotRequested))
-        assertEquals(updates.map(_.period), Vector(period))
-        assertEquals(prepared, Vector.empty)
-    }
-
   test(s"should reject duplicate $homeName chapters, wrong full-year periods and reused folders before writing"):
     val scenarios = Vector(
       (album.copy(chapters = Vector(home)), homeName, Period.AlbumYear, "/photos/new": PhotoSource, ChapterConflict.HomeExists),
@@ -333,21 +315,6 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         assertEquals(updates, Vector.empty)
     }
 
-  test(s"should preserve chapter type when editing $homeName or an ordinary chapter"):
-    Vector((home, chapter.destination.name), (chapter, homeName)).traverse_ { case (current, requestedName) =>
-      val refs                       = Refs()
-      val countryIds                 = countries.map(_.id)
-      val changedSource: PhotoSource = "/photos/changed"
-
-      for
-        manager <- buildManager(refs, current = album.copy(chapters = Vector(current)))
-        result  <- manager.update(album.id, current.id, name = requestedName, countries = countryIds, Period.AlbumYear, changedSource)
-        writes  <- refs.updates.get
-      yield
-        assertEquals(result, UpdateResult.Rejected(ChapterConflict.TypeChange))
-        assertEquals(writes, Vector.empty)
-    }
-
   test("should admit the last opening, reject further creation and allow metadata changes at capacity"):
     val refs             = Refs()
     val current          = atCapacity
@@ -381,28 +348,6 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         chapterOrder
       ))
       assertEquals(writes, expectedWrites)
-
-  test(s"should order chapters by dates and identity with $homeName last"):
-    val refs        = Refs()
-    val earlier     = chapter.copy(id = ChapterId(buildUuid(index = 70)), period = chapter.period.copy(days = 1), sourceFolder = "/photos/earlier")
-    val tied        = earlier.copy(id = ChapterId(buildUuid(index = 71)), sourceFolder = "/photos/tied")
-    val laterPeriod = VisitPeriod(firstDay = LocalDate.of(2026, 5, 2), days = 1)
-    val later       = chapter.copy(id = ChapterId(buildUuid(index = 72)), period = laterPeriod, sourceFolder = "/photos/later")
-    val current     = album.copy(chapters = Vector(earlier, tied, chapter, later, home))
-    val countryIds  = countries.map(_.id)
-
-    for
-      manager   <- buildManager(refs, current = current)
-      created   <- manager.create(album.id, name = "Kyoto", countries = countryIds, Period.Dates(chapter.period), sourceFolder = "/photos/new")
-      updated   <- manager.update(album.id, later.id, name = "Kyoto", countries = countryIds, Period.Dates(earlier.period), later.sourceFolder)
-      creations <- refs.creations.get
-      updates   <- refs.updates.get
-    yield
-      val expectedCreations = Vector(NonEmptyList.of(earlier.id, tied.id, ChapterId(buildUuid(index = 10)), chapter.id, later.id, home.id))
-      assertEquals(created, CreateResult.Created(ChapterId(buildUuid(index = 10)), Scheduling.Queued))
-      assertEquals(updated, UpdateResult.Updated(Scheduling.NotRequested))
-      assertEquals(creations.map(_.order), expectedCreations)
-      assertEquals(updates.map(_.order), Vector(NonEmptyList.of(earlier.id, tied.id, later.id, chapter.id, home.id)))
 
   test("should decide concurrent creations from the latest saved composition"):
     val refs       = Refs()

@@ -42,13 +42,15 @@ object AlbumRepository:
 
   enum SaveSynopsisResult derives CanEqual:
     case Saved(album: Metadata)
-    case NotFound, Uncertain
-    case Failed(reason: Failure)
+    case NotFound
+    case Failed(cause: Throwable)
+    case Uncertain(cause: Throwable)
 
   enum SaveAuthorsResult derives CanEqual:
     case Saved(album: Metadata)
-    case NotFound, Uncertain
-    case Failed(reason: Failure)
+    case NotFound
+    case Failed(cause: Throwable)
+    case Uncertain(cause: Throwable)
 
   enum ListResult derives CanEqual:
     case Listed(slice: AlbumPageSlice)
@@ -66,7 +68,7 @@ object AlbumRepository:
   enum RenameResult derives CanEqual:
     case Renamed(album: Metadata)
     case NotFound
-    case Failed(reason: Failure)
+    case Failed(cause: Throwable)
 
   enum DeleteResult derives CanEqual:
     case Deleted

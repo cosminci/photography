@@ -7,7 +7,6 @@ import com.drew.imaging.jpeg.{JpegMetadataReader, JpegProcessingException}
 import com.drew.metadata.exif.{ExifDirectoryBase, ExifIFD0Directory}
 import io.github.iltotore.iron.*
 import com.twelvemonkeys.image.{ImageUtil, ResampleOp}
-import org.typelevel.log4cats.Logger
 import photography.domain.album.*
 import photography.ports.photo.PhotoThumbnailGenerator
 import photography.ports.photo.PhotoThumbnailGenerator.GenerationResult
@@ -21,17 +20,16 @@ import javax.imageio.stream.{MemoryCacheImageInputStream, MemoryCacheImageOutput
 import scala.jdk.CollectionConverters.*
 
 object ImageIoPhotoThumbnailGenerator:
-  def make[F[_]: Async: Logger](quality: ThumbnailQuality): PhotoThumbnailGenerator[F] = new LiveImageIoPhotoThumbnailGenerator(quality)
+  def make[F[_]: Async](quality: ThumbnailQuality): PhotoThumbnailGenerator[F] = new LiveImageIoPhotoThumbnailGenerator(quality)
 
-  final private class LiveImageIoPhotoThumbnailGenerator[F[_]: Async: Logger](override val quality: ThumbnailQuality)
+  final private class LiveImageIoPhotoThumbnailGenerator[F[_]: Async](override val quality: ThumbnailQuality)
       extends PhotoThumbnailGenerator[F]:
     override def generate(content: PhotoContent): F[GenerationResult] =
       renderThumbnail(content).flatMap:
         case Some(image) => (GenerationResult.Generated(image): GenerationResult).pure[F]
-        case None        => Logger[F].warn("Encoded thumbnail exceeds its preset").as(GenerationResult.Failed)
-      .recoverWith:
-        case error if isExpectedFailure(error) =>
-          Logger[F].error(error)("Thumbnail generation failed").as(GenerationResult.Failed)
+        case None        => (GenerationResult.Failed(new IIOException("Encoded thumbnail exceeds its preset")): GenerationResult).pure[F]
+      .recover:
+        case error if isExpectedFailure(error) => GenerationResult.Failed(error)
 
     private def renderThumbnail(content: PhotoContent) =
       for

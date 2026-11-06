@@ -1,11 +1,14 @@
 import { createEffect, createSignal, on, onCleanup, type Accessor } from "solid-js";
 import { AcknowledgedWriteError, AlbumRequestError, type Album, type AlbumClient } from "../model/Album";
 import type { AlbumPhotoEvents, ChapterSave, PhotoEvent, Scheduling } from "../model/Photo";
-import type { Spread, SpreadMembership, Workspace } from "../model/Workspace";
+import { composeSpread, type Spread, type SpreadMembership, type Workspace } from "../model/Workspace";
+import type { SpreadContext, SpreadSnapshot } from "../model/Placement";
 
 export function createLiveWorkspace(
   albumId: Accessor<string>,
-  client: Pick<AlbumClient, "open" | "chapters" | "composition" | "spread" | "countries" | "photoSource" | "chapterPhotos" | "refreshPhotos">,
+  client: Pick<AlbumClient, "open" | "chapters" | "composition" | "countries" | "photoSource" | "chapterPhotos" | "refreshPhotos"> & {
+    readonly readPlacements: (albumId: string, context: SpreadContext, signal?: AbortSignal) => Promise<SpreadSnapshot>;
+  },
   events: AlbumPhotoEvents,
 ) {
   const [album, setAlbum] = createSignal<Album>();
@@ -59,9 +62,10 @@ export function createLiveWorkspace(
       }
 
       async function readSpread(member: SpreadMembership): Promise<Spread> {
-        const spread = await readExistingMember(client.spread(id, member.id, member.chapter, controller.signal));
-        if (spread.id !== member.id || spread.chapter !== member.chapter) throw new AcquisitionConflict("Spread identity mismatch");
-        return spread;
+        const spread = await readExistingMember(client.readPlacements(id, { kind: "spread", id: member.id }, controller.signal));
+        if (spread.id !== member.id || (spread.layout.kind === "album_start") !== (member.chapter === null))
+          throw new AcquisitionConflict("Spread identity mismatch");
+        return composeSpread(spread, member.chapter);
       }
 
       function reload(): Promise<void> {

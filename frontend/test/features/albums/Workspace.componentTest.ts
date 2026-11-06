@@ -27,7 +27,8 @@ import type { Spread } from "../../../src/features/albums/model/Workspace";
 import { getCoverCredits } from "../../../src/features/albums/workspace/Canvas";
 import { searchCountries } from "../../../src/features/albums/workspace/CountryPicker";
 import { readChapter, readCountry } from "../../../src/features/albums/api/WorkspaceWire";
-import { readSpread } from "../../../src/features/albums/api/PlacementWire";
+import { readPlacementSnapshot } from "../../../src/features/albums/api/PlacementWire";
+import { composeSpread } from "../../../src/features/albums/model/Workspace";
 import { readPhotoInventory, readScheduling } from "../../../src/features/albums/api/PhotoWire";
 
 describe("chapter detail feedback", () => {
@@ -885,7 +886,7 @@ describe("workspace wire representations", () => {
         return { id: savedSlot.id, kind: savedSlot.kind, x: savedSlot.x, y: savedSlot.y, width: savedSlot.width, height: savedSlot.height };
       }),
     }));
-    expect(wire.map(readSpread)).toEqual(expected);
+    expect(wire.map((value) => composeSpread(readPlacementSnapshot(value, { kind: "spread", id: value.id }), value.chapter))).toEqual(expected);
     expect(expectedWorkspace.countries.map(readCountry)).toEqual(expectedWorkspace.countries);
   });
 
@@ -897,7 +898,13 @@ describe("workspace wire representations", () => {
     { ...spread, slots: [{ ...slot, kind: "unknown" }] },
     { ...spread, slots: [{ ...slot, x: Number.NaN }] },
   ])("should reject incomplete or unknown spread resource representations %j", (value) => {
-    expect(() => readSpread(value)).toThrow();
+    const wire = {
+      ...value,
+      bleedState: value.bleed.state,
+      bleedAvailable: value.bleed.available,
+      slots: value.slots.map(({ presentation, ...geometry }) => ({ ...geometry, ...presentation })),
+    };
+    expect(() => composeSpread(readPlacementSnapshot(wire, { kind: "spread", id: value.id }), value.chapter)).toThrow();
   });
 
   it("should reject an unknown chapter type at its resource boundary", () => {

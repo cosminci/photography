@@ -18,7 +18,6 @@ trait GearManager[F[_]]:
   def updateLens(lens: Lens): F[LensUpdateResult]
   def deleteLens(id: LensId): F[LensDeleteResult]
   def readCatalog: F[CatalogResult]
-  def validateSelection(catalog: GearCatalog, selection: GearSelection): ValidationResult
 
 object GearManager:
   def make[F[_]: MonadCancelThrow: Mutex: IdGenerator: Logger, Db[_]](repository: GearRepository[F], chapters: ChapterRepository[Db])(using
@@ -120,36 +119,12 @@ object GearManager:
         case GearRepository.CatalogReadResult.Found(current) => CatalogResult.Found(current)
         case GearRepository.CatalogReadResult.Failed         => CatalogResult.Failed
 
-    override def validateSelection(catalog: GearCatalog, selection: GearSelection): ValidationResult =
-      val unique  = selection.map(_.camera).distinct.size === selection.size
-      val checked = Either.cond(unique, (), Failure.DuplicateCamera) >> selection.traverse_(entry => validateCamera(catalog, entry))
-      checked.fold(ValidationResult.Rejected(_), _ => ValidationResult.Valid)
-
     private def preservesSelections(catalog: GearCatalog, selections: Vector[CameraSelection]) =
-      selections.forall: entry =>
-        validateSelection(catalog, selection = Vector(entry)) match
-          case ValidationResult.Valid       => true
-          case _: ValidationResult.Rejected => false
+      selections.forall(entry => catalog.validateSelection(Vector(entry)).isRight)
 
     private def readSavedSelections =
       Transaction[Db, F].run(chapters.readSelections).handleErrorWith: error =>
         Logger[F].error(error)("Saved chapter selections read failed").as(ChapterRepository.SelectionsReadResult.Failed)
-
-    private def validateCamera(catalog: GearCatalog, entry: CameraSelection) =
-      catalog.cameras.find(_.id.value === entry.camera.value).toRight(Failure.UnknownCamera).flatMap: camera =>
-        (camera.kind, entry.use) match
-          case (CameraKind.FixedLens, CameraUse.FixedLens)                               => ().asRight[Failure]
-          case (kind: CameraKind.InterchangeableLens, CameraUse.Interchangeable(lenses)) =>
-            val unique = lenses.toVector.distinct.size === lenses.length
-            Either.cond(unique, (), Failure.DuplicateLens) >> lenses.traverse_(id => validateLens(kind, lenses = catalog.lenses, id))
-          case _ => Failure.CameraKindMismatch.asLeft[Unit]
-
-    private def validateLens(kind: CameraKind.InterchangeableLens, lenses: Vector[Lens], id: LensId) =
-      lenses.find(_.id.value === id.value).toRight(Failure.UnknownLens)
-        .flatMap(lens => Either.cond(acceptsLens(kind, lens), (), Failure.IncompatibleLens))
-
-    private def acceptsLens(kind: CameraKind.InterchangeableLens, lens: Lens) =
-      kind.mount === lens.mount && (kind.sensor === SensorFormat.ApsC || lens.coverage === SensorFormat.FullFrame)
 
   enum CameraCreateResult:
     case Created(camera: Camera)
@@ -168,8 +143,3 @@ object GearManager:
   enum CatalogResult:
     case Found(catalog: GearCatalog)
     case Failed
-  enum ValidationResult derives CanEqual:
-    case Valid
-    case Rejected(reason: Failure)
-  enum Failure derives CanEqual:
-    case DuplicateCamera, UnknownCamera, CameraKindMismatch, DuplicateLens, UnknownLens, IncompatibleLens

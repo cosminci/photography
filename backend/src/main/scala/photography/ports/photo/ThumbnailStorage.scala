@@ -12,10 +12,11 @@ trait ThumbnailStorage[F[_]]:
 object ThumbnailStorage:
   enum StoreResult:
     case Stored(thumbnail: Thumbnail)
-    case Failed
+    case Failed(cause: Throwable)
 
   enum RemoveResult:
-    case Removed, Failed
+    case Removed
+    case Failed(cause: Throwable)
 
   enum ReadResult:
     case Read(bytes: ThumbnailBytes)

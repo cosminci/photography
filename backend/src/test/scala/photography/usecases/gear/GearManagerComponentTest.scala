@@ -35,51 +35,6 @@ final class GearManagerComponentTest extends CatsEffectSuite:
   private val catalog       = GearCatalog(cameras = Vector(camera, second, fixed), lenses = Vector(lens, unrelatedLens))
   private val saved         = Vector(ChapterGearSelection(chapter, selection = Vector(selected)))
 
-  test("should accept empty gear, fixed cameras and lenses shared by compatible bodies in selection order"):
-    val cases = Vector(
-      Vector.empty[CameraSelection],
-      Vector(CameraSelection(fixed.id, CameraUse.FixedLens)),
-      Vector(selected, selected.copy(camera = second.id), CameraSelection(fixed.id, CameraUse.FixedLens))
-    )
-
-    buildManager(Refs()).map: manager =>
-      cases.foreach(selection => assertEquals(manager.validateSelection(catalog, selection = selection), ValidationResult.Valid))
-
-  test("should require matching mounts and sufficient coverage for every sensor format"):
-    val cases =
-      for
-        mount     <- LensMount.values.toVector
-        sensor    <- SensorFormat.values.toVector
-        lensMount <- LensMount.values.toVector
-        coverage  <- SensorFormat.values.toVector
-      yield (mount, sensor, lensMount, coverage)
-
-    buildManager(Refs()).map: manager =>
-      cases.foreach { case (mount, sensor, lensMount, coverage) =>
-        val current = GearCatalog(
-          cameras = Vector(camera.copy(kind = CameraKind.InterchangeableLens(mount = mount, sensor = sensor))),
-          lenses = Vector(lens.copy(mount = lensMount, coverage = coverage))
-        )
-        val accepted = mount === lensMount && (sensor === SensorFormat.ApsC || coverage === SensorFormat.FullFrame)
-        val expected = if accepted then ValidationResult.Valid else ValidationResult.Rejected(Failure.IncompatibleLens)
-        assertEquals(manager.validateSelection(current, selection = Vector(selected)), expected)
-      }
-
-  test("should reject duplicate, unknown and wrong-kind selections without global lens reservation"):
-    val cases = Vector(
-      Vector(selected, selected)                                                                                     -> Failure.DuplicateCamera,
-      Vector(selected.copy(camera = CameraId(new UUID(0L, 99L))))                                                    -> Failure.UnknownCamera,
-      Vector(selected.copy(use = CameraUse.FixedLens))                                                               -> Failure.CameraKindMismatch,
-      Vector(selected.copy(camera = fixed.id))                                                                       -> Failure.CameraKindMismatch,
-      Vector(selected.copy(use = CameraUse.Interchangeable(lenses = NonEmptyVector.of(lens.id, lens.id))))           -> Failure.DuplicateLens,
-      Vector(selected.copy(use = CameraUse.Interchangeable(lenses = NonEmptyVector.one(LensId(new UUID(0L, 99L)))))) -> Failure.UnknownLens
-    )
-
-    buildManager(Refs()).map: manager =>
-      cases.foreach { case (selection, failure) =>
-        assertEquals(manager.validateSelection(catalog, selection = selection), ValidationResult.Rejected(failure))
-      }
-
   test("should protect real saved camera selections rather than all possible catalog combinations"):
     val fullFrame    = camera.copy(kind = CameraKind.InterchangeableLens(mount = LensMount.SonyE, sensor = SensorFormat.FullFrame))
     val nikon        = camera.copy(kind = CameraKind.InterchangeableLens(mount = LensMount.NikonZ, sensor = SensorFormat.ApsC))

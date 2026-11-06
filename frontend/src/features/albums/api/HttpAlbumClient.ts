@@ -3,7 +3,7 @@ import { readAlbum, readFailureMessage, readPage, readSummary, readRecord, readT
 import { readChapter, readChapterIdentity, readCountry, readTemplates } from "./WorkspaceWire";
 import { readArray } from "./Wire";
 import { readPhoto, readPhotoInventory, readScheduling } from "./PhotoWire";
-import { readPlacementSnapshot, readSpread } from "./PlacementWire";
+import { readPlacementSnapshot } from "./PlacementWire";
 import { readCamera, readChapterGear, readGearCatalog, readLens } from "./GearWire";
 import { BookExportBlocked } from "../model/BookExport";
 import { readBookDownload, readExportIssues } from "./BookExportWire";
@@ -67,11 +67,11 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
     }
   }
 
-  function readPlacements(id: string, context: CoverContext): Promise<CoverSnapshot>;
-  function readPlacements(id: string, context: SpreadContext): Promise<SpreadSnapshot>;
-  function readPlacements(id: string, context: PlacementContext): Promise<PlacementSnapshot>;
-  function readPlacements(id: string, context: PlacementContext): Promise<PlacementSnapshot> {
-    return request(resourcePath(id, context), "GET", undefined, 200, (value) => readPlacementSnapshot(value, context));
+  function readPlacements(id: string, context: CoverContext, signal?: AbortSignal): Promise<CoverSnapshot>;
+  function readPlacements(id: string, context: SpreadContext, signal?: AbortSignal): Promise<SpreadSnapshot>;
+  function readPlacements(id: string, context: PlacementContext, signal?: AbortSignal): Promise<PlacementSnapshot>;
+  function readPlacements(id: string, context: PlacementContext, signal?: AbortSignal): Promise<PlacementSnapshot> {
+    return request(resourcePath(id, context), "GET", undefined, 200, (value) => readPlacementSnapshot(value, context), signal);
   }
 
   function editPlacements(id: string, context: CoverContext, edit: PlacementEdit): Promise<CoverSnapshot>;
@@ -185,15 +185,6 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
             const fields = readRecord(entry);
             return { id: readText(fields["id"]), chapter: fields["chapter"] === null ? null : readText(fields["chapter"]) };
           }),
-        signal,
-      ),
-    spread: (id, spreadId, chapter, signal) =>
-      request(
-        `/api/albums/${encodeURIComponent(id)}/spreads/${encodeURIComponent(spreadId)}`,
-        "GET",
-        undefined,
-        200,
-        (value) => readSpread({ ...readRecord(value), chapter }),
         signal,
       ),
     countries: (signal) =>

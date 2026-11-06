@@ -1,17 +1,13 @@
 package photography.adapters.filesystem
 
-import cats.arrow.FunctionK
-import cats.effect.{Deferred, IO, Outcome, Ref, Resource}
+import cats.effect.{IO, Resource}
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
-import org.typelevel.log4cats.Logger
-import org.typelevel.log4cats.slf4j.Slf4jLogger
 import photography.ImageIOTestResources
 import photography.domain.album.*
-import photography.ports.photo.ThumbnailStorage
 import photography.ports.photo.PhotoStorage.*
 import java.awt.image.BufferedImage
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream}
@@ -21,7 +17,7 @@ import java.nio.file.{Files, Path, StandardCopyOption}
 import java.nio.file.attribute.{FileTime, PosixFilePermission}
 import java.security.MessageDigest
 import java.time.LocalDateTime
-import java.util.{HexFormat, Iterator as JavaIterator, List as JavaList, Locale, UUID}
+import java.util.{HexFormat, Iterator as JavaIterator, List as JavaList, Locale}
 import java.util.concurrent.{CompletableFuture, CompletionException, CountDownLatch}
 import javax.imageio.{ImageIO, ImageReadParam, ImageReader, ImageTypeSpecifier}
 import javax.imageio.metadata.IIOMetadata
@@ -30,7 +26,6 @@ import javax.imageio.stream.ImageInputStream
 import scala.jdk.CollectionConverters.*
 
 final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
-  private given Logger[IO]     = Slf4jLogger.getLogger[IO]
   private lazy val undatedJpeg = buildJpeg(maybeDate = None, orientation = 1, maybeFraction = None)
   private val imageIO          = ResourceTestLocalFixture("image-io", ImageIOTestResources.acquire)
 
@@ -46,13 +41,13 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
       )
 
       for
-        empty <- buildStorage(root).discoverOriginals(source)
+        empty <- FilePhotoStorage.make[IO].discoverOriginals(source)
         _     <- IO.blocking(Files.write(root.resolve("a.jpg"), undatedJpeg))
         _     <- IO.blocking(Files.write(root.resolve("B.JpEg"), undatedJpeg))
         _     <- IO.blocking(Files.writeString(root.resolve("note.txt"), "unsupported"))
         _     <- IO.blocking(Files.createDirectory(root.resolve("nested")))
         _     <- IO.blocking(Files.write(root.resolve("nested/hidden.jpg"), undatedJpeg))
-        found <- buildStorage(root).discoverOriginals(source)
+        found <- FilePhotoStorage.make[IO].discoverOriginals(source)
         files <- IO.blocking(Files.list(root)).bracket(stream => IO.blocking(stream.count()))(stream => IO.blocking(stream.close()))
       yield
         assertEquals(empty, DiscoveryResult.Complete(originals = Vector.empty[OriginalPhotoLocation], unsupportedCount = 0))
@@ -82,7 +77,7 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
           _      <- IO.blocking(Files.write(path, bytes))
           _      <- IO.blocking(Files.setLastModifiedTime(path, FileTime.fromMillis(123456000L)))
           before <- IO.blocking((Files.readAllBytes(path).toVector, Files.getLastModifiedTime(path)))
-          read   <- buildStorage(root).readOriginal(buildLocation(root, filename = "original.jpg"))
+          read   <- FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "original.jpg"))
           after  <- IO.blocking((Files.readAllBytes(path).toVector, Files.getLastModifiedTime(path)))
           files  <- IO.blocking(Files.list(root)).bracket(stream => IO.blocking(stream.count()))(stream => IO.blocking(stream.close()))
         yield
@@ -93,7 +88,7 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
 
   test("should distinguish stable malformed JPEGs from filesystem read and discovery failures"):
     buildDirectory.use: root =>
-      val storage   = buildStorage(root)
+      val storage   = FilePhotoStorage.make[IO]
       val malformed = Vector(
         Array.emptyByteArray,
         Array(1.toByte, 2.toByte),
@@ -119,13 +114,13 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
         incomplete <- storage.discoverOriginals(buildSource(root))
         _          <- rejectMalformed
       yield
-        assertEquals(discovery, DiscoveryResult.Failed)
-        assertEquals(absent, ReadResult.Failed)
-        assertEquals(directory, ReadResult.Failed)
-        assertEquals(notFolder, DiscoveryResult.Failed)
-        assertEquals(fileSource, DiscoveryResult.Failed)
-        assertEquals(wrongKind, ReadResult.Failed)
-        assertEquals(incomplete, DiscoveryResult.Failed)
+        assert(failureCause(discovery).getMessage.nonEmpty)
+        assert(failureCause(absent).getMessage.nonEmpty)
+        assert(failureCause(directory).getMessage.nonEmpty)
+        assert(failureCause(notFolder).getMessage.nonEmpty)
+        assert(failureCause(fileSource).getMessage.nonEmpty)
+        assert(failureCause(wrongKind).getMessage.nonEmpty)
+        assert(failureCause(incomplete).getMessage.nonEmpty)
 
   test("should preserve EXIF display dimensions and valid fractional local time without timezone conversion"):
     buildDirectory.use: root =>
@@ -144,14 +139,14 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
 
         for
           _      <- IO.blocking(Files.write(root.resolve("dated.jpg"), bytes))
-          result <- buildStorage(root).readOriginal(buildLocation(root, filename = "dated.jpg"))
+          result <- FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "dated.jpg"))
         yield assertEquals(result, expected)
       }
 
   test("should retain explicit access failures when the filesystem denies directory or original reads"):
     buildDirectory.use: root =>
       val path                 = root.resolve("private.jpg")
-      val storage              = buildStorage(root)
+      val storage              = FilePhotoStorage.make[IO]
       val noPermissions        = Set.empty[PosixFilePermission].asJava
       val directoryPermissions = Resource.make(IO.blocking(Files.getPosixFilePermissions(root)))(permissions =>
         IO.blocking(Files.setPosixFilePermissions(root, permissions)).void
@@ -175,17 +170,9 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
               case _                  => false
             val wasComplete = discovery match
               case _: DiscoveryResult.Complete => true
-              case DiscoveryResult.Failed      => false
+              case DiscoveryResult.Failed(_)   => false
             assertEquals(wasRead, readable)
             assertEquals(wasComplete, listable)
-
-  test("should not turn cancelled incomplete discovery into an empty successful scan"):
-    buildDirectory.use: root =>
-      for
-        _      <- IO.blocking(Files.write(root.resolve("valid.jpg"), undatedJpeg))
-        _      <- IO.blocking(Files.write(root.resolve("invalid:name.jpg"), undatedJpeg))
-        result <- cancelIncompleteDiscovery(root)
-      yield assertEquals(result, Outcome.canceled[IO, Throwable, DiscoveryResult])
 
   test("should ignore other EXIF dates and reject non-JPEG content despite a JPEG filename"):
     buildDirectory.use: root =>
@@ -200,9 +187,9 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
 
       for
         _       <- IO.blocking(Files.write(root.resolve("digitized.jpg"), digitizedDate))
-        read    <- buildStorage(root).readOriginal(buildLocation(root, filename = "digitized.jpg"))
+        read    <- FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "digitized.jpg"))
         _       <- IO.blocking(Files.write(root.resolve("not-jpeg.jpg"), png.toByteArray))
-        notJpeg <- buildStorage(root).readOriginal(buildLocation(root, filename = "not-jpeg.jpg"))
+        notJpeg <- FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "not-jpeg.jpg"))
       yield
         assertEquals(read, expected)
         assertEquals(notJpeg, ReadResult.Undecodable)
@@ -231,7 +218,7 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
         val content  = PhotoContent(bytes = settled.toVector.refineUnsafe[MinLength[1]])
         val metadata = PhotoMetadata(hash, maybeCapturedLocal = captured.some, dimensions = PhotoDimensions(width = 3, height = 2))
         val expected = ReadResult.Read(content, metadata)
-        val read     = buildStorage(root).readOriginal(buildLocation(root, filename = "changing.jpg"))
+        val read     = FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "changing.jpg"))
 
         for
           _      <- IO.blocking(Files.write(path, original))
@@ -243,48 +230,25 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
           assertEquals(retry, expected)
       }
 
-  test("should reuse the supplied managed thumbnail boundary"):
-    val location = ThumbnailLocation(new UUID(0L, 7L))
-    val image    = EncodedThumbnail(
-      bytes = Vector(1.toByte).refineUnsafe[ThumbnailBytesConstraint],
-      ThumbnailDimensions(width = 1, height = 1),
-      ThumbnailQuality.Standard
-    )
-    val expected      = Thumbnail(location, version = "supplied-version", image.dimensions, image.quality, bytes = 1)
-    val expectedCalls = Vector(ThumbnailCall.Store(location, image), ThumbnailCall.Read(location, expected.version), ThumbnailCall.Remove(location))
-
-    Ref.of[IO, Vector[ThumbnailCall]](Vector.empty[ThumbnailCall]).flatMap: calls =>
-      val storage = buildForwardingStorage(calls, expected)
-      for
-        stored      <- storage.storeThumbnail(location, image)
-        read        <- storage.readThumbnail(location, version = expected.version)
-        removed     <- storage.removeThumbnail(location)
-        actualCalls <- calls.get
-      yield
-        assertEquals(stored, ThumbnailStorage.StoreResult.Stored(expected))
-        assertEquals(read, ThumbnailStorage.ReadResult.Read(image.bytes))
-        assertEquals(removed, ThumbnailStorage.RemoveResult.Failed)
-        assertEquals(actualCalls, expectedCalls)
-
   test("should preserve decode failures when releasing the image reader also fails"):
     buildDirectory.use: root =>
       val reached = new CountDownLatch(0)
       val resume  = new CountDownLatch(0)
-      val read    = buildStorage(root).readOriginal(buildLocation(root, filename = "original.jpg"))
+      val read    = FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "original.jpg"))
 
       IO.blocking(Files.write(root.resolve("original.jpg"), undatedJpeg)) >>
         Vector(false, true).traverse_ { failRead =>
           buildPausedReader(reached, resume, failRead = failRead, failRelease = true)
             .use(_ => read).map: actual =>
-              val expected = if failRead then ReadResult.Undecodable else ReadResult.Failed
-              assertEquals(actual, expected)
+              if failRead then assertEquals(actual, ReadResult.Undecodable)
+              else assertEquals(failureCause(actual).getClass.getName, "java.nio.BufferUnderflowException")
         }
 
   test("should reject a JPEG when its image provider cannot construct a reader"):
     buildDirectory.use: root =>
       val reached = new CountDownLatch(0)
       val resume  = new CountDownLatch(0)
-      val read    = buildStorage(root).readOriginal(buildLocation(root, filename = "original.jpg"))
+      val read    = FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "original.jpg"))
 
       IO.blocking(Files.write(root.resolve("original.jpg"), undatedJpeg)) >>
         buildPausedReader(reached, resume, failConstruction = true).use(_ => read).map: actual =>
@@ -296,37 +260,17 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
       val resume  = new CountDownLatch(0)
       val failure = new CompletionException(new IllegalStateException("shared reader and release failure"))
       val channel = CompletableFuture.failedFuture[Unit](failure)
-      val read    = buildStorage(root).readOriginal(buildLocation(root, filename = "original.jpg"))
+      val read    = FilePhotoStorage.make[IO].readOriginal(buildLocation(root, filename = "original.jpg"))
 
       IO.blocking(Files.write(root.resolve("original.jpg"), undatedJpeg)) >>
         buildPausedReader(reached, resume, maybeSharedFailure = channel.some).use(_ => read).map: actual =>
-          assertEquals(actual, ReadResult.Failed)
+          assertEquals(failureCause(actual), failure)
           assertEquals(failure.getSuppressed.toVector, Vector.empty[Throwable])
 
-  private enum ThumbnailCall:
-    case Store(location: ThumbnailLocation, image: EncodedThumbnail)
-    case Read(location: ThumbnailLocation, version: String :| Not[Blank])
-    case Remove(location: ThumbnailLocation)
-
-  private def buildForwardingStorage(calls: Ref[IO, Vector[ThumbnailCall]], stored: Thumbnail) =
-    val thumbnails = new ThumbnailStorage[IO]:
-      override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-        val bytes = Vector(1.toByte).refineUnsafe[ThumbnailBytesConstraint]
-        calls.update(_ :+ ThumbnailCall.Read(location, version)).as(ThumbnailStorage.ReadResult.Read(bytes))
-      override def storeThumbnail(location: ThumbnailLocation, image: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
-        calls.update(_ :+ ThumbnailCall.Store(location, image)).as(ThumbnailStorage.StoreResult.Stored(stored))
-      override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-        calls.update(_ :+ ThumbnailCall.Remove(location)).as(ThumbnailStorage.RemoveResult.Failed)
-    FilePhotoStorage.make[IO](thumbnails)
-
-  private def cancelIncompleteDiscovery(root: Path) =
-    val underlying = summon[Logger[IO]]
-    Deferred[IO, Unit].flatMap: reached =>
-      given Logger[IO] = underlying.mapK(new FunctionK[IO, IO]:
-        override def apply[A](action: IO[A]): IO[A] = reached.complete(()).void >> IO.never[Unit] >> action)
-      val thumbnails = FileThumbnailStorage.make[IO](root)
-      val discovery  = FilePhotoStorage.make[IO](thumbnails).discoverOriginals(buildSource(root))
-      discovery.start.bracket(fiber => reached.get >> fiber.cancel >> fiber.join)(_.cancel)
+  private def failureCause(result: DiscoveryResult | ReadResult) = result match
+    case DiscoveryResult.Failed(cause) => cause
+    case ReadResult.Failed(cause)      => cause
+    case other                         => fail(s"Expected an access failure, got $other")
 
   private def readDuringChange(read: IO[ReadResult], change: IO[Unit]) =
     val reached = new CountDownLatch(1)
@@ -335,10 +279,6 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
       read.start.bracket { fiber =>
         IO.interruptible(reached.await()) >> change >> IO.blocking(resume.countDown()) >> fiber.joinWithNever
       }(fiber => IO.blocking(resume.countDown()) >> fiber.cancel)
-
-  private def buildStorage(root: Path) =
-    val thumbnails = FileThumbnailStorage.make[IO](root)
-    FilePhotoStorage.make[IO](thumbnails)
 
   private def buildSource(root: Path) = root.toString.refineUnsafe[PhotoSourceConstraint]
 

@@ -71,9 +71,9 @@ export type PlacementEdit =
 
 export interface PlacementClient {
   readonly readPlacements: {
-    (albumId: string, context: CoverContext): Promise<CoverSnapshot>;
-    (albumId: string, context: SpreadContext): Promise<SpreadSnapshot>;
-    (albumId: string, context: PlacementContext): Promise<PlacementSnapshot>;
+    (albumId: string, context: CoverContext, signal?: AbortSignal): Promise<CoverSnapshot>;
+    (albumId: string, context: SpreadContext, signal?: AbortSignal): Promise<SpreadSnapshot>;
+    (albumId: string, context: PlacementContext, signal?: AbortSignal): Promise<PlacementSnapshot>;
   };
   readonly editPlacements: {
     (albumId: string, context: CoverContext, edit: PlacementEdit): Promise<CoverSnapshot>;
