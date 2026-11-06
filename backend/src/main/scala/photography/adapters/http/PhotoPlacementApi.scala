@@ -3,9 +3,8 @@ package photography.adapters.http
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
-import io.github.iltotore.iron.*
-import org.http4s.{CacheDirective, MessageBodyFailure, Request, Response}
-import org.http4s.headers.`Cache-Control`
+import io.github.iltotore.iron.circe.given
+import org.http4s.{Request, Response}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.{AlbumId, PhotoId}
@@ -63,14 +62,14 @@ object PhotoPlacementApi:
 
     private def readSpread(album: AlbumId, spread: SpreadId) =
       spreads.readPlacements(album, spread).flatMap:
-        case SpreadManager.PlacementReadResult.Found(value)  => respondWithSpread(value).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
-        case SpreadManager.PlacementReadResult.AlbumNotFound => NotFound(Map("code" -> "album_not_found"))
+        case SpreadManager.PlacementReadResult.Found(value)   => respondWithSpread(value)
+        case SpreadManager.PlacementReadResult.AlbumNotFound  => NotFound(Map("code" -> "album_not_found"))
         case SpreadManager.PlacementReadResult.SpreadNotFound => NotFound(Map("code" -> "spread_not_found"))
         case SpreadManager.PlacementReadResult.Failed         => InternalServerError(Map("code" -> "service_failure"))
 
     private def readCover(album: AlbumId) =
       covers.read(album).flatMap:
-        case CoverManager.ReadResult.Found(value)  => Ok(encodeCover(value)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case CoverManager.ReadResult.Found(value)  => Ok(encodeCover(value))
         case CoverManager.ReadResult.CoverNotFound => NotFound(Map("code" -> "cover_not_found"))
         case CoverManager.ReadResult.Failed        => InternalServerError(Map("code" -> "service_failure"))
 
@@ -131,8 +130,7 @@ object PhotoPlacementApi:
       case CoverManager.Failure.InvalidTransform     => "invalid_transform"
 
     private def decode[A](request: Request[F], decoder: Decoder[A]) =
-      request.as[Json].map(value => decoder.decodeJson(value).leftMap(_.getMessage))
-        .recover { case _: MessageBodyFailure => "Supply a valid JSON placement request".asLeft[A] }
+      JsonBody.decode(request, decoder, malformed = "Supply a valid JSON placement request")(_.getMessage)
         .flatMap(_.fold(message => BadRequest(Map("message" -> message)).map(_.asLeft[A]), _.asRight[Response[F]].pure[F]))
 
     private def spreadPlaceDecoder = Decoder.instance[SpreadManager.Edit]: cursor =>
@@ -191,14 +189,11 @@ object PhotoPlacementApi:
 
     private def buildTransformDecoder = Decoder.instance[PhotoTransform]: cursor =>
       for
-        x        <- cursor.get[InDesignPoints]("x")(using buildPointDecoder)
-        y        <- cursor.get[InDesignPoints]("y")(using buildPointDecoder)
-        zoom     <- cursor.get[Zoom]("zoom")(using buildZoomDecoder)
+        x        <- cursor.get[InDesignPoints]("x")
+        y        <- cursor.get[InDesignPoints]("y")
+        zoom     <- cursor.get[Zoom]("zoom")
         mirrored <- cursor.get[Boolean]("mirrored")
       yield PhotoTransform(Shift(x = x, y = y), mirrored = mirrored, zoom = zoom)
-
-    private def buildPointDecoder = Decoder.decodeDouble.emap[InDesignPoints](_.refineEither)
-    private def buildZoomDecoder  = Decoder.decodeDouble.emap[Zoom](_.refineEither)
 
     private def decodeId(cursor: HCursor, field: String) =
       cursor.get[String](field).flatMap(value => CanonicalId.unapply(value).toRight(DecodingFailure("IDs must be canonical UUIDs", cursor.history)))
@@ -311,7 +306,3 @@ object PhotoPlacementApi:
         "photoId"   -> Json.fromString(photo.value.toString),
         "transform" -> adjustment
       )
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)

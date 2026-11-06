@@ -6,7 +6,7 @@ import io.circe.{Decoder, Json}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import org.http4s.dsl.impl.OptionalQueryParamDecoderMatcher
-import org.http4s.{MessageBodyFailure, Request, Response}
+import org.http4s.{Request, Response}
 import photography.adapters.http.Routes.Route
 import photography.domain.album.{AlbumId, ChapterId}
 import photography.domain.editing.EditingTarget
@@ -14,8 +14,6 @@ import photography.usecases.editing.EditingAccess.Protection
 import photography.domain.layout.{SpreadId, SpreadTemplateId}
 import photography.usecases.spread.SpreadManager
 import photography.usecases.spread.SpreadManager.{AddResult, ChangeTemplateResult, Conflict as SpreadConflict, DeleteResult}
-
-import java.util.UUID
 
 trait AlbumSpreadApi[F[_]] extends Routes[F]
 
@@ -96,8 +94,7 @@ object AlbumSpreadApi:
       }.map(_.contains(true))
 
     private def decode[A](request: Request[F], decoder: Decoder[A]) =
-      request.as[Json].map(value => decoder.decodeJson(value).leftMap(_.message))
-        .recover { case _: MessageBodyFailure => "Supply a valid JSON spread request".asLeft[A] }
+      JsonBody.decode(request, decoder, malformed = "Supply a valid JSON spread request")(_.message)
         .flatMap(_.fold(message => BadRequest(Map("message" -> message)).map(_.asLeft[A]), _.asRight[Response[F]].pure[F]))
 
     private val afterDecoder = Decoder.decodeString
@@ -123,7 +120,3 @@ object AlbumSpreadApi:
     private def serviceFailure         = InternalServerError(Map("code" -> "service_failure"))
 
     private object ConfirmPlacements extends OptionalQueryParamDecoderMatcher[String]("confirmPlacements")
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)

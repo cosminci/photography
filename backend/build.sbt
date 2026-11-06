@@ -45,6 +45,8 @@ lazy val root = (project in file("."))
       "org.typelevel"           %% "cats-effect"               % "3.7.1",
       "org.typelevel"           %% "cats-effect-testkit"       % "3.7.1"   % Test,
       "io.github.iltotore"      %% "iron"                      % "3.4.1",
+      "io.github.iltotore"      %% "iron-circe"                % "3.4.1",
+      "io.github.iltotore"      %% "iron-doobie"               % "3.4.1",
       "io.github.iltotore"      %% "iron-pureconfig"           % "3.4.1",
       "org.typelevel"           %% "doobie-core"               % "1.0.0-RC13",
       "org.typelevel"           %% "doobie-hikari"             % "1.0.0-RC13",

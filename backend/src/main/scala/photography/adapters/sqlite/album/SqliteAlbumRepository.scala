@@ -14,6 +14,7 @@ import org.typelevel.doobie.util.invariant.InvalidValue
 import org.typelevel.log4cats.Logger
 import org.sqlite.{SQLiteErrorCode, SQLiteException}
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.adapters.sqlite.SqliteAlbumQueries
 import photography.domain.album.*
 import photography.domain.layout.*

@@ -6,8 +6,6 @@ import org.http4s.Request
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Json
-import org.http4s.CacheDirective
-import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.Country
@@ -25,7 +23,7 @@ object CountryApi:
     private def list =
       countries.list.flatMap:
         case CountryRepository.ListResult.Listed(values) =>
-          Ok(Json.obj("countries" -> Json.arr(values.toList.map(encode)*))).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          Ok(Json.obj("countries" -> Json.arr(values.toList.map(encode)*)))
         case CountryRepository.ListResult.Failed => InternalServerError(Map("code" -> "service_failure"))
 
     private def encode(value: Country) =

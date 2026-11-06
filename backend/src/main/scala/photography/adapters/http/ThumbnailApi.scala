@@ -14,7 +14,6 @@ import org.http4s.headers.`If-None-Match`
 import photography.domain.album.ThumbnailLocation
 import photography.ports.photo.ThumbnailStorage
 import photography.ports.photo.ThumbnailStorage.ReadResult
-import java.util.UUID
 
 trait ThumbnailApi[F[_]] extends Routes[F]
 
@@ -42,7 +41,7 @@ object ThumbnailApi:
 
     private object Location:
       def unapply(value: String): Option[ThumbnailLocation] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value).map(ThumbnailLocation(_))
+        CanonicalId.unapply(value).map(ThumbnailLocation(_))
 
     private object Version:
       def unapply(value: String): Option[String :| Not[Blank]] =

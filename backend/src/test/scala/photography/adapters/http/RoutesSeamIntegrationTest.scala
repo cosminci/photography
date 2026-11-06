@@ -26,7 +26,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
     Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString),
     Header.Raw(CIString("X-Editor-Grant"), grant.value.toString)
   )
-  private val request = Request[IO](Method.PUT, Uri.unsafeFromString("/write")).withHeaders(Headers(headers))
+  private val request = Request[IO](Method.PUT, Uri.unsafeFromString("/api/write")).withHeaders(Headers(headers))
 
   test("should validate canonical headers and decoding before forwarding an admission"):
     val invalid = headers.flatMap { header =>
@@ -127,7 +127,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         calls <- Ref.of[IO, Vector[(EditorConnection, Protection, Option[GrantId])]](Vector.empty)
         definitions = new Routes[IO]:
           override def routes: PartialFunction[Request[IO], Routes.Route[IO, ?]] =
-            case value if value.uri.path.renderString === "/write" =>
+            case value if value.uri.path.renderString === "/api/write" =>
               Routes.Route.write(Protection.ActiveTab)(fail("Rejected admission constructed its handler"))
         server = Routes.make(buildAccess(calls, result))(definitions).orNotFound
         response <- server.run(request)
@@ -143,16 +143,16 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
       calls <- Ref.of[IO, Vector[(EditorConnection, Protection, Option[GrantId])]](Vector.empty)
       definitions = new Routes[IO]:
         override def routes: PartialFunction[Request[IO], Routes.Route[IO, ?]] =
-          case value if value.uri.path.renderString === "/read"    => Routes.Route.public(Response[IO](Status.Ok).pure[IO])
-          case value if value.uri.path.renderString === "/invalid" =>
+          case value if value.uri.path.renderString === "/api/read"    => Routes.Route.public(Response[IO](Status.Ok).pure[IO])
+          case value if value.uri.path.renderString === "/api/invalid" =>
             Routes.Route(
               Routes.Access.Public,
               Response[IO](Status.BadRequest).asLeft[Unit].pure[IO],
               (_: Unit) => IO.raiseError[Response[IO]](new AssertionError("Invalid body reached handler"))
             )
       server = Routes.make(buildAccess(calls, Result.Failed[Unit]()))(definitions).orNotFound
-      read     <- server.run(Request[IO](uri = Uri.unsafeFromString("/read")))
-      invalid  <- server.run(Request[IO](uri = Uri.unsafeFromString("/invalid")))
+      read     <- server.run(Request[IO](uri = Uri.unsafeFromString("/api/read")))
+      invalid  <- server.run(Request[IO](uri = Uri.unsafeFromString("/api/invalid")))
       absent   <- server.run(request)
       admitted <- calls.get
     yield
@@ -163,7 +163,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
 
   private def buildRoutes(protection: Protection, decode: IO[Either[Response[IO], Unit]]) = new Routes[IO]:
     override def routes: PartialFunction[Request[IO], Routes.Route[IO, ?]] =
-      case value if value.uri.path.renderString === "/write" =>
+      case value if value.uri.path.renderString === "/api/write" =>
         Routes.Route(Routes.Access.Editor(protection), decode, (_: Unit) => Response[IO](Status.Ok).pure[IO])
 
   private def buildAccess(calls: Ref[IO, Vector[(EditorConnection, Protection, Option[GrantId])]], result: Result[Unit]) = new EditingAccess[IO]:

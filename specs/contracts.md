@@ -14,3 +14,5 @@
 ## Boundary semantics
 
 The backend delivers the built browser application and API on one origin. Application navigation resolves through the frontend entry point; API and managed-media routes retain their own contracts.
+
+API responses use `Cache-Control: no-store` for successful and failed operations. Managed thumbnails retain their versioned immutable caching, and static assets retain their independent delivery policy.

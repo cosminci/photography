@@ -65,8 +65,8 @@ final class GearApiSeamIntegrationTest extends CatsEffectSuite:
         updated <- send(server, Method.PUT, path = cameraPath, body = updateInput.noSpaces)
         calls   <- refs.calls.get
       yield
-        assertEquals(created, (Status.Created, expectedCamera.noSpaces, MediaType.application.json.some, None))
-        assertEquals(updated, (Status.NoContent, "", None, None))
+        assertEquals(created, (Status.Created, expectedCamera.noSpaces, MediaType.application.json.some, "no-store".some))
+        assertEquals(updated, (Status.NoContent, "", None, "no-store".some))
         assertEquals(calls, expectedCalls)
     }
     val checkLenses = lenses.traverse_ { value =>
@@ -82,8 +82,8 @@ final class GearApiSeamIntegrationTest extends CatsEffectSuite:
         updated <- send(server, Method.PUT, path = lensPath, body = updateInput.noSpaces)
         calls   <- refs.calls.get
       yield
-        assertEquals(created, (Status.Created, expectedLens.noSpaces, MediaType.application.json.some, None))
-        assertEquals(updated, (Status.NoContent, "", None, None))
+        assertEquals(created, (Status.Created, expectedLens.noSpaces, MediaType.application.json.some, "no-store".some))
+        assertEquals(updated, (Status.NoContent, "", None, "no-store".some))
         assertEquals(calls, expectedCalls)
     }
 
@@ -315,7 +315,8 @@ final class GearApiSeamIntegrationTest extends CatsEffectSuite:
         invalidLenses.map(scenario => InvalidRequest(path = lensTarget, invalid = scenario))
 
       requests.traverse_ { case InvalidRequest(path, InvalidGear(body, message)) =>
-        val expected = (Status.BadRequest, Json.obj("message" -> Json.fromString(value = message)).noSpaces, MediaType.application.json.some, None)
+        val expected =
+          (Status.BadRequest, Json.obj("message" -> Json.fromString(value = message)).noSpaces, MediaType.application.json.some, "no-store".some)
 
         for
           response <- send(server, method, path = path, body = body)
@@ -423,11 +424,11 @@ final class GearApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
   private def encodeMutationResponse(status: Status, code: String, resource: String) =
-    if status === Status.NoContent then (status, "", None, None)
+    if status === Status.NoContent then (status, "", None, "no-store".some)
     else encodeErrorResponse(status, code = if code === "not_found" || code === "used" then s"${resource}_$code" else code)
 
   private def encodeErrorResponse(status: Status, code: String) =
-    (status, Json.obj("code" -> Json.fromString(value = code)).noSpaces, MediaType.application.json.some, None)
+    (status, Json.obj("code" -> Json.fromString(value = code)).noSpaces, MediaType.application.json.some, "no-store".some)
 
   private def encodeCamera(value: Camera) =
     val optics = value.kind match

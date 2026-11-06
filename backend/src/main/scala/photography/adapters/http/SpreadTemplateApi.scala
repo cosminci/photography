@@ -6,8 +6,6 @@ import org.http4s.Request
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.Encoder
-import org.http4s.CacheDirective
-import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.layout.{SlotBox, SpreadTemplate}
@@ -26,17 +24,17 @@ object SpreadTemplateApi:
     override def routes: PartialFunction[Request[F], Route[F, ?]] = {
       case GET -> Root / "api" / "templates" / "album-start" => Route.public {
           templates.listAlbumStartTemplates.flatMap:
-            case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed)
             case ListAlbumStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
         }
       case GET -> Root / "api" / "templates" / "chapter-start" => Route.public {
           templates.listChapterStartTemplates.flatMap:
-            case listed: ListChapterStartTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case listed: ListChapterStartTemplatesResult.Listed => Ok(listed)
             case ListChapterStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
         }
       case GET -> Root / "api" / "templates" / "photos-only" => Route.public {
           templates.listPhotosOnlyTemplates.flatMap:
-            case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+            case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed)
             case ListPhotosOnlyTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
         }
     }

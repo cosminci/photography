@@ -4,9 +4,9 @@ import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.github.iltotore.iron.*
-import org.http4s.{CacheDirective, MessageBodyFailure, Query, QueryParamDecoder, QueryParameterValue, Request, Response}
-import org.http4s.headers.`Cache-Control`
+import org.http4s.{MessageBodyFailure, Query, QueryParamDecoder, QueryParameterValue, Request, Response}
 import org.http4s.circe.CirceEntityCodec.*
+import org.http4s.circe.jsonOf
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.{Album, AlbumAuthors, AlbumId, AlbumTitle, AlbumYear, AlbumYearConstraint, Author}
 import io.github.iltotore.iron.constraint.all.*
@@ -15,7 +15,6 @@ import photography.usecases.album.AlbumManager.*
 import photography.adapters.http.Routes.Route
 import photography.usecases.editing.EditingAccess.Protection
 import photography.ports.album.AlbumRepository
-import java.util.UUID
 
 trait AlbumApi[F[_]] extends Routes[F]
 
@@ -29,9 +28,9 @@ object AlbumApi:
       case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "synopsis" => saveSynopsis(AlbumId(id), request)
       case request @ PUT -> Root / "api" / "albums" / CanonicalId(id) / "authors"  => saveAuthors(AlbumId(id), request)
       case PUT -> Root / "api" / "albums" / _ / "authors"                          =>
-        Route.public(respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
+        Route.public(respondAlbumNotFound)
       case PUT -> Root / "api" / "albums" / _ / "synopsis" =>
-        Route.public(respondAlbumNotFound.map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`))))
+        Route.public(respondAlbumNotFound)
       case request @ GET -> Root / "api" / "albums"                    => Route.public(list(request.uri.query))
       case request @ POST -> Root / "api" / "albums"                   => Route.public(create(request))
       case GET -> Root / "api" / "albums" / CanonicalId(id)            => Route.public(read(AlbumId(id)))
@@ -43,17 +42,13 @@ object AlbumApi:
 
     private def read(id: AlbumId) =
       metadata.metadata(id).flatMap:
-        case AlbumRepository.MetadataResult.Found(value) => Ok(value).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case AlbumRepository.MetadataResult.Found(value) => Ok(value)
         case AlbumRepository.MetadataResult.NotFound     => respondAlbumNotFound
         case AlbumRepository.MetadataResult.Failed(_)    => respondServiceFailure
 
     private def saveSynopsis(album: AlbumId, request: Request[F]) =
-      val decode = request.as[Json].flatMap { value =>
-        value.hcursor.get[String](k = "text").fold(
-          _ => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]),
-          _.asRight[Response[F]].pure[F]
-        )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]) }
+      val decode = request.attemptAs[String](using jsonOf[F, String](using Async[F], JsonBody.text)).value
+        .flatMap(_.fold(_ => BadRequest(Map("message" -> "Supply a text string")).map(_.asLeft[String]), _.asRight[Response[F]].pure[F]))
       Route(
         Routes.Access.Editor(Protection.OwnAlbumOpening(album)),
         decode,
@@ -67,12 +62,8 @@ object AlbumApi:
       )
 
     private def saveAuthors(album: AlbumId, request: Request[F]) =
-      val decode = request.as[Json].flatMap { value =>
-        authorsDecoder.decodeJson(value).fold(
-          _ => BadRequest(body = invalidAuthors).map(_.asLeft[AlbumAuthors]),
-          _.asRight[Response[F]].pure[F]
-        )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = invalidAuthors).map(_.asLeft[AlbumAuthors]) }
+      val decode = request.attemptAs[AlbumAuthors](using jsonOf[F, AlbumAuthors](using Async[F], authorsDecoder)).value
+        .flatMap(_.fold(_ => BadRequest(invalidAuthors).map(_.asLeft[AlbumAuthors]), _.asRight[Response[F]].pure[F]))
       Route(
         Routes.Access.Editor(Protection.ActiveTab),
         decode,
@@ -106,7 +97,7 @@ object AlbumApi:
     private def list(query: Query) = query match
       case Page(page) =>
         albums.list(page = page).flatMap:
-          case ListAlbumsResult.Listed(selected) => Ok(selected).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          case ListAlbumsResult.Listed(selected) => Ok(selected)
           case ListAlbumsResult.Failed           => respondServiceFailure
       case _ => BadRequest(Map("message" -> "Supply page once as a 32-bit integer"))
 
@@ -147,10 +138,6 @@ object AlbumApi:
     private object AlbumIdVar:
       def unapply(value: String): Option[AlbumId] =
         UUIDVar.unapply(value).filter(_.toString.equalsIgnoreCase(value)).map(AlbumId(_))
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
 
     private given Encoder[AlbumRepository.Metadata] = Encoder.forProduct6("id", "year", "title", "synopsis", "authors", "createdAt"): album =>
       (

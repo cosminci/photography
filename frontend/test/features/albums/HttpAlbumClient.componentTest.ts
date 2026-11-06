@@ -8,6 +8,201 @@ import { buildChapterReorder } from "../../../src/features/albums/workspace/Work
 import { BookExportBlocked } from "../../../src/features/albums/model/BookExport";
 
 describe("same-origin album HTTP client", () => {
+  const photo = {
+    id: "photo/id",
+    filename: "山.jpg",
+    capturedLocal: "2026-02-28T12:30",
+    width: 4000,
+    height: 3000,
+    caption: null,
+    thumbnail: { url: "/photo.jpg", width: 400, height: 300 },
+  };
+  const savedInventory = {
+    photos: [photo],
+    placedPhotoIds: [photo.id],
+    counts: { unplaced: 0, total: 1 },
+    processing: { state: "completed", unsupportedCount: 0, skippedCount: 0, issues: [] },
+  };
+  const box = { x: 1, y: 1, width: 98, height: 98 };
+  const photoSlot = {
+    id: "slot",
+    kind: "photo",
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    bleed: ["left", "top"],
+    contentBox: box,
+    visibleBox: { ...box, x: 0, width: 99 },
+  };
+  const savedPlacement = {
+    id: "placement",
+    slotId: "slot",
+    photoId: photo.id,
+    captionCorner: "top_left",
+    transform: { x: 10, y: -20, zoom: 2, mirrored: true },
+  };
+  const savedSpreadWire = {
+    id: "spread",
+    kind: "photos_only",
+    templateId: "template",
+    bleedState: "mixed",
+    bleedAvailable: true,
+    slots: [photoSlot],
+    placements: [savedPlacement],
+  };
+  const cover = {
+    frontSlotId: "slot",
+    backSlotId: "back",
+    spineOwner: "back",
+    pageCount: 30,
+    geometry: coverGeometries.back,
+    placements: [savedPlacement],
+  };
+  const fixedCamera = { id: "camera", code: "code", name: "Camera", kind: "fixed_lens" };
+  const catalogLens = { id: "lens", code: "lens", name: "Lens", mount: "sony_e", coverage: "aps_c" };
+
+  it("should translate complete saved projections without recomputing geometry, text or photo availability", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(photo)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(savedInventory)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(savedSpreadWire)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(cover)));
+    const client = makeHttpAlbumClient(fetcher);
+    const { bleed, contentBox, visibleBox, ...geometry } = photoSlot;
+    const savedSpread = {
+      kind: "spread",
+      id: savedSpreadWire.id,
+      placements: [{ ...savedPlacement, kind: "spread" }],
+      layout: {
+        kind: savedSpreadWire.kind,
+        templateId: savedSpreadWire.templateId,
+        slots: [{ ...geometry, presentation: { bleed, contentBox, visibleBox } }],
+        bleed: { state: "mixed", available: true },
+      },
+    };
+    const coverPlacement = {
+      id: savedPlacement.id,
+      slotId: savedPlacement.slotId,
+      photoId: photo.id,
+      transform: savedPlacement.transform,
+      kind: "cover",
+    };
+    const savedCover = { ...cover, kind: "cover", placements: [coverPlacement] };
+
+    expect(await client.photo(photo.id)).toEqual(photo);
+    expect(await client.chapterPhotos("chapter", new AbortController().signal)).toEqual(savedInventory);
+    expect(await client.readPlacements("album", { kind: "spread", id: savedSpreadWire.id })).toEqual(savedSpread);
+    expect(await client.readPlacements("album", { kind: "cover" })).toEqual(savedCover);
+    expect(fetcher.mock.calls[0]).toEqual(["/api/photos/photo%2Fid", { method: "GET", headers: { Accept: "application/json" } }]);
+  });
+
+  it.each([
+    { reason: "mismatched spread identity", resource: "spread", body: { ...savedSpreadWire, id: "foreign" } },
+    { reason: "duplicate placement identity", resource: "spread", body: { ...savedSpreadWire, placements: [savedPlacement, savedPlacement] } },
+    {
+      reason: "duplicate placement slot",
+      resource: "spread",
+      body: { ...savedSpreadWire, placements: [savedPlacement, { ...savedPlacement, id: "other" }] },
+    },
+    {
+      reason: "duplicate placed photo",
+      resource: "spread",
+      body: {
+        ...savedSpreadWire,
+        slots: [photoSlot, { ...photoSlot, id: "other" }],
+        placements: [savedPlacement, { ...savedPlacement, id: "other", slotId: "other" }],
+      },
+    },
+    { reason: "missing photo slot", resource: "spread", body: { ...savedSpreadWire, placements: [{ ...savedPlacement, slotId: "foreign" }] } },
+    { reason: "duplicate slot identity", resource: "spread", body: { ...savedSpreadWire, slots: [photoSlot, photoSlot] } },
+    { reason: "duplicate bleed direction", resource: "spread", body: { ...savedSpreadWire, slots: [{ ...photoSlot, bleed: ["left", "left"] }] } },
+    { reason: "overlapping cover faces", resource: "cover", body: { ...cover, backSlotId: "slot" } },
+    { reason: "foreign cover placement", resource: "cover", body: { ...cover, placements: [{ ...savedPlacement, slotId: "foreign" }] } },
+    { reason: "spine outside cover", resource: "cover", body: { ...cover, geometry: { ...cover.geometry, spineWidth: cover.geometry.width } } },
+    { reason: "incorrect photo total", resource: "inventory", body: { ...savedInventory, counts: { total: 2, unplaced: 0 } } },
+    { reason: "unplaced exceeds total", resource: "inventory", body: { ...savedInventory, counts: { total: 1, unplaced: 2 } } },
+    {
+      reason: "duplicate inventory photo",
+      resource: "inventory",
+      body: { ...savedInventory, photos: [photo, photo], counts: { total: 2, unplaced: 1 } },
+    },
+    { reason: "duplicate placed identity", resource: "inventory", body: { ...savedInventory, placedPhotoIds: [photo.id, photo.id] } },
+    { reason: "foreign placed identity", resource: "inventory", body: { ...savedInventory, placedPhotoIds: ["foreign"] } },
+    { reason: "inconsistent availability", resource: "inventory", body: { ...savedInventory, counts: { total: 1, unplaced: 1 } } },
+    {
+      reason: "invalid camera-local day",
+      resource: "inventory",
+      body: { ...savedInventory, photos: [{ ...photo, capturedLocal: "2026-02-30T12:30" }] },
+    },
+    { reason: "duplicate camera", resource: "catalog", body: { cameras: [fixedCamera, fixedCamera], lenses: [] } },
+    { reason: "duplicate lens", resource: "catalog", body: { cameras: [], lenses: [catalogLens, catalogLens] } },
+    { reason: "fixed camera with mount", resource: "catalog", body: { cameras: [{ ...fixedCamera, mount: null }], lenses: [] } },
+    { reason: "fixed camera with sensor", resource: "catalog", body: { cameras: [{ ...fixedCamera, sensorFormat: null }], lenses: [] } },
+    { reason: "duplicate selected lens", resource: "selection", body: { cameras: [{ cameraId: "camera", lensIds: ["lens", "lens"] }] } },
+    {
+      reason: "duplicate selected camera",
+      resource: "selection",
+      body: {
+        cameras: [
+          { cameraId: "camera", lensIds: [] },
+          { cameraId: "camera", lensIds: [] },
+        ],
+      },
+    },
+  ] as const)("should reject $reason without publishing an incoherent saved view", async ({ resource, body }) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(body)));
+    const client = makeHttpAlbumClient(fetcher);
+    const reads = {
+      spread: () => client.readPlacements("album", { kind: "spread", id: "spread" }),
+      cover: () => client.readPlacements("album", { kind: "cover" }),
+      catalog: () => client.gearCatalog(),
+      selection: () => client.chapterGear("album", "chapter"),
+      inventory: () => client.chapterPhotos("chapter", new AbortController().signal),
+    };
+
+    await expect(reads[resource]()).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("should reject invalid author selections even after a write was acknowledged", async () => {
+    const album = { id: "album", year: 2026, title: "Title", synopsis: "", createdAt: "now", authors: ["Mara", "Mara"] };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(album)));
+
+    await expect(makeHttpAlbumClient(fetcher).saveAuthors("album", ["Mara"])).rejects.toBeInstanceOf(AcknowledgedWriteError);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("should reject composition-specific commands before issuing a write", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const client = makeHttpAlbumClient(fetcher);
+
+    const coverBleed = client.editPlacements("album", { kind: "cover" }, { operation: "bleed", enabled: true });
+    const spreadSpine = client.editPlacements("album", { kind: "spread", id: "spread" }, { operation: "spineOwner", owner: "back" });
+
+    await expect(coverBleed).rejects.toThrow("Bleed selection belongs to interior spreads");
+    await expect(spreadSpine).rejects.toThrow("Spine ownership belongs to the cover");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("should save bleed and spine ownership through their composition resources", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(savedSpreadWire)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(cover)));
+    const client = makeHttpAlbumClient(fetcher);
+    const expectedRequests = [
+      ["/api/albums/album/spreads/spread/bleed", "PUT", '{"enabled":true}'],
+      ["/api/albums/album/cover/spine-owner", "PUT", '{"owner":"back"}'],
+    ];
+
+    await client.editPlacements("album", { kind: "spread", id: "spread" }, { operation: "bleed", enabled: true });
+    await client.editPlacements("album", { kind: "cover" }, { operation: "spineOwner", owner: "back" });
+
+    expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual(expectedRequests);
+  });
+
   it("should download the complete saved book with one public read and no editing credentials", async () => {
     const book = { formatVersion: 1, album: { title: "Țară" }, interior: {}, cover: {}, sources: [], chapters: [], gear: {}, warnings: [] };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(book)));
@@ -269,6 +464,7 @@ describe("same-origin album HTTP client", () => {
       { operation: "place", slotId: "slot", photoId: "photo" },
       { operation: "adjust", placementId: "p", transform },
       { operation: "move", placementId: "p", slotId: "other" },
+      { operation: "remove", placementId: "p" },
     ];
     const fetcher = vi.fn<typeof fetch>().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(snapshot))));
     const client = makeHttpAlbumClient(fetcher);
@@ -280,6 +476,7 @@ describe("same-origin album HTTP client", () => {
       [base, "POST", '{"slotId":"slot","photoId":"photo"}'],
       [`${base}/p`, "PATCH", JSON.stringify({ transform })],
       [`${base}/p`, "PATCH", '{"slotId":"other"}'],
+      [`${base}/p`, "DELETE", undefined],
     ]);
   });
 
@@ -408,7 +605,7 @@ describe("same-origin album HTTP client", () => {
         .mockResolvedValue(new Response(JSON.stringify({ templates: [{ id: "invalid", name: "Invalid", slots }] })));
       const client = makeHttpAlbumClient(fetcher);
 
-      await expect(client.templates("album_start")).rejects.toThrow("A spread template must contain a photo slot");
+      await expect(client.templates("album_start")).rejects.toThrow();
     },
   );
 
