@@ -193,6 +193,69 @@ describe("shipped InDesign book logic", () => {
     };
   }
 
+  it.each(["cover", "interior"])("should require an open %s template before asking for files", (part) => {
+    const alerts: string[] = [];
+    const context = createContext({
+      app: { documents: [] },
+      alert: (message: string) => alerts.push(message),
+    });
+    runInContext(readFileSync(resolve(import.meta.dirname, "../../../scripts/indesign/import.jsxinc"), "utf8"), context);
+
+    runInContext(`PhotographyImport.main(${JSON.stringify(part)})`, context);
+
+    expect(alerts).toEqual([
+      `Import failed: Open the empty Saal ${part} template first.\nNo document content was imported.\nNothing has been saved.`,
+    ]);
+  });
+
+  it.each(["cancel", "invalid book", "incompatible template"])(
+    "should use and preserve the active document without asking for another template: %s",
+    (outcome) => {
+      const context = createContext({});
+      for (const file of ["crop.js", "gear.js", "book.jsxinc", "import.jsxinc"]) {
+        runInContext(readFileSync(resolve(import.meta.dirname, "../../../scripts/indesign", file), "utf8"), context);
+      }
+      const book = nativeBook();
+      const source = outcome === "invalid book" ? "{}" : JSON.stringify(book);
+      runInContext(
+        `var alerts=[], picked=[], closed=false, opened=false;
+        var MeasurementUnits={POINTS:"points"}, RulerOrigin={PAGE_ORIGIN:"page"}, FontStatus={INSTALLED:"installed"};
+        var doc={isValid:true,extractLabel:function(){return "";},close:function(){closed=true;},
+          viewPreferences:{horizontalMeasurementUnits:"picas",verticalMeasurementUnits:"mm",rulerOrigin:"spread"},
+          zeroPoint:[4,5],documentPreferences:{facingPages:false,pageWidth:1,pageHeight:1},pages:{length:1}};
+        var app={documents:[doc],activeDocument:doc,open:function(){opened=true;throw Error("Unexpected template open");},
+          fonts:{itemByName:function(){return {isValid:true,status:"installed"};}},scriptPreferences:{enableRedraw:true}};
+        function alert(message){alerts.push(message);}
+        function File(path){this.fsName=path;this.exists=true;}
+        File.openDialog=function(title){picked.push(title);return ${outcome === "cancel" ? "null" : `{open:function(){return true;},read:function(){return ${JSON.stringify(source)};},close:function(){}}`};};
+        function Folder(path){this.fsName=path;}
+        Folder.selectDialog=function(){return {fsName:"/local"};};`,
+        context,
+      );
+
+      runInContext('PhotographyImport.main("cover")', context);
+
+      expect(
+        runInContext(
+          "({picked:picked,closed:closed,opened:opened,view:doc.viewPreferences,zero:doc.zeroPoint,redraw:app.scriptPreferences.enableRedraw})",
+          context,
+        ),
+      ).toEqual({
+        picked: ["Select the complete album InDesign JSON"],
+        closed: false,
+        opened: false,
+        view: { horizontalMeasurementUnits: "picas", verticalMeasurementUnits: "mm", rulerOrigin: "spread" },
+        zero: [4, 5],
+        redraw: true,
+      });
+      if (outcome === "cancel") expect(runInContext("alerts", context)).toEqual([]);
+      else
+        expect(runInContext("alerts[0]", context)).toContain(
+          outcome === "invalid book" ? "Invalid print book" : "Cover template artwork dimensions do not match this saved book.",
+        );
+    },
+  );
+
   it("should consume the exported selected camera and lens identities through the shared presentation owner", () => {
     const book = nativeBook();
     const expression = `var book=${JSON.stringify(book)};
