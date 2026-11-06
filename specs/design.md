@@ -4,7 +4,7 @@
 
 ## Purpose and system boundary
 
-Album Layout Studio turns a year's chapter-organized photographs into a persisted album composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
+Album Layout Studio turns a year's chapter-organized photographs into a persisted book for browser presentation and InDesign print composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
 
 ```mermaid
 flowchart LR
@@ -121,20 +121,6 @@ Editing keeps book content primary and preserves the user's spatial context thro
 
 Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
 
-## Print handoff
-
-Export projects the complete saved interior and Cover into one print-only JSON, without saving browser drafts, changing editing ownership or resetting Undo/Redo. The artifact preserves authored content, original-photo identity and physical placement.
-
-Existing data owners retain acquisition and validity guarantees; export composes their independently timed reads without a cross-repository snapshot. The application owns print-readiness checks and schema validation of the generated artifact, using saved metadata and authoritative geometry rather than reading or decoding originals.
-
-Empty photo slots, synopsis and chapter descriptions block export; empty captions are allowed. Resolution below 300 effective DPI warns based on the occupied physical frame, including bleed and saved zoom, rather than an image's embedded DPI tag.
-
-Diagnostics link to numbered spreads and slots with an independent read-only highlight, remaining available during review navigation. Low-resolution confirmation revalidates current saved state before download and closes the warning on success; cancellation downloads nothing, while failures retain actionable feedback.
-
-The same artifact supplies separate InDesign interior and cover imports into fresh template copies, preserving original templates and retained documents. Exact source-root mapping preserves photo identity across machines without substituting same-named files.
-
-InDesign owns local resource, template and font availability, glyph checks and actual text composition; detectable preflight failures prevent placement, and later failures leave a visibly incomplete copy. Authored text remains unchanged in saved state and JSON, while the agreed font-specific print transformation and manual finishing follow the [import instructions](../scripts/indesign/README.md).
-
 ## Browser editing ownership
 
 A browser profile remembers its identity and automatically chosen, editable alias. Aliases identify editors, not authenticated users.
@@ -201,6 +187,8 @@ Acknowledged saved state takes precedence over older in-flight reads. Workspace 
 ## Architectural decisions
 
 Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
+
+Print export is a read-only projection across existing saved-data owners, retaining their independent read lifetimes. The application owns saved-book print readiness; InDesign owns local resources and final composition.
 
 One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
 

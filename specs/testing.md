@@ -12,6 +12,7 @@ Tests follow responsibility boundaries. Most behavior is proved through domain a
 | Adapter seams | Faithful translation and failure behavior against real HTTP, SQLite, files, image codecs or configuration. |
 | Browser components | User-observable interaction, reactive state, accessibility and focus through rendered controls. |
 | Local application journeys | Integration, visual hierarchy and native browser behavior that isolated components cannot establish. |
+| Native publishing | InDesign and final-output inspection establish print fidelity; automated handoff and script checks establish representation and orchestration. |
 | Architecture and build gates | Dependency direction, type safety and reproducible delivery across supported components. |
 
 Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
@@ -21,10 +22,6 @@ Recovery confidence requires evidence for both the persisted commit and the clie
 Reversible editing needs cross-owner journeys to establish chronological intent and history lifetime. Component tests prove compensation and retained progress; real persistence and access boundaries establish saved round trips and interference handling, including identity changes during restoration.
 
 Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
-
-Print export needs application proof of saved-data projection, readiness decisions and schema-valid output, plus HTTP seams for download and failure delivery. Browser components establish confirmation, diagnostic navigation and dismissal without altering saved content or editing history.
-
-Execute the shipped InDesign script logic directly to establish decoding, exact source mapping and import orchestration rather than testing a parallel implementation. Actual InDesign imports and final PDF inspection establish native framing, bleed, typography and text composition; small fixtures isolate rendering questions before representative complete-book proof.
 
 Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.
 
