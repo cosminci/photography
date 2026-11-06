@@ -21,6 +21,7 @@ export interface CanvasPhotos {
   readonly captions?: CaptionEditing;
   readonly onEditText?: (opener: HTMLButtonElement) => void;
   readonly textUnavailable?: string | undefined;
+  readonly highlightedSlot?: string | undefined;
 }
 
 export const spreadWidth = 2381.102;
@@ -305,6 +306,7 @@ function SlotPhoto(props: { slotId: string; label: string; width: number; height
       ownershipUnavailable={props.editing.ownershipUnavailable}
       reader={props.editing.reader}
       captions={props.editing.captions}
+      highlighted={props.editing.highlightedSlot === props.slotId}
     />
   );
 }

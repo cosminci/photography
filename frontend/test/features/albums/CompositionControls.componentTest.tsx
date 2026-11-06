@@ -145,17 +145,45 @@ describe("saved composition controls", () => {
     expect(screen.getByRole("checkbox", { name: "Spread bleed" })).toBeDisabled();
   });
 
-  it("should persist spine ownership through the existing composition session and hide editing controls in Reader", async () => {
-    const edit = vi.fn().mockResolvedValue({ ...cover, pageCount: 30, geometry: coverGeometries.back, spineOwner: "back" });
-    const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(cover), editPlacements: edit }, vi.fn()));
-    await session.load("album", { kind: "cover" });
-    const view = render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);
-    const owner = screen.getByRole("combobox", { name: "Spine/gutter owner" });
-    fireEvent.change(owner, { target: { value: "back" } });
-    await waitFor(() => expect(owner).toHaveValue("back"));
-    expect(edit).toHaveBeenCalledWith("album", { kind: "cover" }, { operation: "spineOwner", owner: "back" });
-    view.unmount();
-    render(() => <CompositionControls session={session} unavailable="Another editor owns this cover." reader={true} />);
-    expect(screen.queryByRole("combobox", { name: "Spine/gutter owner" })).not.toBeInTheDocument();
-  });
+  it.each(["front", "back"] as const)(
+    "should toggle saved %s spine ownership with existing styling, save fencing and focus",
+    async (initialOwner) => {
+      const nextOwner = initialOwner === "front" ? "back" : "front";
+      const initial: CoverSnapshot = { ...cover, spineOwner: initialOwner, geometry: coverGeometries[initialOwner] };
+      const saved: CoverSnapshot = { ...cover, spineOwner: nextOwner, geometry: coverGeometries[nextOwner] };
+      let acknowledge!: (value: CoverSnapshot) => void;
+      const edit = vi.fn().mockImplementation(
+        () =>
+          new Promise<CoverSnapshot>((resolve) => {
+            acknowledge = resolve;
+          }),
+      );
+      const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: edit }, vi.fn()));
+      await session.load("album", { kind: "cover" });
+      const view = render(() => <CompositionControls session={session} unavailable={undefined} reader={false} />);
+      const current = screen.getByRole("button", { name: initialOwner === "front" ? "Front" : "Back" });
+      const owner = screen.getByRole("button", { name: nextOwner === "front" ? "Front" : "Back" });
+      expect(screen.getByRole("group", { name: "Spine/gutter owner" })).toContainElement(owner);
+      expect(current).toHaveAttribute("aria-pressed", "true");
+      fireEvent.click(current);
+      expect(edit).not.toHaveBeenCalled();
+      owner.focus();
+      fireEvent.click(owner);
+      expect(current).toBeDisabled();
+      expect(owner).toBeDisabled();
+      expect(owner).toHaveAccessibleDescription("Saving photos. Please wait.");
+      document.body.tabIndex = -1;
+      document.body.focus();
+      document.body.removeAttribute("tabindex");
+      acknowledge(saved);
+      await waitFor(() => expect(owner).toBeEnabled());
+      await waitFor(() => expect(owner).toHaveAttribute("aria-pressed", "true"));
+      expect(owner).toHaveFocus();
+      expect(current).toHaveAttribute("aria-pressed", "false");
+      expect(edit).toHaveBeenCalledExactlyOnceWith("album", { kind: "cover" }, { operation: "spineOwner", owner: nextOwner });
+      view.unmount();
+      render(() => <CompositionControls session={session} unavailable="Another editor owns this cover." reader={true} />);
+      expect(screen.queryByRole("group", { name: "Spine/gutter owner" })).not.toBeInTheDocument();
+    },
+  );
 });

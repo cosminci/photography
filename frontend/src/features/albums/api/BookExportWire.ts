@@ -26,7 +26,7 @@ export function readExportIssues(value: unknown): readonly ExportIssue[] {
       default:
         throw new Error("Invalid export issue target");
     }
-    return { code: readText(fields["code"]), severity, target };
+    return { code: readText(fields["code"]), severity, target, message: readText(fields["message"]) };
   });
 }
 

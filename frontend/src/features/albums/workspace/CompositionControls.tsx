@@ -1,11 +1,11 @@
-import { Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { PlacementSession } from "./PlacementSession";
 import type { PlacementEdit } from "../model/Placement";
 import "./preview.css";
 
 export function CompositionControls(props: { session: PlacementSession; unavailable: string | undefined; reader: boolean; feedbackId?: string }) {
   const [restoreFocus, setRestoreFocus] = createSignal(false);
-  let control: HTMLButtonElement | HTMLSelectElement | undefined;
+  let control: HTMLButtonElement | undefined;
   const spread = createMemo(() => {
     const saved = props.session.snapshot();
     return saved?.kind === "spread" ? saved : undefined;
@@ -24,8 +24,9 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
         : undefined);
   const sharedFeedback = () => (props.session.error() !== undefined && reason() === props.session.error() ? props.feedbackId : undefined);
 
-  function edit(command: PlacementEdit, opener: HTMLButtonElement | HTMLSelectElement) {
+  function edit(command: PlacementEdit, opener: HTMLButtonElement) {
     const focused = document.activeElement === opener;
+    control = opener;
     void props.session.edit(command);
     setRestoreFocus(focused);
   }
@@ -44,9 +45,6 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
         <Show when={spread()}>
           {(saved) => (
             <button
-              ref={(element) => {
-                control = element;
-              }}
               type="button"
               class="icon-button bleed-toggle"
               role="checkbox"
@@ -74,25 +72,27 @@ export function CompositionControls(props: { session: PlacementSession; unavaila
         </Show>
         <Show when={cover()}>
           {(saved) => (
-            <label>
-              Spine/gutter owner
-              <select
-                ref={(element) => {
-                  control = element;
-                }}
-                value={saved().spineOwner}
-                disabled={reason() !== undefined}
-                aria-describedby={reason() === undefined ? undefined : (sharedFeedback() ?? "spine-owner-reason")}
-                onChange={(event) => {
-                  const owner = event.currentTarget.value;
-                  /* v8 ignore else */
-                  if (owner === "front" || owner === "back") edit({ operation: "spineOwner", owner }, event.currentTarget);
-                }}
-              >
-                <option value="front">Front cover</option>
-                <option value="back">Back cover</option>
-              </select>
-            </label>
+            <div class="cover-owner-control">
+              <span>Spine/gutter</span>
+              <div class="workspace-mode" role="group" aria-label="Spine/gutter owner">
+                <For each={["front", "back"] as const}>
+                  {(owner) => (
+                    <button
+                      type="button"
+                      aria-pressed={saved().spineOwner === owner}
+                      disabled={reason() !== undefined}
+                      title={reason() ?? (owner === "front" ? "Spine/gutter on front cover" : "Spine/gutter on back cover")}
+                      aria-describedby={reason() === undefined ? undefined : (sharedFeedback() ?? "spine-owner-reason")}
+                      onClick={(event) => {
+                        if (saved().spineOwner !== owner) edit({ operation: "spineOwner", owner }, event.currentTarget);
+                      }}
+                    >
+                      {owner === "front" ? "Front" : "Back"}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
           )}
         </Show>
         <Show when={cover() !== undefined && sharedFeedback() === undefined && reason()}>

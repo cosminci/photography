@@ -18,6 +18,14 @@
   overflow: hidden;
   touch-action: none;
 }
+.photo-slot-highlighted::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 3px solid #b5751b;
+  pointer-events: none;
+  z-index: 3;
+}
 .photo-slot-surface:disabled {
   opacity: 1;
 }

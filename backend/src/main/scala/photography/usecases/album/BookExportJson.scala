@@ -153,15 +153,11 @@ private[album] object BookExportJson:
       case Severity.Blocking => "blocking"
       case Severity.Warning  => "warning"
     val code = issue.code match
-      case Code.EmptySynopsis       => "empty_synopsis"
-      case Code.EmptyDescription    => "empty_description"
-      case Code.EmptyPhotoSlot      => "empty_photo_slot"
-      case Code.LowResolution       => "low_resolution"
-      case Code.OriginalChanged     => "original_changed"
-      case Code.OriginalUndecodable => "original_undecodable"
-      case Code.OriginalUnstable    => "original_unstable"
-      case Code.OriginalUnavailable => "original_unavailable"
-    Json.obj("code" -> text(code), "severity" -> text(severity), "target" -> scope)
+      case Code.EmptySynopsis    => "empty_synopsis"
+      case Code.EmptyDescription => "empty_description"
+      case Code.EmptyPhotoSlot   => "empty_photo_slot"
+      case Code.LowResolution    => "low_resolution"
+    Json.obj("code" -> text(code), "severity" -> text(severity), "target" -> scope, "message" -> text(issue.message))
 
   private def encodeAuthor(author: Author) = text(author match
     case Author.Cosmin => "Cosmin"

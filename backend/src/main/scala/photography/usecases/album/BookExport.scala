@@ -12,7 +12,7 @@ import photography.capabilities.Transaction
 import photography.ports.album.AlbumRepository
 import photography.ports.cover.CoverRepository
 import photography.ports.gear.GearRepository
-import photography.ports.photo.{PhotoRepository, PhotoStorage}
+import photography.ports.photo.PhotoRepository
 import photography.syntax.EitherSyntax.*
 import scala.jdk.CollectionConverters.*
 
@@ -24,16 +24,14 @@ object BookExport:
       albums: AlbumRepository[F],
       covers: CoverRepository[Db],
       photos: PhotoRepository[Db],
-      gear: GearRepository[F],
-      originals: PhotoStorage[F]
-  )(using Transaction[Db, F]): F[BookExport[F]] = Async[F].blocking(new LiveBookExport(albums, covers, photos, gear, originals))
+      gear: GearRepository[F]
+  )(using Transaction[Db, F]): F[BookExport[F]] = Async[F].blocking(new LiveBookExport(albums, covers, photos, gear))
 
   final private class LiveBookExport[F[_]: Async: Logger, Db[_]](
       albums: AlbumRepository[F],
       covers: CoverRepository[Db],
       photos: PhotoRepository[Db],
-      gear: GearRepository[F],
-      originals: PhotoStorage[F]
+      gear: GearRepository[F]
   )(using Transaction[Db, F]) extends BookExport[F]:
     private val schema =
       val registry = SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12)
@@ -79,10 +77,8 @@ object BookExport:
       val readiness  = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
       val projection = readiness.flatMap(issues => BookExportJson.encode(book, warnings = issues).tupleLeft(issues))
       for
-        (printIssues, json) <- projection.leftMap(new IllegalStateException(_)).liftTo[F]
-        sourceIssues        <- book.photos.traverse(checkOriginal)
-        issues = printIssues ++ sourceIssues.flatten
-        result <-
+        (issues, json) <- projection.leftMap(new IllegalStateException(_)).liftTo[F]
+        result         <-
           if issues.exists(_.severity === Severity.Blocking) then (Result.Blocked(issues): Result).pure[F]
           else validateArtifact(json, book.album.year)
       yield result
@@ -97,56 +93,57 @@ object BookExport:
       yield Result.Ready(validated, filename = s"album-$year-indesign.json"): Result
 
     private def checkContent(book: SavedBook) =
-      val synopsis     = Option.when(book.album.synopsis.isBlank)(Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album)).toList.toVector
+      val synopsis = Option.when(book.album.synopsis.isBlank)(
+        Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album, "Album synopsis is empty.")
+      ).toList.toVector
       val descriptions = book.album.chapters.filter(_.description.isBlank)
-        .map(chapter => Issue(Code.EmptyDescription, Severity.Blocking, Target.Chapter(chapter.id)))
+        .map(chapter =>
+          Issue(Code.EmptyDescription, Severity.Blocking, Target.Chapter(chapter.id), s"${chapter.destination.name}: chapter description is empty.")
+        )
       synopsis ++ descriptions
 
     private def checkInterior(book: SavedBook) =
-      book.album.collectSpreads.toList.toVector.flatTraverse: spread =>
-        spread.photos.flatTraverse: slot =>
-          val target = Target.Slot(spread.id, slot.id)
+      val spreads = Vector("Album opening" -> book.album.opening) ++ book.album.chapters.flatMap(chapter =>
+        (chapter.opening +: chapter.spreads).map(spread => chapter.destination.name -> spread)
+      )
+      spreads.zipWithIndex.flatTraverse { case ((name, spread), spreadIndex) =>
+        spread.photos.zipWithIndex.flatTraverse { case (slot, slotIndex) =>
+          val target   = Target.Slot(spread.id, slot.id)
+          val location = s"$name - spread ${spreadIndex + 1}, photo ${slotIndex + 1}"
           spread.placements.find(_.slot.value === slot.id.value) match
-            case None            => Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, target)).asRight[String]
+            case None            => Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, target, s"$location: no photograph placed.")).asRight[String]
             case Some(placement) =>
               for
                 box   <- slot.visibleBox
                 photo <- book.photos.find(_.id.value === placement.photo.value).toRight(s"Photo ${placement.photo.value} unavailable")
               yield
                 val frame = InteriorDimensions.photoFrame(box, slot.bleed)
-                resolutionWarning(photo, placement.transform, frame.width, frame.height, target)
+                resolutionWarning(photo, placement.transform, frame.width, frame.height, target, location)
+        }
+      }
 
     private def checkCover(book: SavedBook) =
       val cover      = book.cover.cover
       val dimensions = book.cover.dimensions
-      val frames     = Vector(cover.front.id -> dimensions.frontFrame(cover.spineOwner), cover.back.id -> dimensions.backFrame(cover.spineOwner))
-      frames.flatTraverse { case (slot, frame) =>
+      val frames     = Vector(
+        (cover.front.id, dimensions.frontFrame(cover.spineOwner), "Front cover"),
+        (cover.back.id, dimensions.backFrame(cover.spineOwner), "Back cover")
+      )
+      frames.flatTraverse { case (slot, frame, location) =>
         val target = Target.CoverSlot(slot)
         book.cover.placements.find(_.slot.value === slot.value) match
-          case None            => Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, target)).asRight[String]
+          case None            => Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, target, s"$location: no photograph placed.")).asRight[String]
           case Some(placement) =>
             book.photos.find(_.id.value === placement.photo.value).toRight(s"Photo ${placement.photo.value} unavailable").map(photo =>
-              resolutionWarning(photo, placement.transform, frame.width, frame.height, target)
+              resolutionWarning(photo, placement.transform, frame.width, frame.height, target, location)
             )
       }
 
-    private def resolutionWarning(photo: Photo, transform: PhotoTransform, width: Double, height: Double, target: Target) =
-      val scale = math.max(width / photo.metadata.dimensions.width, height / photo.metadata.dimensions.height) * transform.zoom
-      Option.when(72.0 / scale < 300.0)(Issue(Code.LowResolution, Severity.Warning, target)).toList.toVector
-
-    private def checkOriginal(photo: Photo) =
-      originals.readOriginal(photo.original).map: result =>
-        val maybeCode = result match
-          case PhotoStorage.ReadResult.Read(_, metadata) =>
-            Option.when(
-              (metadata.hash: String) =!= (photo.metadata.hash: String) ||
-                (photo.metadata.dimensions.width: Int) =!= (metadata.dimensions.width: Int) ||
-                (photo.metadata.dimensions.height: Int) =!= (metadata.dimensions.height: Int)
-            )(Code.OriginalChanged)
-          case PhotoStorage.ReadResult.Undecodable => Code.OriginalUndecodable.some
-          case PhotoStorage.ReadResult.Unstable    => Code.OriginalUnstable.some
-          case PhotoStorage.ReadResult.Failed      => Code.OriginalUnavailable.some
-        maybeCode.map(code => Issue(code, Severity.Blocking, Target.Photo(photo.id))).toList.toVector
+    private def resolutionWarning(photo: Photo, transform: PhotoTransform, width: Double, height: Double, target: Target, location: String) =
+      val scale   = math.max(width / photo.metadata.dimensions.width, height / photo.metadata.dimensions.height) * transform.zoom
+      val dpi     = 72.0 / scale
+      val message = s"$location: ${photo.original.filename} is ${math.floor(dpi).toLong} DPI (recommended 300 DPI)."
+      Option.when(dpi < 300.0)(Issue(Code.LowResolution, Severity.Warning, target, message)).toList.toVector
 
   final private[album] case class SavedBook(album: Album, cover: CoverRepository.Composition, photos: Vector[Photo], gear: GearCatalog)
 
@@ -170,9 +167,9 @@ object BookExport:
 
   enum Code:
     case EmptySynopsis, EmptyDescription, EmptyPhotoSlot
-    case LowResolution, OriginalChanged, OriginalUndecodable, OriginalUnstable, OriginalUnavailable
+    case LowResolution
 
-  final case class Issue(code: Code, severity: Severity, target: Target)
+  final case class Issue(code: Code, severity: Severity, target: Target, message: String)
 
   object Issue:
     given Encoder[Issue] = Encoder.instance(BookExportJson.encodeIssue)

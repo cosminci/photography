@@ -30,13 +30,14 @@ final class BookExportApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
 
   test("should report scoped blocking issues without an attachment"):
-    val issue    = Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album)
+    val issue    = Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album, "Album synopsis is empty.")
     val expected = Json.obj(
       "code"   -> Json.fromString("export_blocked"),
       "issues" -> Json.arr(Json.obj(
         "code"     -> Json.fromString("empty_synopsis"),
         "severity" -> Json.fromString("blocking"),
-        "target"   -> Json.obj("kind" -> Json.fromString("album"))
+        "target"   -> Json.obj("kind" -> Json.fromString("album")),
+        "message"  -> Json.fromString("Album synopsis is empty.")
       ))
     )
 

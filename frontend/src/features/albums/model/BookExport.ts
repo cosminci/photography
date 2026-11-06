@@ -1,4 +1,5 @@
 export interface ExportIssue {
+  readonly message: string;
   readonly code: string;
   readonly severity: "blocking" | "warning";
   readonly target: Readonly<Record<string, string>>;

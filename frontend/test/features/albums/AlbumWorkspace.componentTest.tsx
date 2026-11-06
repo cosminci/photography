@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-lib
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AlbumOpen } from "../../../src/features/albums/open/AlbumOpen";
 import { editingSession } from "../editing/EditingSessionStub";
+import { BookExportBlocked } from "../../../src/features/albums/model/BookExport";
 import {
   AcknowledgedWriteError,
   AlbumRequestError,
@@ -155,6 +156,109 @@ describe("album workspace browser boundary", () => {
     vi.restoreAllMocks();
   });
 
+  it("should retain compact export links across navigation, highlight the chosen slot and clear feedback only on dismissal", async () => {
+    const exportBook = vi.fn().mockResolvedValue({
+      content: '{"formatVersion":1}',
+      warnings: [
+        {
+          code: "low_resolution",
+          severity: "warning",
+          target: { kind: "slot", spread: vacationPhoto.id, slot: photoSlot.id },
+          message: "Kyoto: one.jpg is 242 DPI (recommended 300 DPI).",
+        },
+        {
+          code: "low_resolution",
+          severity: "warning",
+          target: { kind: "cover", slot: "front" },
+          message: "Front cover: two.jpg is 290 DPI (recommended 300 DPI).",
+        },
+      ],
+    });
+    const client = buildClient({ exportBook });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:saved-book");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    window.history.replaceState(null, "", "/albums/album");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const exportButton = await screen.findByRole("button", { name: "Export for InDesign" });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+
+    fireEvent.click(exportButton);
+    const spreadLink = await screen.findByRole("link", { name: "Spread 3 Slot 1" });
+    expect(spreadLink).toHaveAttribute("href", "/albums/album?part=vacation-photo#photo-frame-photo-slot");
+    expect(spreadLink).toHaveAttribute("title", "Kyoto: one.jpg is 242 DPI (recommended 300 DPI).");
+    expect(screen.getByText(/Low-resolution photos:/)).toHaveTextContent("Low-resolution photos: Spread 3 Slot 1, Cover");
+    fireEvent.click(spreadLink);
+    await waitFor(() => expect(screen.getByRole("group", { name: "Photo slot 1" })).toHaveAttribute("aria-current", "true"));
+    expect(screen.getByRole("group", { name: "Photo slot 1" })).toHaveFocus();
+    expect(window.location.search).toBe("?part=vacation-photo");
+    await waitFor(() => expect(exportButton).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("link", { name: "Cover" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Front cover" })).toHaveAttribute("aria-current", "true"));
+    expect(screen.getByRole("group", { name: "Front cover" })).toHaveFocus();
+    expect(screen.getByRole("link", { name: "Spread 3 Slot 1" })).toBeVisible();
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Spreads" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Photo slot 1" })).not.toHaveAttribute("aria-current"));
+    expect(screen.getByRole("link", { name: "Spread 3 Slot 1" })).toBeVisible();
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(screen.getByRole("link", { name: "Spread 3 Slot 1" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Photo slot 1" })).toHaveAttribute("aria-current", "true"));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss export warnings" }));
+
+    expect(screen.queryByText(/Low-resolution photos:/)).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Photo slot 1" })).not.toHaveAttribute("aria-current");
+    expect(exportBook).toHaveBeenCalledOnce();
+    expect(client.editPlacements).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it("should link saved content blockers, retain unavailable targets and protect drafts during warning navigation", async () => {
+    const exportBook = vi.fn().mockRejectedValue(
+      new BookExportBlocked([
+        { code: "empty_synopsis", severity: "blocking", target: { kind: "album" }, message: "Album synopsis is empty." },
+        {
+          code: "empty_description",
+          severity: "blocking",
+          target: { kind: "chapter", chapter: vacation.id },
+          message: "Kyoto: chapter description is empty.",
+        },
+        {
+          code: "empty_photo_slot",
+          severity: "blocking",
+          target: { kind: "slot", spread: "removed", slot: "removed" },
+          message: "Removed spread: no photograph placed.",
+        },
+      ]),
+    );
+    const client = buildClient({ exportBook });
+    window.history.replaceState(null, "", "/albums/album");
+    render(() => <AlbumOpen session={editingSession} id={album.id} client={client} events={events} />);
+    const exportButton = await screen.findByRole("button", { name: "Export for InDesign" });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(exportButton);
+    const chapterLink = await screen.findByRole("link", { name: "Kyoto: chapter description is empty." });
+    expect(screen.getByText("Cannot export: Removed spread: no photograph placed.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Edit synopsis" }));
+    fireEvent.input(screen.getByRole("textbox", { name: "Synopsis" }), { target: { value: "Retained draft" } });
+    fireEvent.click(chapterLink);
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("textbox", { name: "Synopsis" })).toHaveValue("Retained draft");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(chapterLink);
+    await waitFor(() => {
+      expect(window.location.search).toBe("?part=vacation");
+    });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(screen.getByRole("link", { name: "Album synopsis is empty." }));
+    await waitFor(() => {
+      expect(window.location.search).toBe("");
+    });
+    expect(screen.getByRole("link", { name: "Kyoto: chapter description is empty." })).toBeVisible();
+    expect(client.saveSynopsis).not.toHaveBeenCalled();
+  });
+
   it.each(["lost-selection", "lost-retry"] as const)("should fence synopsis compensation during %s without writing", async (access) => {
     const built = buildHistoryBook();
     const [lossRevision, setLossRevision] = createSignal(0);
@@ -226,10 +330,10 @@ describe("album workspace browser boundary", () => {
       fireEvent.click(mara);
       await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Cover" }));
-      const owner = await screen.findByRole("combobox", { name: "Spine/gutter owner" });
+      const owner = await screen.findByRole("button", { name: "Back" });
       await waitFor(() => expect(owner).toBeEnabled());
 
-      fireEvent.change(owner, { target: { value: "back" } });
+      fireEvent.click(owner);
       if (outcome.startsWith("uncertain") || outcome === "rejected") {
         const retry = await screen.findByRole("button", { name: "Retry photos" });
         expect(screen.getByRole("button", { name: "Undo: Change authors" })).toBeDisabled();
@@ -720,9 +824,9 @@ describe("album workspace browser boundary", () => {
           events={events}
         />
       ));
-      const owner = await screen.findByRole("combobox", { name: "Spine/gutter owner" });
+      const owner = await screen.findByRole("button", { name: "Back" });
       await waitFor(() => expect(owner).toBeEnabled());
-      fireEvent.change(owner, { target: { value: "back" } });
+      fireEvent.click(owner);
       await waitFor(() => expect(screen.getByRole("button", { name: "Spreads" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Spreads" }));
       await waitFor(() => expect(screen.getByRole("button", { name: "Undo: Change spine owner" })).toBeEnabled());

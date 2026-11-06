@@ -17,7 +17,14 @@ describe("same-origin album HTTP client", () => {
   });
 
   it("should retain all print blockers and acquire saved state again on explicit retry", async () => {
-    const issues = [{ code: "empty_description", severity: "blocking", target: { kind: "chapter", chapter: "coast" } }] as const;
+    const issues = [
+      {
+        code: "empty_description",
+        severity: "blocking",
+        target: { kind: "chapter", chapter: "coast" },
+        message: "Coast: chapter description is empty.",
+      },
+    ] as const;
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: "export_blocked", issues }), { status: 422 }))
