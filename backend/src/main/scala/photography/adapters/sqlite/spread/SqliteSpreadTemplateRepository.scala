@@ -53,7 +53,6 @@ object SqliteSpreadTemplateRepository:
         rows      <- select.query[(UUID, SpreadTemplateName)].to[List]
         templates <- rows.traverse { case (id, name) => loadPhotoTemplate(id, name) }
         nonEmpty  <- NonEmptyList.fromList(templates).toRight(
-          // V2 seeds the immutable photo-layout catalog; there is no catalog removal operation.
           // $COVERAGE-OFF$
           new IllegalArgumentException("No photos_only templates")
           // $COVERAGE-ON$
@@ -76,7 +75,6 @@ object SqliteSpreadTemplateRepository:
           loadSlots(id).map { case (photos, text) =>
             (SpreadTemplate.ChapterStart(SpreadTemplateId(id), name, photoSlots = photos, text): SpreadTemplate).some
           }
-        // spread_template.kind is constrained to the three handled variants.
         // $COVERAGE-OFF$
         case Some((kind, _)) => new IllegalArgumentException(s"Unknown spread template kind $kind").raiseError[ConnectionIO, Option[SpreadTemplate]]
         // $COVERAGE-ON$

@@ -168,7 +168,6 @@ object SqlitePhotoRepository:
       case "low"      => ThumbnailQuality.Low.asRight[String]
       case "standard" => ThumbnailQuality.Standard.asRight[String]
       case "high"     => ThumbnailQuality.High.asRight[String]
-      // photo.thumbnail_quality is constrained to low/standard/high.
       // $COVERAGE-OFF$
       case _ => "Invalid thumbnail quality".asLeft[ThumbnailQuality]
       // $COVERAGE-ON$

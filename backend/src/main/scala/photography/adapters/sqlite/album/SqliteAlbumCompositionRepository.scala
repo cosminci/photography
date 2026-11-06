@@ -50,7 +50,6 @@ object SqliteAlbumCompositionRepository:
     private def loadChapterMembers(album: AlbumId, chapter: ChapterId) =
       loadChapterOrder(album, chapter).flatMap:
         case Some(order) => order.toList.toVector.map(id => Member(id, maybeChapter = chapter.some)).pure[ConnectionIO]
-        // The chapter was selected in this transaction; loadChapterOrder rejects a missing opening before returning.
         // $COVERAGE-OFF$
         case None => new IllegalArgumentException("Missing chapter composition").raiseError[ConnectionIO, Vector[Member]]
         // $COVERAGE-ON$
@@ -90,7 +89,6 @@ object SqliteAlbumCompositionRepository:
         case value: Spread.AlbumStart   => (Located.AlbumOpening(value): Located).pure[ConnectionIO]
         case value: Spread.ChapterStart =>
           row.maybeChapter.toRight(
-            // decodeSpread accepts ChapterStart only with a chapter owner.
             // $COVERAGE-OFF$
             new IllegalArgumentException("Missing chapter")
             // $COVERAGE-ON$
@@ -98,7 +96,6 @@ object SqliteAlbumCompositionRepository:
             .map(id => Located.ChapterOpening(ChapterId(id), value): Located)
         case value: Spread.PhotosOnly =>
           row.maybeChapter.toRight(
-            // decodeSpread accepts PhotosOnly only with a chapter owner.
             // $COVERAGE-OFF$
             new IllegalArgumentException("Missing chapter")
             // $COVERAGE-ON$
@@ -141,7 +138,6 @@ object SqliteAlbumCompositionRepository:
         _ <- Either.cond(
           stored.map(_.id).distinct.size === stored.size,
           (),
-          // Both slot tables have primary keys; application-generated identities are distinct across slot kinds.
           // $COVERAGE-OFF$
           "Duplicate spread slot identities"
           // $COVERAGE-ON$
@@ -157,7 +153,6 @@ object SqliteAlbumCompositionRepository:
           sql"SELECT edge FROM spread_photo_slot_bleed WHERE slot_id = $id".query[SpreadEdge].to[List]
             .map(edges => SpreadSlot.Photo(PhotoSpreadSlotId(id), box, bleed = edges.toSet): SpreadSlot)
         case "text" => (SpreadSlot.Text(TextSpreadSlotId(id), box): SpreadSlot).pure[ConnectionIO]
-        // loadSpread supplies only the literal 'photo' and 'text' UNION projections.
         // $COVERAGE-OFF$
         case other => new IllegalArgumentException(s"Unknown slot kind $other").raiseError[ConnectionIO, SpreadSlot]
         // $COVERAGE-ON$

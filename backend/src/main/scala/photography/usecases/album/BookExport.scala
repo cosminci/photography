@@ -100,16 +100,7 @@ object BookExport:
               } => value.pure[F]
           case _ => unavailable[Spread.AlbumStart]("Album must begin with its only opening")
         loaded <- saved.traverse(chapter => assembleChapter(metadata.id, chapter, members))
-      yield Album(
-        metadata.id,
-        metadata.year,
-        metadata.title,
-        metadata.synopsis,
-        metadata.authors,
-        metadata.createdAt,
-        opening,
-        loaded
-      )
+      yield Album(metadata.id, metadata.year, metadata.title, metadata.synopsis, metadata.authors, metadata.createdAt, opening, loaded)
 
     private def assembleChapter(album: AlbumId, metadata: AlbumRepository.ChapterMetadata, members: List[Located]) =
       val owned = members.collect:

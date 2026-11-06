@@ -121,12 +121,10 @@ object ChapterPhotoImport:
 
     private def recordStatus(request: Request, status: Status) =
       state.modify { current =>
-        val applies = current.get(request.chapter).flatMap(_.maybeEntry).exists(entry => entry.request === request && isActive(entry.status))
-        val updated = if !applies then current
-        else
-          current.updatedWith(request.chapter):
-            _.map(feedback => feedback.copy(maybeEntry = feedback.maybeEntry.map(_.copy(status = status))))
-        (updated, applies)
+        current.get(request.chapter) match
+          case Some(feedback @ Feedback(Some(entry), _)) if entry.request === request && isActive(entry.status) =>
+            (current.updated(request.chapter, feedback.copy(maybeEntry = entry.copy(status = status).some)), true)
+          case _ => (current, false)
       }.flatMap(changed => invalidateInventory(request.album, request.chapter).whenA(changed).as(changed))
 
     private def invalidateInventory(album: AlbumId, chapter: ChapterId) =

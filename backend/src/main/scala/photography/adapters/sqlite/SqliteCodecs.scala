@@ -22,7 +22,6 @@ private[sqlite] object SqliteCodecs:
     Either.catchOnly[InvalidPathException](Path.of(value)).leftMap(_.getMessage).flatMap: path =>
       Either.cond(path.isAbsolute, AbsoluteLocation(path), "Expected absolute flag path")
   }(
-    // The country catalog is read-only; Meta requires the inverse representation even without a writer.
     // $COVERAGE-OFF$
     _.value.toString
       // $COVERAGE-ON$
@@ -53,7 +52,6 @@ private[sqlite] object SqliteCodecs:
     case "top_right"    => CaptionCorner.TopRight.asRight[String]
     case "bottom_left"  => CaptionCorner.BottomLeft.asRight[String]
     case "bottom_right" => CaptionCorner.BottomRight.asRight[String]
-    // placement.caption_corner is constrained to these four values.
     // $COVERAGE-OFF$
     case other => s"Unknown caption corner $other".asLeft[CaptionCorner]
     // $COVERAGE-ON$
@@ -69,7 +67,6 @@ private[sqlite] object SqliteCodecs:
     case "bottom" => SpreadEdge.Bottom.asRight[String]
     case "left"   => SpreadEdge.Left.asRight[String]
     case "right"  => SpreadEdge.Right.asRight[String]
-    // spread_photo_slot_bleed.edge is constrained to these four values.
     // $COVERAGE-OFF$
     case other => s"Unknown bleed edge $other".asLeft[SpreadEdge]
     // $COVERAGE-ON$

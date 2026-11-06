@@ -51,7 +51,6 @@ object SqliteCoverRepository:
         spreads        <- count
         rows           <- catalog
         specifications <- rows.traverse(CoverSpecification.from.tupled).leftMap(
-          // cover_specification CHECKs enforce every CoverSpecification.from constraint.
           // $COVERAGE-OFF$
           new IllegalArgumentException(_)
           // $COVERAGE-ON$
@@ -80,7 +79,6 @@ object SqliteCoverRepository:
       val maybeOwner = spine match
         case "front" => SpineOwner.Front.some
         case "back"  => SpineOwner.Back.some
-        // cover.spine_owner is constrained to front/back.
         // $COVERAGE-OFF$
         case _ => none[SpineOwner]
         // $COVERAGE-ON$

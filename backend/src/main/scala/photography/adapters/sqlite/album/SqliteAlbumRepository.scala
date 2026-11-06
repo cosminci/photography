@@ -34,9 +34,6 @@ object SqliteAlbumRepository:
         query.transact(Transactor.after.set(transactor, commit))
     new LiveSqliteAlbumRepository(resolve, save)
 
-  def makeRead(using Logger[ConnectionIO]): AlbumRepository.MetadataRead[ConnectionIO] & AlbumRepository.ChapterRead[ConnectionIO] =
-    new LiveSqliteAlbumRepository(FunctionK.id[ConnectionIO], FunctionK.id[ConnectionIO])
-
   final private class LiveSqliteAlbumRepository[F[_]: MonadThrow: Logger](
       resolve: FunctionK[ConnectionIO, F],
       save: FunctionK[ConnectionIO, F]
@@ -153,7 +150,6 @@ object SqliteAlbumRepository:
       Either.cond(encoded >= 1 && encoded <= 7, (), new IllegalArgumentException("Invalid album authors")).flatMap: _ =>
         Author.all.filter(author => (encoded & (1 << author.ordinal)) =!= 0).refineEither[MinLength[1]]
           .leftMap(
-            // A valid 1..7 bitmask always selects at least one of the three authors.
             // $COVERAGE-OFF$
             new IllegalArgumentException(_)
             // $COVERAGE-ON$
@@ -172,7 +168,6 @@ object SqliteAlbumRepository:
         _ <- insert(row)
         _ <- photos.traverse_(slot => insertSlot(spread, slot))
         _ <- insertSlot(spread, text)
-      // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
       // $COVERAGE-OFF$
       yield ()
       // $COVERAGE-ON$
@@ -183,7 +178,6 @@ object SqliteAlbumRepository:
           for
             _ <- insert(sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${id.value}, ${spread.value}, $box)")
             _ <- bleed.toList.traverse_(edge => insert(sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${id.value}, $edge)"))
-          // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
           // $COVERAGE-OFF$
           yield ()
           // $COVERAGE-ON$
@@ -198,7 +192,6 @@ object SqliteAlbumRepository:
 
     private def loadRequired(id: UUID) =
       load(id).flatMap(_.toRight(
-        // Called after this transaction inserts or updates the album; no application trigger removes it.
         // $COVERAGE-OFF$
         new IllegalArgumentException(s"Missing required album $id")
         // $COVERAGE-ON$
@@ -216,7 +209,6 @@ object SqliteAlbumRepository:
       val (id, destination, name, description, start, end, folder) = row
       for
         period <- decodePeriod(start = start, end = end).leftMap(
-          // Chapter writes encode VisitPeriod as increasing UTC-midnight endpoints.
           // $COVERAGE-OFF$
           new IllegalArgumentException(_)
           // $COVERAGE-ON$
@@ -250,14 +242,12 @@ object SqliteAlbumRepository:
         _ <- insert(sql"INSERT INTO cover (album_id, spine_owner) VALUES ($albumId, $spine)")
         _ <- insert(sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.front.id.value}, $albumId, 'front')")
         _ <- insert(sql"INSERT INTO cover_slot (id, album_id, side) VALUES (${cover.back.id.value}, $albumId, 'back')")
-      // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
       // $COVERAGE-OFF$
       yield ()
       // $COVERAGE-ON$
 
     private def insert(statement: Fragment) =
       statement.update.run.ensure(
-        // Single-row VALUES inserts either apply once or fail; the application installs no IGNORE triggers.
         // $COVERAGE-OFF$
         new IllegalStateException("Expected one inserted album-owned row")
         // $COVERAGE-ON$

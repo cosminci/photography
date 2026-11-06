@@ -1,10 +1,9 @@
 package photography.adapters.sqlite.chapter
 
 import cats.data.{NonEmptyList, NonEmptyVector}
-import cats.Eq
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
-import org.typelevel.doobie.ConnectionIO
+import org.typelevel.doobie.{ConnectionIO, Fragment}
 import org.typelevel.doobie.free.connection
 import org.typelevel.doobie.implicits.*
 import org.typelevel.log4cats.Logger
@@ -96,30 +95,24 @@ object SqliteChapterRepository:
                   yield UpdateResult.Saved: UpdateResult
                 countryReferencesExist(countries = countries).ifM(ifTrue = write, ifFalse = UpdateResult.UnknownCountries.pure[ConnectionIO])
 
-    private given Eq[GearSelection] = Eq.fromUniversalEquals
-
     private def writeDescription(album: AlbumId, chapter: ChapterId, text: String) =
       val update = sql"UPDATE chapter SET description = $text WHERE id = ${chapter.value} AND album_id = ${album.value}".update.run
         .flatMap(rows => checkDescriptionWrite(album, chapter, rows = rows))
-      sql"SAVEPOINT chapter_description".update.run >> update.attempt.flatTap:
+      withSavepoint("chapter_description")(update)
+
+    private def withSavepoint[A](name: String)(write: ConnectionIO[A]) =
+      Fragment.const(s"SAVEPOINT $name").update.run >> write.attempt.flatTap:
         case Left(cause) =>
-          val rollback = sql"ROLLBACK TO chapter_description".update.run >> sql"RELEASE chapter_description".update.run.void
+          val rollback = Fragment.const(s"ROLLBACK TO $name").update.run >> Fragment.const(s"RELEASE $name").update.run.void
           rollback.handleErrorWith(error => connection.delay(cause.addSuppressed(error)) >> cause.raiseError[ConnectionIO, Unit])
-        case Right(_) => sql"RELEASE chapter_description".update.run.void
+        case Right(_) => Fragment.const(s"RELEASE $name").update.run.void
 
     private def chapterExists(album: AlbumId, chapter: ChapterId) =
       sql"SELECT EXISTS(SELECT 1 FROM chapter WHERE id = ${chapter.value} AND album_id = ${album.value})".query[Boolean].unique
 
     private def loadGear(chapter: ChapterId) =
-      val cameras = sql"""SELECT c.camera_id, c.use_kind FROM chapter_camera c
-        LEFT JOIN camera k ON k.id = c.camera_id WHERE c.chapter_id = ${chapter.value} AND k.id IS NOT NULL ORDER BY c.rowid"""
-      val orphaned = sql"""SELECT EXISTS(SELECT 1 FROM chapter_camera c LEFT JOIN camera k ON k.id = c.camera_id
-        WHERE c.chapter_id = ${chapter.value} AND k.id IS NULL) OR EXISTS(
-        SELECT 1 FROM chapter_camera_lens s LEFT JOIN lens l ON l.id = s.lens_id
-        LEFT JOIN chapter_camera c ON c.chapter_id = s.chapter_id AND c.camera_id = s.camera_id
-        WHERE s.chapter_id = ${chapter.value} AND (l.id IS NULL OR c.camera_id IS NULL))""".query[Boolean].unique
-      orphaned.ensure(new IllegalArgumentException("Invalid saved gear references"))(!_) >>
-        cameras.query[(UUID, String)].to[Vector].flatMap(_.traverse { case (camera, kind) => loadCameraUse(chapter, camera = camera, kind = kind) })
+      sql"SELECT camera_id, use_kind FROM chapter_camera WHERE chapter_id = ${chapter.value} ORDER BY rowid"
+        .query[(UUID, String)].to[Vector].flatMap(_.traverse { case (camera, kind) => loadCameraUse(chapter, camera = camera, kind = kind) })
 
     private def loadCameraUse(chapter: ChapterId, camera: UUID, kind: String) =
       val lenses = sql"SELECT lens_id FROM chapter_camera_lens WHERE chapter_id = ${chapter.value} AND camera_id = $camera ORDER BY rowid"
@@ -131,38 +124,8 @@ object SqliteChapterRepository:
         use.liftTo[ConnectionIO].map(CameraSelection(CameraId(camera), _))
 
     private def replaceSelection(chapter: ChapterId, selection: GearSelection) =
-      val write =
-        for
-          _     <- deleteSelection(chapter)
-          _     <- selection.traverse_(entry => insertSelection(chapter, entry))
-          saved <- loadGear(chapter)
-          _     <- Either.cond(
-            saved === selection,
-            (),
-            // The savepoint replaces the full selection; row acknowledgements and foreign keys guard each supplied reference.
-            // $COVERAGE-OFF$
-            new IllegalStateException("Incomplete gear replacement")
-            // $COVERAGE-ON$
-          ).liftTo[ConnectionIO]
-        // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
-        // $COVERAGE-OFF$
-        yield ()
-        // $COVERAGE-ON$
-      sql"SAVEPOINT chapter_gear".update.run >> write.attempt.flatTap:
-        case Left(cause) =>
-          val rollback = sql"ROLLBACK TO chapter_gear".update.run >> sql"RELEASE chapter_gear".update.run.void
-          rollback.handleErrorWith(error => connection.delay(cause.addSuppressed(error)) >> cause.raiseError[ConnectionIO, Unit])
-        case Right(_) => sql"RELEASE chapter_gear".update.run.void
-
-    private def deleteSelection(chapter: ChapterId) =
-      sql"DELETE FROM chapter_camera WHERE chapter_id = ${chapter.value}".update.run >>
-        sql"SELECT count(*) FROM chapter_camera WHERE chapter_id = ${chapter.value}".query[Int].unique
-          .ensure(
-            // DELETE removes every matching selection in the same transaction; there are no application IGNORE triggers.
-            // $COVERAGE-OFF$
-            new IllegalStateException("Incomplete gear removal")
-            // $COVERAGE-ON$
-          )(_ === 0).void
+      val remove = sql"DELETE FROM chapter_camera WHERE chapter_id = ${chapter.value}".update.run
+      withSavepoint("chapter_gear")(remove >> selection.traverse_(entry => insertSelection(chapter, entry)))
 
     private def insertSelection(chapter: ChapterId, entry: CameraSelection) =
       val (kind, lenses) = entry.use match
@@ -170,16 +133,10 @@ object SqliteChapterRepository:
         case CameraUse.Interchangeable(values) => ("interchangeable_lenses", values.toVector)
       val insert       = sql"INSERT INTO chapter_camera (chapter_id, camera_id, use_kind) VALUES (${chapter.value}, ${entry.camera.value}, $kind)"
       val insertLenses = lenses.traverse_ { lens =>
-        sql"""INSERT INTO chapter_camera_lens (chapter_id, camera_id, lens_id)
-          VALUES (${chapter.value}, ${entry.camera.value}, ${lens.value})""".update.run
-          .ensure(new IllegalStateException("Expected one saved lens selection"))(_ === 1).void
+        persistRow(sql"""INSERT INTO chapter_camera_lens (chapter_id, camera_id, lens_id)
+          VALUES (${chapter.value}, ${entry.camera.value}, ${lens.value})""")
       }
-      insert.update.run.ensure(
-        // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-        // $COVERAGE-OFF$
-        new IllegalStateException("Expected one saved camera selection")
-        // $COVERAGE-ON$
-      )(_ === 1) >> insertLenses
+      persistRow(insert) >> insertLenses
 
     private def checkDescriptionWrite(album: AlbumId, chapter: ChapterId, rows: Int) =
       if rows === 1 then rows.pure[ConnectionIO]
@@ -211,20 +168,9 @@ object SqliteChapterRepository:
       val insertCountries = countries.toList.zipWithIndex.traverse_ { case (country, position) =>
         val insert = sql"""INSERT INTO destination_country (destination_id, country_id, position)
           VALUES ($id, ${country.value}, $position)"""
-        insert.update.run.ensure(new IllegalStateException("Expected one persisted row"))(_ === 1).void
+        persistRow(insert)
       }
-      for
-        _ <- insert.update.run.ensure(
-          // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-          // $COVERAGE-OFF$
-          new IllegalStateException("Expected one persisted row")
-          // $COVERAGE-ON$
-        )(_ === 1)
-        _ <- insertCountries
-      // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
-      // $COVERAGE-OFF$
-      yield ()
-      // $COVERAGE-ON$
+      persistRow(insert) >> insertCountries
 
     private def insertChapter(
         album: AlbumId,
@@ -240,37 +186,26 @@ object SqliteChapterRepository:
         VALUES (${chapter.value}, ${album.value}, ${destination.value}, $description,
                 $start, $end, (SELECT coalesce(max(position), -1) + 1 FROM chapter WHERE album_id = ${album.value}),
                 ${folder: String})"""
-      insert.update.run.ensure(
-        // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-        // $COVERAGE-OFF$
-        new IllegalStateException("Expected one persisted row")
-        // $COVERAGE-ON$
-      )(_ === 1).void
+      persistRow(insert)
 
     private def updateMetadata(album: AlbumId, chapter: ChapterId, destination: UUID, period: VisitPeriod, folder: PhotoSource) =
       val start  = period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
       val end    = period.firstDay.plusDays(period.days).atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
       val update = sql"""UPDATE chapter SET destination_id = $destination, start_ms = $start, end_ms = $end, source_folder = ${folder: String}
             WHERE id = ${chapter.value} AND album_id = ${album.value}"""
-      update.update.run.ensure(
-        // update acquires this chapter under the same transaction before replacing its metadata.
-        // $COVERAGE-OFF$
-        new IllegalStateException("Expected one persisted row")
-        // $COVERAGE-ON$
-      )(_ === 1).void
+      persistRow(update)
 
     private def persistOrder(album: AlbumId, order: NonEmptyList[ChapterId]) =
       val supplied       = order.toList.map(_.value)
       val writePositions = supplied.zipWithIndex.traverse_ { case (id, position) =>
         val update = sql"UPDATE chapter SET position = $position WHERE album_id = ${album.value} AND id = $id"
-        update.update.run.ensure(new IllegalStateException("Expected one persisted row"))(_ === 1).void
+        persistRow(update)
       }
       for
         stored <- sql"SELECT id FROM chapter WHERE album_id = ${album.value}".query[UUID].to[List]
         _      <- validateOrder(stored = stored, supplied = supplied).liftTo[ConnectionIO]
         _      <- sql"UPDATE chapter SET position = -position - 1 WHERE album_id = ${album.value}".update.run
         _      <- writePositions
-      // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
       // $COVERAGE-OFF$
       yield ()
       // $COVERAGE-ON$
@@ -290,37 +225,15 @@ object SqliteChapterRepository:
         VALUES (${spread.value}, ${template.value}, 'chapter_start', ${chapter.value}, 0)"""
       val insertText = sql"""INSERT INTO spread_text_slot (id, spread_id, x, y, width, height)
         VALUES (${text.id.value}, ${spread.value}, ${text.box})"""
-      for
-        _ <- insert.update.run.ensure(
-          // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-          // $COVERAGE-OFF$
-          new IllegalStateException("Expected one persisted row")
-          // $COVERAGE-ON$
-        )(_ === 1)
-        _ <- photos.traverse_(slot => insertPhotoSlot(spread, slot))
-        _ <- insertText.update.run.ensure(
-          // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-          // $COVERAGE-OFF$
-          new IllegalStateException("Expected one persisted row")
-          // $COVERAGE-ON$
-        )(_ === 1)
-      yield ()
+      persistRow(insert) >> photos.traverse_(slot => insertPhotoSlot(spread, slot)) >> persistRow(insertText)
 
     private def insertPhotoSlot(spread: SpreadId, slot: SpreadSlot.Photo) =
       val insert = sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${slot.id.value}, ${spread.value}, ${slot.box})"
       val insertBleed = slot.bleed.toList.traverse_ { edge =>
         val insert = sql"INSERT INTO spread_photo_slot_bleed (slot_id, edge) VALUES (${slot.id.value}, $edge)"
-        insert.update.run.ensure(new IllegalStateException("Expected one persisted row"))(_ === 1).void
+        persistRow(insert)
       }
-      for
-        _ <- insert.update.run.ensure(
-          // A single-row VALUES insert either applies once or fails; no application IGNORE triggers exist.
-          // $COVERAGE-OFF$
-          new IllegalStateException("Expected one persisted row")
-          // $COVERAGE-ON$
-        )(_ === 1)
-        _ <- insertBleed
-      // Scala's trailing-Unit map is eliminated; scoverage retains a synthetic yield branch.
-      // $COVERAGE-OFF$
-      yield ()
-      // $COVERAGE-ON$
+      persistRow(insert) >> insertBleed
+
+    private def persistRow(statement: Fragment) =
+      statement.update.run.ensure(new IllegalStateException("Expected one persisted row"))(_ === 1).void
