@@ -3,8 +3,8 @@ package photography.adapters.http
 import cats.data.NonEmptyList
 import cats.effect.Async
 import cats.syntax.all.*
-import io.circe.{Decoder, Json}
-import org.http4s.{MessageBodyFailure, Request, Response}
+import io.circe.Decoder
+import org.http4s.{Request, Response}
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.{AlbumId, ChapterId}
@@ -12,7 +12,6 @@ import photography.adapters.http.Routes.Route
 import photography.usecases.editing.EditingAccess.Protection
 import photography.domain.layout.SpreadId
 import photography.usecases.spread.SpreadManager
-import java.util.UUID
 
 object ChapterCompositionApi:
   def make[F[_]: Async](spreads: SpreadManager[F]): Routes[F] = new LiveChapterCompositionApi(spreads)
@@ -38,13 +37,8 @@ object ChapterCompositionApi:
       )
 
     private def decode(request: Request[F]) =
-      request.as[Json].map(value => Decoder[Order].decodeJson(value).leftMap(_.message))
-        .recover { case _: MessageBodyFailure => "Supply a valid composition".asLeft[Order] }
+      JsonBody.decode(request, Decoder[Order], malformed = "Supply a valid composition")(_.message)
         .flatMap(_.fold(message => BadRequest(Map("message" -> message)).map(_.asLeft[Order]), _.asRight[Response[F]].pure[F]))
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
 
     private given Decoder[SpreadId] =
       Decoder.decodeString.emap(value => CanonicalId.unapply(value).map(SpreadId(_)).toRight("Use canonical spread IDs"))

@@ -9,6 +9,7 @@ import org.typelevel.doobie.implicits.*
 import org.typelevel.doobie.{ConnectionIO, Fragment, Transactor}
 import org.typelevel.log4cats.Logger
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.adapters.sqlite.SqliteAlbumQueries
 import photography.domain.album.*
 import photography.domain.layout.*

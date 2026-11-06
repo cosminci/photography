@@ -393,7 +393,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls <- refs.calls.get
       yield
         assertEquals(read, (Status.Ok, json, MediaType.application.json.some, "no-store".some))
-        assertEquals(saved, (Status.NoContent, "", None, None))
+        assertEquals(saved, (Status.NoContent, "", None, "no-store".some))
         assertEquals(otherCalls, expected = Vector.empty[String])
         assertEquals(calls, expected = Vector(GearCall.Read(album.id, chapter.id), GearCall.Replace(album.id, chapter.id, selection = values)))
     }
@@ -424,7 +424,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     test(s"should translate chapter gear replacement $result"):
       val refs     = Refs()
       val server   = buildApi(refs, gearReplaceResult = result.pure[IO])
-      val expected = if status === Status.NoContent then (status, "", None, None) else encodeErrorResponse(status, code = code)
+      val expected = if status === Status.NoContent then (status, "", None, "no-store".some) else encodeErrorResponse(status, code = code)
 
       for
         response   <- sendRaw(server, Method.PUT, path = gearPath, body = selectedJson)
@@ -440,7 +440,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       val refs         = Refs()
       val server       = buildApi(refs, gearReplaceResult = GearReplaceResult.Rejected(reason).pure[IO])
       val expectedBody = Json.obj("message" -> Json.fromString(value = explain(reason))).noSpaces
-      val expected     = (Status.BadRequest, expectedBody, MediaType.application.json.some, None)
+      val expected     = (Status.BadRequest, expectedBody, MediaType.application.json.some, "no-store".some)
 
       for
         response   <- sendRaw(server, Method.PUT, path = gearPath, body = selectedJson)
@@ -508,7 +508,8 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         s"""{"cameraId":"${body.value}","lensIds":["${lens.value}","${lens.value}"]}]}"""
 
     val checkMalformed = malformed.traverse_ { case InvalidSelection(body, message) =>
-      val expected = (Status.BadRequest, Json.obj("message" -> Json.fromString(value = message)).noSpaces, MediaType.application.json.some, None)
+      val expected =
+        (Status.BadRequest, Json.obj("message" -> Json.fromString(value = message)).noSpaces, MediaType.application.json.some, "no-store".some)
 
       sendRaw(server, Method.PUT, path = gearPath, body = body).map(response => assertEquals(response, expected, clue = body))
     }
@@ -522,7 +523,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     yield
       assertEquals(otherCalls, expected = Vector.empty[String])
       assertEquals(before, expected = Vector.empty[GearCall])
-      assertEquals(forwarded, (Status.NoContent, "", None, None))
+      assertEquals(forwarded, (Status.NoContent, "", None, "no-store".some))
       assertEquals(after, expected = Vector(GearCall.Replace(album.id, chapter.id, selection = duplicate)))
 
   test("should forward independent album and chapter scopes and reject malformed route identities"):
@@ -667,7 +668,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
   private def encodeErrorResponse(status: Status, code: String) =
-    (status, Json.obj("code" -> Json.fromString(value = code)).noSpaces, MediaType.application.json.some, None)
+    (status, Json.obj("code" -> Json.fromString(value = code)).noSpaces, MediaType.application.json.some, "no-store".some)
 
   private def explain(reason: GearCatalog.Failure) = reason match
     case GearCatalog.Failure.DuplicateCamera    => "Select each camera only once"

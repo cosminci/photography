@@ -10,6 +10,7 @@ import io.circe.{Decoder, Json}
 import io.github.iltotore.iron.*
 import org.http4s.{Response, ServerSentEvent}
 import org.http4s.circe.CirceEntityCodec.*
+import org.http4s.circe.jsonOf
 import org.http4s.dsl.Http4sDsl
 import photography.adapters.http.EditorCredentials.*
 import photography.domain.editing.*
@@ -30,9 +31,9 @@ object EditorSessionApi:
         }
       case request @ GET -> Root / "api" / "editor-session" / "events" => Route.public {
           (requiredId(request, "X-Editor-Session"), requiredId(request, "X-Editor-Tab")).tupled match
-            case Left(message)         => BadRequest(code(message)).map(_.putHeaders("Cache-Control" -> "no-store"))
+            case Left(message)         => BadRequest(code(message))
             case Right((session, tab)) =>
-              Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("Cache-Control" -> "no-store", "X-Accel-Buffering" -> "no"))
+              Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("X-Accel-Buffering" -> "no"))
         }
       case request @ GET -> Root / "api" / "editor-session" => Route.public {
           withConnection(request)(connection =>
@@ -124,28 +125,28 @@ object EditorSessionApi:
     }
 
     private def register(request: Request[F]) =
-      request.attemptAs[Json].value.flatMap {
-        case Left(_)     => BadRequest(code("invalid_registration"))
-        case Right(body) =>
-          (registration.decodeJson(body).leftMap(_ => "invalid_registration"), optionalId(request, "X-Editor-Session")).tupled match
-            case Left(message)                         => BadRequest(code(message))
-            case Right(((owner, alias), maybeSession)) =>
+      request.attemptAs[(EditorId, EditorAlias)](using jsonOf[F, (EditorId, EditorAlias)](using Async[F], registration)).value.flatMap {
+        case Left(_)               => BadRequest(code("invalid_registration"))
+        case Right((owner, alias)) =>
+          optionalId(request, "X-Editor-Session") match
+            case Left(message)       => BadRequest(code(message))
+            case Right(maybeSession) =>
               sessions.register(owner, alias, maybeSession.map(SessionId(_))).flatMap {
                 case RegisterResult.Ready(session)     => Ok(encodeSession(session))
                 case RegisterResult.CredentialRequired => Conflict(code("credential_required"))
               }
-      }.map(_.putHeaders("Cache-Control" -> "no-store"))
+      }
 
     private def withConnection(request: Request[F])(run: EditorConnection => F[Response[F]]) =
-      readConnection(request).fold(message => BadRequest(code(message)), run).map(_.putHeaders("Cache-Control" -> "no-store"))
+      readConnection(request).fold(message => BadRequest(code(message)), run)
 
     private def withGrant(request: Request[F])(run: GrantId => F[Response[F]]) =
       requiredId(request, "X-Editor-Grant").fold(message => BadRequest(code(message)), id => run(GrantId(id)))
 
     private def withBody[A](request: Request[F], decoder: Decoder[A])(run: A => F[Response[F]]) =
-      request.attemptAs[Json].value.flatMap {
+      request.attemptAs[A](using jsonOf[F, A](using Async[F], decoder)).value.flatMap {
         case Left(_)     => BadRequest(code("invalid_target_request"))
-        case Right(body) => decoder.decodeJson(body).fold(_ => BadRequest(code("invalid_target_request")), run)
+        case Right(body) => run(body)
       }
 
     private val revision = Decoder.decodeString.emap(value =>

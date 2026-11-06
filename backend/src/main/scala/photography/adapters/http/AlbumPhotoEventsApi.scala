@@ -13,7 +13,6 @@ import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.AlbumId
 import photography.usecases.photo.AlbumPhotoEvents
 import photography.usecases.photo.AlbumPhotoEvents.{Event, SubscribeResult}
-import java.util.UUID
 import scala.concurrent.duration.*
 
 trait AlbumPhotoEventsApi[F[_]] extends Routes[F]
@@ -27,7 +26,7 @@ object AlbumPhotoEventsApi:
           events.subscribe(AlbumId(id)).flatMap:
             case SubscribeResult.Opened(notifications) =>
               val heartbeat = Stream.awakeEvery[F](15.seconds).as(ServerSentEvent(comment = "heartbeat".some))
-              Ok(notifications.map(encodeEvent).merge(heartbeat)).map(_.putHeaders("Cache-Control" -> "no-store", "X-Accel-Buffering" -> "no"))
+              Ok(notifications.map(encodeEvent).merge(heartbeat)).map(_.putHeaders("X-Accel-Buffering" -> "no"))
             case SubscribeResult.AlbumNotFound() => NotFound(Map("code" -> "album_not_found"))
             case SubscribeResult.Failed()        => InternalServerError(Map("code" -> "service_failure"))
         }
@@ -39,7 +38,3 @@ object AlbumPhotoEventsApi:
       case Event.InventoryChanged(chapter) =>
         val data = Json.obj("chapterId" -> Json.fromString(chapter.value.toString)).noSpaces
         ServerSentEvent(data = data.some, eventType = "inventory-changed".some)
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)

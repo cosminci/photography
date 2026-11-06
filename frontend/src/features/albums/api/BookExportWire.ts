@@ -1,43 +1,28 @@
-import { readArray, readRecord, readText } from "./Wire";
+import { array, literal, object, objectWithRest, parse, picklist, string, unknown, variant } from "valibot";
+import { jsonObject } from "../../../shared/Json";
 import type { BookDownload, ExportIssue } from "../model/BookExport";
 
-export function readExportIssues(value: unknown): readonly ExportIssue[] {
-  return readArray(value).map((entry) => {
-    const fields = readRecord(entry);
-    const severity = fields["severity"];
-    if (severity !== "blocking" && severity !== "warning") throw new Error("Invalid export issue severity");
-    const target = Object.fromEntries(Object.entries(readRecord(fields["target"])).map(([key, field]) => [key, readText(field)]));
-    switch (readText(target["kind"])) {
-      case "album":
-        break;
-      case "chapter":
-        readText(target["chapter"]);
-        break;
-      case "slot":
-        readText(target["spread"]);
-        readText(target["slot"]);
-        break;
-      case "cover":
-        readText(target["slot"]);
-        break;
-      case "photo":
-        readText(target["photo"]);
-        break;
-      default:
-        throw new Error("Invalid export issue target");
-    }
-    return { code: readText(fields["code"]), severity, target, message: readText(fields["message"]) };
-  });
-}
+const target = variant("kind", [
+  objectWithRest({ kind: literal("album") }, string()),
+  objectWithRest({ kind: literal("chapter"), chapter: string() }, string()),
+  objectWithRest({ kind: literal("slot"), spread: string(), slot: string() }, string()),
+  objectWithRest({ kind: literal("cover"), slot: string() }, string()),
+  objectWithRest({ kind: literal("photo"), photo: string() }, string()),
+]);
+const issues = array(object({ code: string(), severity: picklist(["blocking", "warning"]), target, message: string() }));
+const download = object({
+  formatVersion: literal(1),
+  album: jsonObject,
+  interior: jsonObject,
+  cover: jsonObject,
+  gear: jsonObject,
+  sources: array(unknown()),
+  chapters: array(unknown()),
+  warnings: issues,
+});
 
+export const readExportIssues = (value: unknown): readonly ExportIssue[] => parse(issues, value);
 export function readBookDownload(value: unknown): BookDownload {
-  const fields = readRecord(value);
-  if (fields["formatVersion"] !== 1) throw new Error("Unsupported InDesign export format");
-  readRecord(fields["album"]);
-  readRecord(fields["interior"]);
-  readRecord(fields["cover"]);
-  readRecord(fields["gear"]);
-  readArray(fields["sources"]);
-  readArray(fields["chapters"]);
-  return { content: JSON.stringify(value), warnings: readExportIssues(fields["warnings"]) };
+  const { warnings } = parse(download, value);
+  return { content: JSON.stringify(value), warnings };
 }

@@ -3,11 +3,11 @@ package photography.adapters.sqlite.spread
 import cats.data.NonEmptyList
 import cats.effect.Async
 import cats.syntax.all.*
-import io.github.iltotore.iron.*
-import org.typelevel.doobie.{ConnectionIO, Meta, Transactor}
+import org.typelevel.doobie.{ConnectionIO, Transactor}
 import org.typelevel.doobie.implicits.*
 import org.typelevel.log4cats.Logger
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.domain.layout.*
 import photography.ports.spread.SpreadTemplateRepository
 import photography.ports.spread.SpreadTemplateRepository.*
@@ -100,6 +100,3 @@ object SqliteSpreadTemplateRepository:
         texts match
           case text :: Nil if photos.nonEmpty && photos.size + 1 === rows.size => (photos, text).pure[ConnectionIO]
           case _ => new IllegalArgumentException(s"Invalid opening slots for template $id").raiseError[ConnectionIO, (Vector[SlotBox], SlotBox)]
-
-    private given Meta[SpreadTemplateName] =
-      Meta[String].tiemap[SpreadTemplateName](_.refineEither)(value => value: String)

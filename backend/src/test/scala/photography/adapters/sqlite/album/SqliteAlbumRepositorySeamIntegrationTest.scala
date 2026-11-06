@@ -13,6 +13,7 @@ import org.typelevel.log4cats.slf4j.Slf4jLogger
 import org.sqlite.{SQLiteErrorCode, SQLiteException}
 import photography.adapters.sqlite.{FlywayMigrator, SqliteConnection}
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.app.config.SqliteConfig
 import photography.domain.album.*
 import photography.domain.gear.CameraSelection

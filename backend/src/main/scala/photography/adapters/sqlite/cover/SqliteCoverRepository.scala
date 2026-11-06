@@ -5,6 +5,7 @@ import cats.syntax.all.*
 import org.typelevel.doobie.{ConnectionIO, Read}
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.adapters.sqlite.SqliteAlbumQueries
 import photography.domain.album.{AlbumId, PhotoId, InteriorSpreadCount}
 import photography.domain.layout.*

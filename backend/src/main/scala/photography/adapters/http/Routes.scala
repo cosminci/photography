@@ -1,10 +1,11 @@
 package photography.adapters.http
 
-import cats.Monad
+import cats.{Functor, Monad}
 import cats.data.{Kleisli, OptionT}
 import cats.syntax.all.*
-import org.http4s.{HttpRoutes, Request, Response, Status}
+import org.http4s.{Headers, HttpRoutes, Request, Response, Status}
 import org.http4s.circe.CirceEntityCodec.*
+import org.http4s.server.middleware.StaticHeaders
 import photography.adapters.http.EditorCredentials.*
 import photography.usecases.editing.EditingAccess
 import photography.usecases.editing.EditingAccess.Protection
@@ -62,5 +63,9 @@ object Routes:
                         "alias"   -> alias
                       ))
             }
-          ).map(_.putHeaders("Cache-Control" -> "no-store"))
-    Kleisli(request => OptionT(definitions.routes.lift(request).traverse(route => serve(request, route))))
+          )
+    val routes: HttpRoutes[F] = Kleisli(request => OptionT(definitions.routes.lift(request).traverse(route => serve(request, route))))
+    val uncached              = preventCaching(routes)
+    Kleisli(request => if request.pathInfo.segments.headOption.exists(_.decoded() === "api") then uncached(request) else routes(request))
+
+  def preventCaching[F[_]: Functor](routes: HttpRoutes[F]): HttpRoutes[F] = StaticHeaders(Headers("Cache-Control" -> "no-store"))(routes)

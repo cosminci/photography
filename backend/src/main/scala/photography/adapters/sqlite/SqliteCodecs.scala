@@ -1,9 +1,9 @@
 package photography.adapters.sqlite
 
 import cats.syntax.all.*
-import io.github.iltotore.iron.*
+import io.github.iltotore.iron.doobie.given
 import org.typelevel.doobie.{Meta, Read, Write}
-import photography.domain.album.{AbsoluteLocation, AlbumTitle, AlbumYear, CountryCode, CountryName, PhotoSource, InteriorSpreadCount}
+import photography.domain.album.AbsoluteLocation
 import photography.domain.layout.*
 
 import java.nio.file.{InvalidPathException, Path}
@@ -16,8 +16,6 @@ private[sqlite] object SqliteCodecs:
       Either.cond(id.toString === value, id, s"Noncanonical UUID: $value")
   }(_.toString)
 
-  given Meta[CountryCode]      = Meta[String].tiemap[CountryCode](_.refineEither)(value => value: String)
-  given Meta[CountryName]      = Meta[String].tiemap[CountryName](_.refineEither)(value => value: String)
   given Meta[AbsoluteLocation] = Meta[String].tiemap[AbsoluteLocation] { value =>
     Either.catchOnly[InvalidPathException](Path.of(value)).leftMap(_.getMessage).flatMap: path =>
       Either.cond(path.isAbsolute, AbsoluteLocation(path), "Expected absolute flag path")
@@ -27,25 +25,13 @@ private[sqlite] object SqliteCodecs:
     // $COVERAGE-ON$
   }
 
-  private given Meta[PositionOnSpread] =
-    Meta[Double].tiemap[PositionOnSpread](_.refineEither)(value => value: Double)
-
-  private given Meta[DistanceWithinSpread] =
-    Meta[Double].tiemap[DistanceWithinSpread](_.refineEither)(value => value: Double)
-
   given Read[SlotBox] =
     Read[(PositionOnSpread, PositionOnSpread, DistanceWithinSpread, DistanceWithinSpread)].map(SlotBox.apply.tupled)
 
   given Write[SlotBox] =
     Write[(PositionOnSpread, PositionOnSpread, DistanceWithinSpread, DistanceWithinSpread)].contramap(box => (box.x, box.y, box.width, box.height))
 
-  given Meta[AlbumYear]           = Meta[Int].tiemap[AlbumYear](_.refineEither)(value => value: Int)
-  given Meta[InteriorSpreadCount] = Meta[Int].tiemap[InteriorSpreadCount](_.refineEither)(value => value: Int)
-  given Meta[AlbumTitle]          = Meta[String].tiemap[AlbumTitle](_.refineEither)(value => value: String)
-  given Meta[PhotoSource]         = Meta[String].tiemap[PhotoSource](_.refineEither)(value => value: String)
-  given Meta[Instant]             = Meta[Long].timap[Instant](Instant.ofEpochMilli)(_.toEpochMilli)
-  given Meta[InDesignPoints]      = Meta[Double].tiemap[InDesignPoints](_.refineEither)(value => value: Double)
-  given Meta[Zoom]                = Meta[Double].tiemap[Zoom](_.refineEither)(value => value: Double)
+  given Meta[Instant] = Meta[Long].timap[Instant](Instant.ofEpochMilli)(_.toEpochMilli)
 
   given Meta[CaptionCorner] = Meta[String].tiemap[CaptionCorner] {
     case "top_left"     => CaptionCorner.TopLeft.asRight[String]

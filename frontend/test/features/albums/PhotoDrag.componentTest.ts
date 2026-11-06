@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { photoDragType, startPhotoDrag } from "../../../src/features/albums/workspace/PhotoDrag";
+import { photoDragType, readPhotoChoice, startPhotoDrag } from "../../../src/features/albums/workspace/PhotoDrag";
 
 describe("rendered photo drag previews", () => {
+  it.each(["oops", "null", "[]", '{"kind":"other"}', '{"kind":"photo","photoId":1}'])("should reject foreign drag %s", (value) => {
+    expect(readPhotoChoice(value)).toBeUndefined();
+  });
+
+  it("should preserve photo and move identities from native drag data", () => {
+    expect(readPhotoChoice('{"kind":"photo","photoId":"photo"}')).toEqual({ kind: "photo", photoId: "photo" });
+    expect(readPhotoChoice('{"kind":"move","placementId":"placement"}')).toEqual({ kind: "move", placementId: "placement" });
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

@@ -175,12 +175,33 @@ describe("editor session HTTP translation", () => {
     { response: () => new Response('event: bound\ndata: {"sessionId":"invalid"}\n\n', { headers: { "Content-Type": "text/event-stream" } }) },
     { response: () => new Response("event: bound\ndata: {", { headers: { "Content-Type": "text/event-stream" } }) },
     { response: () => new Response("x".repeat(65_537), { headers: { "Content-Type": "text/event-stream" } }) },
+    {
+      response: () =>
+        new Response(`event: ownership_changed\ndata: {"padding":"${"x".repeat(65_537)}"}\n\n`, { headers: { "Content-Type": "text/event-stream" } }),
+    },
+    { response: () => new Response(new Uint8Array([0xc3]), { headers: { "Content-Type": "text/event-stream" } }) },
   ])("should reject unavailable, truncated or invalid tab streams %#", async ({ response }) => {
     const receive = vi.fn();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(response());
 
     await expect(makeHttpEditorSession(fetcher).subscribe(sessionId, tabId, receive, new AbortController().signal)).rejects.toThrow();
     expect(receive).not.toHaveBeenCalled();
+  });
+
+  it.each(["\n", "\r", "\r\n"])("should honor the final event field with %j framing across byte boundaries", async (separator) => {
+    const bytes = new TextEncoder().encode(`event: unknown${separator}event: ownership_changed${separator}data: {}${separator}${separator}`);
+    const receive = vi.fn();
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+        controller.close();
+      },
+    });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(stream, { headers: { "Content-Type": "text/event-stream" } }));
+
+    await makeHttpEditorSession(fetcher).subscribe(sessionId, tabId, receive, new AbortController().signal);
+
+    expect(receive).toHaveBeenCalledExactlyOnceWith({ kind: "ownership_changed" });
   });
 
   it("should accept session loss, ignore comments and stop delivery when a listener aborts", async () => {

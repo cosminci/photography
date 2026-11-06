@@ -25,7 +25,7 @@ private[http] object EditorCredentials:
       case _            => "invalid_credentials".asLeft[Option[UUID]]
 
   def parseId(value: String): Either[String, UUID] =
-    Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value).toRight("invalid_credentials")
+    CanonicalId.unapply(value).toRight("invalid_credentials")
 
   def encodeFailure(reason: Failure): String = reason match
     case Failure.StaleSession       => "stale_session"

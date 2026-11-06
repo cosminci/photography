@@ -19,7 +19,7 @@ object StaticSite:
       new LiveStaticSite(api, assetRoot, ExecutionContext.fromExecutor(executor))
 
   final private class LiveStaticSite[F[_]: Async](api: HttpRoutes[F], assetRoot: String, acquisitionContext: ExecutionContext) extends StaticSite[F]:
-    override val app: HttpApp[F] = (api <+> buildMissingApiRoutes <+> DefaultHead(buildFrontendRoutes)).orNotFound
+    override val app: HttpApp[F] = (api <+> Routes.preventCaching(buildMissingApiRoutes) <+> DefaultHead(buildFrontendRoutes)).orNotFound
 
     private def buildMissingApiRoutes = HttpRoutes.of[F]:
       case request if request.pathInfo.segments.headOption.exists(_.decoded() === "api") =>

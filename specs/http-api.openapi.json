@@ -3,7 +3,7 @@
   "info": {
     "title": "Photography album API",
     "version": "1.0.0",
-    "description": "Same-origin REST API. JSON responses use application/json. Unmatched /api requests return 404 with {\"code\":\"not_found\"}."
+    "description": "Same-origin REST API. JSON responses use application/json. Every /api response, including errors and unmatched routes, uses Cache-Control: no-store. Thumbnail and static-resource caching remain independent. Unmatched /api requests return 404 with {\"code\":\"not_found\"}."
   },
   "servers": [{ "url": "/" }],
   "paths": {

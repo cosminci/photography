@@ -9,9 +9,8 @@ import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, HCursor, Json}
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
-import org.http4s.{CacheDirective, MessageBodyFailure}
-import org.http4s.headers.`Cache-Control`
 import org.http4s.circe.CirceEntityCodec.*
+import org.http4s.circe.jsonOf
 import org.http4s.dsl.Http4sDsl
 import photography.domain.album.*
 import photography.usecases.chapter.ChapterMetadataManager
@@ -25,7 +24,6 @@ import photography.usecases.editing.EditingAccess.Protection
 
 import java.time.{DateTimeException, LocalDate}
 import java.time.temporal.ChronoUnit
-import java.util.UUID
 
 trait ChapterApi[F[_]] extends Routes[F]
 
@@ -73,12 +71,8 @@ object ChapterApi:
     }
 
     private def saveDescription(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      val decode = request.as[Json].flatMap { value =>
-        value.hcursor.get[String](k = "text").fold(
-          _ => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]),
-          _.asRight[Response[F]].pure[F]
-        )
-      }.recoverWith { case _: MessageBodyFailure => BadRequest(body = Map("message" -> "Supply a text string")).map(_.asLeft[String]) }
+      val decode = request.attemptAs[String](using jsonOf[F, String](using Async[F], JsonBody.text)).value
+        .flatMap(_.fold(_ => BadRequest(Map("message" -> "Supply a text string")).map(_.asLeft[String]), _.asRight[Response[F]].pure[F]))
       Route(
         Routes.Access.Editor(Protection.OwnChapterOpening(album, chapter)),
         decode,
@@ -95,7 +89,7 @@ object ChapterApi:
     private def readGear(album: AlbumId, chapter: ChapterId) =
       gear.readGear(album, chapter).flatMap:
         case GearReadResult.Found(selection) =>
-          Ok(encodeSelection(selection = selection)).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+          Ok(encodeSelection(selection = selection))
         case GearReadResult.NotFound => chapterNotFound
         case GearReadResult.Failed   => serviceFailure
 
@@ -111,8 +105,7 @@ object ChapterApi:
             case GearReplaceResult.Uncertain        => InternalServerError(body = Map("code" -> "mutation_uncertain"))
 
     private def decodeGear(request: Request[F]) =
-      request.as[Json].map(value => selectionDecoder.decodeJson(value).leftMap(_.getMessage))
-        .recover { case _: MessageBodyFailure => "Supply a valid JSON gear selection".asLeft[GearSelection] }
+      JsonBody.decode(request, selectionDecoder, malformed = "Supply a valid JSON gear selection")(_.getMessage)
 
     private val idDecoder = Decoder.decodeString.emap(value => CanonicalId.unapply(value).toRight(left = "Gear IDs must be canonical UUIDs"))
     private given Decoder[CameraId]        = idDecoder.map(value => CameraId(value = value))
@@ -150,7 +143,6 @@ object ChapterApi:
     private def read(id: AlbumId) =
       metadata.chapters(id).flatMap:
         case AlbumRepository.ChaptersResult.Found(values) => Ok(Json.obj("chapters" -> Json.arr(values.map(encodeChapter)*)))
-            .map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
         case AlbumRepository.ChaptersResult.AlbumNotFound => albumNotFound
         case AlbumRepository.ChaptersResult.Failed(_)     => serviceFailure
 
@@ -200,8 +192,7 @@ object ChapterApi:
         case _                                                    => serviceFailure
 
     private def decode[A](request: Request[F], decoder: Decoder[A]) =
-      request.as[Json].map(value => decoder.decodeJson(value).leftMap(_.getMessage))
-        .recover { case _: MessageBodyFailure => "Supply a valid JSON chapter object".asLeft[A] }
+      JsonBody.decode(request, decoder, malformed = "Supply a valid JSON chapter object")(_.getMessage)
 
     private def albumNotFound   = NotFound(Map("code" -> "album_not_found"))
     private def chapterNotFound = NotFound(Map("code" -> "chapter_not_found"))
@@ -220,10 +211,6 @@ object ChapterApi:
       case ChapterConflict.FolderAssigned     => "Another chapter already uses that source folder"
       case ChapterConflict.TypeChange         => "A chapter's type cannot change"
       case ChapterConflict.UnknownCountries   => "Select countries from the country catalog"
-
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
 
     private given Decoder[CountryId] = Decoder.decodeString.emap: value =>
       CanonicalId.unapply(value).map(CountryId(_)).toRight("Country IDs must be canonical UUIDs")

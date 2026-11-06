@@ -7,6 +7,7 @@ import org.typelevel.doobie.{ConnectionIO, Fragment, Meta, Read}
 import org.typelevel.doobie.free.connection
 import org.typelevel.doobie.implicits.*
 import photography.adapters.sqlite.SqliteCodecs.given
+import io.github.iltotore.iron.doobie.given
 import photography.domain.album.*
 import photography.ports.photo.PhotoRepository
 import photography.ports.photo.PhotoRepository.*
@@ -155,10 +156,6 @@ object SqlitePhotoRepository:
             .asRight[IllegalArgumentException]
         case _ => new IllegalArgumentException("Invalid photo write evidence").asLeft[PhotoWriteIntent]
 
-    private given refinedStringMeta[C](using RuntimeConstraint[String, C]): Meta[String :| C] =
-      Meta[String].tiemap[String :| C](_.refineEither[C])(value => value: String)
-    private given refinedIntMeta[C](using RuntimeConstraint[Int, C]): Meta[Int :| C] =
-      Meta[Int].tiemap[Int :| C](_.refineEither[C])(value => value: Int)
     private val captureFormat         = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSSSSS", Locale.ROOT)
     private given Meta[LocalDateTime] = Meta[String].tiemap { value =>
       Either.catchOnly[DateTimeParseException](LocalDateTime.parse(value, captureFormat)).leftMap(_.getMessage).flatMap: parsed =>

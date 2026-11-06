@@ -1,85 +1,52 @@
+import { array, check, minValue, nullable, object, parse, picklist, pipe, regex, safeInteger, string } from "valibot";
 import { issueCodes, issueStages, processingStates, schedulingStates, type Photo, type PhotoInventory, type Scheduling } from "../model/Photo";
 import { isCalendarDay } from "../workspace/ChapterDetails";
-import { readArray, readNumber, readRecord, readText } from "./Wire";
+import { finiteNumber, nonemptyText } from "./Wire";
 
-export function readPhotoInventory(value: unknown): PhotoInventory {
-  const fields = readRecord(value);
-  const photos = readArray(fields["photos"]).map(readPhoto);
-  const counts = readRecord(fields["counts"]);
-  const unplaced = readCount(counts["unplaced"]);
-  const total = readCount(counts["total"]);
-  const placedPhotoIds = readArray(fields["placedPhotoIds"]).map(readIdentity);
-  if (total !== photos.length || unplaced > total || new Set(photos.map((photo) => photo.id)).size !== total)
-    throw new Error("Invalid photo counts or identities");
-  if (
-    new Set(placedPhotoIds).size !== placedPhotoIds.length ||
-    placedPhotoIds.some((id) => !photos.some((photo) => photo.id === id)) ||
-    total - placedPhotoIds.length !== unplaced
-  )
-    throw new Error("Invalid placed photo identities");
-  const processing = readRecord(fields["processing"]);
-  return {
-    photos,
-    placedPhotoIds,
-    counts: { unplaced, total },
-    processing: {
-      state: readChoice(processing["state"], processingStates),
-      unsupportedCount: readCount(processing["unsupportedCount"]),
-      skippedCount: readCount(processing["skippedCount"]),
-      issues: readArray(processing["issues"]).map((entry) => {
-        const issue = readRecord(entry);
-        return {
-          stage: readChoice(issue["stage"], issueStages),
-          code: readChoice(issue["code"], issueCodes),
-          filename: readNullableText(issue["filename"]),
-        };
-      }),
-    },
-  };
-}
+const count = pipe(finiteNumber, safeInteger(), minValue(0));
+const dimension = pipe(count, minValue(1));
+export const scheduling = picklist(schedulingStates);
+const capturedLocal = nullable(
+  pipe(
+    string(),
+    regex(/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?$/),
+    check((value) => isCalendarDay(value.slice(0, 10))),
+  ),
+);
+const photo = object({
+  id: nonemptyText,
+  filename: nonemptyText,
+  capturedLocal,
+  width: dimension,
+  height: dimension,
+  caption: nullable(string()),
+  thumbnail: object({ url: nonemptyText, width: dimension, height: dimension }),
+});
+const inventory = pipe(
+  object({
+    photos: array(photo),
+    placedPhotoIds: array(nonemptyText),
+    counts: object({ unplaced: count, total: count }),
+    processing: object({
+      state: picklist(processingStates),
+      unsupportedCount: count,
+      skippedCount: count,
+      issues: array(object({ stage: picklist(issueStages), code: picklist(issueCodes), filename: nullable(string()) })),
+    }),
+  }),
+  check(({ photos, placedPhotoIds, counts }) => {
+    const identities = new Set(photos.map((entry) => entry.id));
+    return (
+      counts.total === photos.length &&
+      counts.unplaced <= counts.total &&
+      identities.size === counts.total &&
+      new Set(placedPhotoIds).size === placedPhotoIds.length &&
+      placedPhotoIds.every((id) => identities.has(id)) &&
+      counts.total - placedPhotoIds.length === counts.unplaced
+    );
+  }),
+);
 
-export function readScheduling(value: unknown): Scheduling {
-  return readChoice(readRecord(value)["scheduling"], schedulingStates);
-}
-
-export function readPhoto(value: unknown): Photo {
-  const fields = readRecord(value);
-  const thumbnail = readRecord(fields["thumbnail"]);
-  const capturedLocal = readNullableText(fields["capturedLocal"]);
-  if (
-    capturedLocal !== null &&
-    (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?$/.test(capturedLocal) || !isCalendarDay(capturedLocal.slice(0, 10)))
-  )
-    throw new Error("Invalid camera-local capture time");
-  return {
-    id: readIdentity(fields["id"]),
-    filename: readIdentity(fields["filename"]),
-    capturedLocal,
-    width: readCount(fields["width"], 1),
-    height: readCount(fields["height"], 1),
-    caption: readNullableText(fields["caption"]),
-    thumbnail: { url: readIdentity(thumbnail["url"]), width: readCount(thumbnail["width"], 1), height: readCount(thumbnail["height"], 1) },
-  };
-}
-
-function readCount(value: unknown, minimum = 0): number {
-  const count = readNumber(value);
-  if (!Number.isSafeInteger(count) || count < minimum) throw new Error("Invalid photo measurement");
-  return count;
-}
-
-function readIdentity(value: unknown): string {
-  const text = readText(value);
-  if (text.length === 0) throw new Error("Expected a nonempty photo value");
-  return text;
-}
-
-function readNullableText(value: unknown): string | null {
-  return value === null ? null : readText(value);
-}
-
-function readChoice<T extends string>(value: unknown, choices: readonly T[]): T {
-  const choice = choices.find((candidate) => candidate === value);
-  if (choice === undefined) throw new Error("Unknown photo feedback");
-  return choice;
-}
+export const readPhotoInventory = (value: unknown): PhotoInventory => parse(inventory, value);
+export const readScheduling = (value: unknown): Scheduling => parse(object({ scheduling }), value).scheduling;
+export const readPhoto = (value: unknown): Photo => parse(photo, value);

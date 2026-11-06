@@ -6,16 +6,12 @@ import org.http4s.Request
 import cats.effect.Async
 import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, Encoder, Json}
-import io.github.iltotore.iron.*
-import io.github.iltotore.iron.constraint.all.*
-import org.http4s.{CacheDirective, MessageBodyFailure}
+import io.github.iltotore.iron.circe.given
 import org.http4s.circe.CirceEntityCodec.*
 import org.http4s.dsl.Http4sDsl
-import org.http4s.headers.`Cache-Control`
 import photography.domain.gear.*
 import photography.usecases.gear.GearManager
 import photography.usecases.gear.GearManager.*
-import java.util.UUID
 
 trait GearApi[F[_]] extends Routes[F]
 
@@ -37,7 +33,7 @@ object GearApi:
 
     private def readCatalog =
       gear.readCatalog.flatMap:
-        case CatalogResult.Found(catalog) => Ok(catalog).map(_.putHeaders(`Cache-Control`(CacheDirective.`no-store`)))
+        case CatalogResult.Found(catalog) => Ok(catalog)
         case CatalogResult.Failed         => respondServiceFailure
 
     private def createCamera(request: Request[F]) =
@@ -101,8 +97,7 @@ object GearApi:
         case LensDeleteResult.Uncertain => respondMutationUncertain
 
     private def decode[A](request: Request[F], decoder: Decoder[A]) =
-      request.as[Json].map(value => decoder.decodeJson(value).leftMap(_.getMessage))
-        .recover { case _: MessageBodyFailure => "Supply a valid JSON gear object".asLeft[A] }
+      JsonBody.decode(request, decoder, malformed = "Supply a valid JSON gear object")(_.getMessage)
 
     private def respondCameraNotFound       = NotFound(body = Map("code" -> "camera_not_found"))
     private def respondLensNotFound         = NotFound(body = Map("code" -> "lens_not_found"))
@@ -111,11 +106,6 @@ object GearApi:
     private def respondServiceFailure       = InternalServerError(body = Map("code" -> "service_failure"))
     private def respondMutationUncertain    = InternalServerError(body = Map("code" -> "mutation_uncertain"))
 
-    private object CanonicalId:
-      def unapply(value: String): Option[UUID] =
-        Either.catchOnly[IllegalArgumentException](UUID.fromString(value)).toOption.filter(_.toString === value)
-
-    private val textDecoder          = Decoder.decodeString.emap(_.refineEither[Not[Empty]])
     private given Decoder[LensMount] = Decoder.decodeString.emap:
       case "sony_e"  => LensMount.SonyE.asRight[String]
       case "nikon_z" => LensMount.NikonZ.asRight[String]
@@ -141,15 +131,15 @@ object GearApi:
 
     private val cameraDecoder = Decoder.instance[(CameraExifCode, CameraName, CameraKind)]: cursor =>
       for
-        code <- cursor.get[CameraExifCode](k = "code")(using textDecoder)
-        name <- cursor.get[CameraName](k = "name")(using textDecoder)
+        code <- cursor.get[CameraExifCode](k = "code")
+        name <- cursor.get[CameraName](k = "name")
         kind <- kindDecoder(cursor)
       yield (code, name, kind)
 
     private val lensDecoder = Decoder.instance[(LensExifCode, LensName, LensMount, SensorFormat)]: cursor =>
       for
-        code     <- cursor.get[LensExifCode](k = "code")(using textDecoder)
-        name     <- cursor.get[LensName](k = "name")(using textDecoder)
+        code     <- cursor.get[LensExifCode](k = "code")
+        name     <- cursor.get[LensName](k = "name")
         mount    <- cursor.get[LensMount](k = "mount")
         coverage <- cursor.get[SensorFormat](k = "coverage")
       yield (code, name, mount, coverage)
