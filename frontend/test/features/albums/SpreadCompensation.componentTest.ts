@@ -1,7 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSpreadCompensation } from "../../../src/features/albums/workspace/SpreadCompensation";
+import { createPlacementCompensation } from "../../../src/features/albums/workspace/PlacementCompensation";
+import type * as PlacementCompensationModule from "../../../src/features/albums/workspace/PlacementCompensation";
 import type { SpreadSnapshot } from "../../../src/features/albums/model/Placement";
-import { AlbumRequestError, type AlbumClient } from "../../../src/features/albums/model/Album";
+import type { HistoryOutcome } from "../../../src/features/albums/workspace/BookHistory";
+import { AlbumRequestError } from "../../../src/features/albums/model/Album";
+
+vi.mock("../../../src/features/albums/workspace/PlacementCompensation", async (original) => ({
+  ...(await original<typeof PlacementCompensationModule>()),
+  createPlacementCompensation: vi.fn(),
+}));
 
 const spread: SpreadSnapshot = {
   kind: "spread",
@@ -9,130 +17,76 @@ const spread: SpreadSnapshot = {
   placements: [],
   layout: { kind: "photos_only", templateId: "template", bleed: { state: "disabled", available: false }, slots: [] },
 };
-function build(present = false, saved = spread) {
-  let order = present ? ["opening", "deleted", "next"] : ["opening", "next"];
-  const identities = new Map<string, string>();
-  const resolve = (id: string) => identities.get(id) ?? id;
-  const prepare = vi.fn().mockResolvedValue(undefined);
-  const removed = vi.fn();
-  const addSpread = vi.fn(() => {
-    order = ["opening", "new", "next"];
-    return Promise.resolve("new");
-  });
-  const deleteSpread = vi.fn(() => {
-    order = ["opening", "next"];
-    return Promise.resolve();
-  });
-  const readPlacements = vi.fn<AlbumClient["readPlacements"]>().mockImplementation(() => Promise.resolve({ ...saved, id: resolve(saved.id) }));
-  const editPlacements = vi.fn().mockRejectedValue(new AlbumRequestError(422, "Photo unavailable."));
-  const action = createSpreadCompensation({
-    album: "album",
-    chapter: "chapter",
-    spread: saved,
-    order: ["opening", "deleted", "next"],
-    present,
-    identities: {
-      resolve,
-      replace: (oldId, newId) => {
-        identities.set(oldId, newId);
-      },
-    },
-    prepare,
-    removed,
-    client: {
-      addSpread,
-      deleteSpread,
-      readPlacements,
-      editPlacements,
-      templates: vi.fn(),
-      changeSpreadTemplate: vi.fn(),
-      composition: () => Promise.resolve(order.map((id) => ({ id, chapter: "chapter" }))),
-    },
-  });
-  return {
-    action,
-    prepare,
-    removed,
-    addSpread,
-    deleteSpread,
-    readPlacements,
-    editPlacements,
-    setOrder: (value: string[]) => {
-      order = value;
-    },
-  };
-}
+const openingMember = { id: "opening", chapter: "chapter" };
+const nextMember = { id: "next", chapter: "chapter" };
+const absent = [openingMember, nextMember];
+const present = [openingMember, { id: "deleted", chapter: "chapter" }, nextMember];
+const recreated = [openingMember, { id: "new", chapter: "chapter" }, nextMember];
 
-describe("spread compensating commands", () => {
-  it("should reject a malformed spread history without a chapter predecessor", () => {
-    expect(() =>
-      createSpreadCompensation({
-        album: "album",
-        chapter: "chapter",
-        spread,
-        order: ["deleted"],
-        present: false,
-        identities: { resolve: (id) => id, replace: vi.fn() },
-        prepare: vi.fn(),
-        removed: vi.fn(),
-        client: {
-          addSpread: vi.fn(),
-          deleteSpread: vi.fn(),
-          readPlacements: vi.fn(),
-          editPlacements: vi.fn(),
-          templates: vi.fn(),
-          changeSpreadTemplate: vi.fn(),
-          composition: vi.fn(),
-        },
-      }),
-    ).toThrow("must follow a chapter opening");
+describe("SpreadCompensation", () => {
+  beforeEach(() => {
+    vi.mocked(createPlacementCompensation).mockReset();
+    vi.mocked(createPlacementCompensation).mockReturnValue({
+      label: "Restore placements",
+      apply: vi.fn().mockResolvedValue({ kind: "saved" }),
+      reconcile: vi.fn().mockResolvedValue({ kind: "saved" }),
+    });
   });
 
-  it("should refuse a changed order without adding or removing anything", async () => {
+  it("should reject history without a chapter predecessor", () => {
     const built = build();
-    built.setOrder(["next", "opening"]);
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "conflict" });
-    expect(built.addSpread).not.toHaveBeenCalled();
-    expect(built.deleteSpread).not.toHaveBeenCalled();
+
+    expect(() => createSpreadCompensation({ ...built.operations, order: ["deleted"] })).toThrow("must follow a chapter opening");
   });
 
-  it("should not create a spread when the browser session is unavailable", async () => {
+  it("should reject changed membership before granting access or writing", async () => {
     const built = build();
-    built.prepare.mockResolvedValue("Reconnect first.");
+    built.client.composition.mockResolvedValue([...absent].reverse());
+
+    expect(await built.action.apply("undo")).toEqual({ kind: "conflict", message: "The chapter order changed. This action cannot overwrite it." });
+    expect(built.operations.prepare).not.toHaveBeenCalled();
+    expect(built.client.addSpread).not.toHaveBeenCalled();
+    expect(built.client.deleteSpread).not.toHaveBeenCalled();
+  });
+
+  it("should stop creation when its predecessor is unavailable and retain a created identity if its grant is blocked", async () => {
+    const built = build();
+    built.operations.prepare.mockResolvedValueOnce("Reconnect first.");
+
     expect(await built.action.apply("undo")).toEqual({ kind: "blocked", message: "Reconnect first." });
-    expect(built.addSpread).not.toHaveBeenCalled();
-  });
-
-  it("should retain a rejected creation without treating it as an unconfirmed created spread", async () => {
-    const built = build();
-    built.addSpread.mockRejectedValue(new AlbumRequestError(422, "No capacity."));
-    expect(await built.action.apply("undo")).toEqual({ kind: "blocked", message: "No capacity." });
-    expect(await built.action.reconcile("undo")).toEqual({ kind: "unchanged" });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked" });
-  });
-
-  it("should require read recovery before explicitly retrying an unconfirmed creation", async () => {
-    const built = build();
-    built.addSpread.mockRejectedValue(new Error("Lost response"));
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    expect(built.addSpread).toHaveBeenCalledOnce();
-    expect(await built.action.reconcile("undo")).toEqual({ kind: "unchanged" });
-    expect(built.addSpread).toHaveBeenCalledOnce();
-  });
-
-  it("should retain a newly created spread when acquiring it fails and never create it again", async () => {
-    const built = build();
-    built.prepare.mockResolvedValueOnce(undefined).mockResolvedValue("View only.");
+    expect(built.client.addSpread).not.toHaveBeenCalled();
+    built.operations.prepare.mockResolvedValueOnce(undefined).mockResolvedValueOnce("View only.");
     expect(await built.action.apply("undo")).toEqual({ kind: "blocked", message: "View only.", partial: true });
-    built.prepare.mockResolvedValue(undefined);
+    built.client.composition.mockResolvedValue(recreated);
     expect(await built.action.apply("undo")).toEqual({ kind: "saved" });
-    expect(built.addSpread).toHaveBeenCalledOnce();
+    expect(built.client.addSpread).toHaveBeenCalledExactlyOnceWith("album", "chapter", "opening");
+    expect(built.operations.prepare).toHaveBeenLastCalledWith("new", true);
   });
 
-  it("should not overwrite a recreated spread edited before its grant was acquired", async () => {
+  it.each([
+    { failure: new AlbumRequestError(422, "No capacity."), expected: { kind: "blocked", message: "No capacity." } },
+    {
+      failure: new AlbumRequestError(500, "Write unavailable."),
+      expected: { kind: "uncertain", message: "Spread creation was not confirmed. Read saved membership before continuing." },
+    },
+    {
+      failure: new Error("Lost response"),
+      expected: { kind: "uncertain", message: "Spread creation was not confirmed. Read saved membership before continuing." },
+    },
+  ])("should retain $expected.kind creation and recover by reading membership", async ({ failure, expected }) => {
     const built = build();
-    built.readPlacements.mockResolvedValue({
+    built.client.addSpread.mockRejectedValue(failure);
+
+    expect(await built.action.apply("undo")).toEqual(expected);
+    if (expected.kind === "uncertain")
+      expect(await built.action.apply("undo")).toEqual({ kind: "uncertain", message: "Read saved membership before retrying spread creation." });
+    expect(await built.action.reconcile("undo")).toEqual({ kind: "unchanged" });
+    expect(built.client.addSpread).toHaveBeenCalledOnce();
+  });
+
+  it("should refuse to overwrite an externally edited recreation before creating placement compensation", async () => {
+    const built = build();
+    built.client.readPlacements.mockResolvedValue({
       ...spread,
       placements: [
         {
@@ -145,172 +99,137 @@ describe("spread compensating commands", () => {
         },
       ],
     });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "conflict" });
-    expect(built.editPlacements).not.toHaveBeenCalled();
-  });
 
-  it("should preserve partial restoration and resume a failed photo placement without adding another spread", async () => {
-    const populated: SpreadSnapshot = {
-      ...spread,
-      layout: { ...spread.layout, slots: [{ kind: "photo", id: "slot", x: 0, y: 0, width: 100, height: 100 }] },
-      placements: [
-        {
-          kind: "spread",
-          id: "old",
-          slotId: "slot",
-          photoId: "photo",
-          transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-          captionCorner: "bottom_right",
-        },
-      ],
-    };
-    const built = build(false, populated);
-    built.readPlacements.mockResolvedValue({ ...populated, id: "new", placements: [] });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked", partial: true });
-    built.editPlacements.mockResolvedValue({ ...populated, id: "new" });
-    expect(await built.action.apply("undo")).toEqual({ kind: "saved" });
-    expect(built.addSpread).toHaveBeenCalledOnce();
-  });
-
-  it("should not remove an added spread whose saved contents changed", async () => {
-    const built = build(true);
-    built.readPlacements.mockResolvedValue({ ...spread, layout: { ...spread.layout, templateId: "someone-elses-template" } });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "conflict" });
-    expect(built.deleteSpread).not.toHaveBeenCalled();
-  });
-
-  it("should check access both before and after the composition read before deleting", async () => {
-    const built = build(true);
-    built.prepare.mockResolvedValue("View only.");
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked" });
-    expect(built.readPlacements).not.toHaveBeenCalled();
-    built.prepare.mockResolvedValueOnce(undefined).mockResolvedValue("Expired while reading.");
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked", message: "Expired while reading." });
-    expect(built.deleteSpread).not.toHaveBeenCalled();
-  });
-
-  it.each([false, true])("should reconcile an unconfirmed deletion by reading membership only (saved=%s)", async (saved) => {
-    const built = build(true);
-    built.deleteSpread.mockImplementation(() => {
-      if (saved) built.setOrder(["opening", "next"]);
-      return Promise.reject(new Error("Lost response"));
+    expect(await built.action.apply("undo")).toEqual({
+      kind: "conflict",
+      message: "The recreated spread was edited before restoration could finish.",
     });
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    expect(await built.action.reconcile("undo")).toEqual({ kind: saved ? "saved" : "unchanged" });
-    expect(built.deleteSpread).toHaveBeenCalledOnce();
-    expect(built.removed).toHaveBeenCalledTimes(saved ? 1 : 0);
+    expect(createPlacementCompensation).not.toHaveBeenCalled();
   });
 
-  it("should retain a rejected deletion and detect an unrelated chapter membership change on read recovery", async () => {
+  it.each([
+    { outcome: { kind: "blocked", message: "Photo unavailable." }, expected: { kind: "blocked", message: "Photo unavailable.", partial: true } },
+    { outcome: { kind: "uncertain", message: "Read saved placements." }, expected: { kind: "uncertain", message: "Read saved placements." } },
+    { outcome: { kind: "saved" }, expected: { kind: "saved" } },
+  ] satisfies readonly { outcome: HistoryOutcome; expected: HistoryOutcome }[])(
+    "should delegate restoration and retain its $outcome.kind outcome without another creation",
+    async ({ outcome, expected }) => {
+      const apply = vi.fn().mockResolvedValue(outcome);
+      const reconcile = vi.fn().mockResolvedValue({ kind: "saved" });
+      vi.mocked(createPlacementCompensation).mockReturnValue({ label: "Restore placements", apply, reconcile });
+      const built = build();
+
+      expect(await built.action.apply("undo")).toEqual(expected);
+      built.client.composition.mockResolvedValue(recreated);
+      if (outcome.kind === "blocked") expect(await built.action.apply("undo")).toEqual(expected);
+      expect(await built.action.reconcile("undo")).toEqual({ kind: "saved" });
+      expect(built.client.addSpread).toHaveBeenCalledOnce();
+      expect(apply).toHaveBeenCalledWith("undo");
+      expect(apply).toHaveBeenCalledTimes(outcome.kind === "blocked" ? 2 : 1);
+      expect(reconcile).toHaveBeenCalledExactlyOnceWith("undo");
+      const request = vi.mocked(createPlacementCompensation).mock.lastCall?.[0];
+      expect(request).toMatchObject({
+        album: "album",
+        label: "Recreate spread",
+        before: spread,
+        after: { ...spread, id: "new" },
+        client: built.client,
+      });
+      expect(request?.context()).toEqual({ kind: "spread", id: "new" });
+      await request?.authorize();
+      expect(built.operations.prepare).toHaveBeenLastCalledWith("new", true);
+    },
+  );
+
+  it("should recheck access after the saved composition read and refuse changed contents", async () => {
     const built = build(true);
-    built.deleteSpread.mockRejectedValue(new AlbumRequestError(409, "View only."));
+    built.operations.prepare.mockResolvedValueOnce("View only.");
+
     expect(await built.action.apply("undo")).toEqual({ kind: "blocked", message: "View only." });
-    built.setOrder(["opening", "unrelated", "next"]);
-    expect(await built.action.reconcile("undo")).toMatchObject({ kind: "conflict" });
+    expect(built.client.readPlacements).not.toHaveBeenCalled();
+    built.operations.prepare.mockResolvedValueOnce(undefined).mockResolvedValueOnce("Expired while reading.");
+    expect(await built.action.apply("undo")).toEqual({ kind: "blocked", message: "Expired while reading." });
+    built.client.readPlacements.mockResolvedValue({ ...spread, layout: { ...spread.layout, templateId: "external" } });
+    expect(await built.action.apply("undo")).toEqual({ kind: "conflict", message: "The spread changed. Compensation cannot delete it." });
+    expect(built.client.deleteSpread).not.toHaveBeenCalled();
   });
 
-  it("should recognize a completed restore without replaying and reject a changed visible restore", async () => {
+  it.each([
+    { failure: new AlbumRequestError(409, "View only."), saved: false, kind: "blocked" },
+    { failure: new Error("Lost response"), saved: false, kind: "uncertain" },
+    { failure: new Error("Lost response"), saved: true, kind: "uncertain" },
+  ])("should recover $kind deletion by membership without replaying it when saved=$saved", async ({ failure, saved, kind }) => {
+    const built = build(true);
+    built.client.deleteSpread.mockRejectedValue(failure);
+
+    expect(await built.action.apply("undo")).toMatchObject({ kind });
+    built.client.composition.mockResolvedValue(saved ? absent : present);
+    expect(await built.action.reconcile("undo")).toEqual({ kind: saved ? "saved" : "unchanged" });
+    expect(built.client.deleteSpread).toHaveBeenCalledExactlyOnceWith("album", "deleted", true);
+    expect(built.operations.removed).toHaveBeenCalledTimes(saved ? 1 : 0);
+  });
+
+  it("should reconcile completed restoration, detect external changes and leave an absent restore unfinished", async () => {
     const built = build();
-    built.setOrder(["opening", "deleted", "next"]);
+    built.client.composition.mockResolvedValue(recreated);
+
     expect(await built.action.reconcile("undo")).toEqual({ kind: "saved" });
-    built.readPlacements.mockResolvedValue({ ...spread, layout: { ...spread.layout, templateId: "different" } });
+    built.client.readPlacements.mockResolvedValue({ ...spread, layout: { ...spread.layout, templateId: "external" } });
     expect(await built.action.reconcile("undo")).toEqual({ kind: "unchanged" });
-    expect(built.addSpread).not.toHaveBeenCalled();
+    built.client.composition.mockResolvedValue(absent);
+    expect(await built.action.reconcile("undo")).toEqual({ kind: "unchanged" });
+    built.client.composition.mockResolvedValue([{ id: "external", chapter: "chapter" }]);
+    expect(await built.action.reconcile("undo")).toEqual({ kind: "conflict", message: "The saved chapter membership changed." });
+    expect(built.client.addSpread).not.toHaveBeenCalled();
   });
 
-  it("should reconcile an uncertain recreation step without issuing any photo or creation writes", async () => {
-    const populated: SpreadSnapshot = {
-      ...spread,
-      layout: { ...spread.layout, slots: [{ kind: "photo", id: "slot", x: 0, y: 0, width: 100, height: 100 }] },
-      placements: [
-        {
-          kind: "spread",
-          id: "old",
-          slotId: "slot",
-          photoId: "photo",
-          transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-          captionCorner: "bottom_right",
-        },
-      ],
-    };
-    const built = build(false, populated);
-    built.readPlacements.mockResolvedValue({ ...populated, id: "new", placements: [] });
-    built.editPlacements.mockRejectedValue(new Error("Lost acknowledgement"));
+  it("should recreate under its returned identity and use that identity when redoing removal", async () => {
+    const built = build();
+
+    expect(await built.action.apply("undo")).toEqual({ kind: "saved" });
+    built.client.composition.mockResolvedValue(recreated);
+    expect(await built.action.apply("redo")).toEqual({ kind: "saved" });
+    expect(built.client.addSpread).toHaveBeenCalledExactlyOnceWith("album", "chapter", "opening");
+    expect(built.operations.identities.replace).toHaveBeenCalledExactlyOnceWith("deleted", "new");
+    expect(built.client.deleteSpread).toHaveBeenCalledExactlyOnceWith("album", "new", true);
+    expect(built.operations.removed).toHaveBeenCalledExactlyOnceWith("opening");
+  });
+
+  it("should refuse an ambiguous unacknowledged creation without issuing another write", async () => {
+    const built = build();
+    built.client.addSpread.mockRejectedValue(new Error("Lost identity"));
+
     expect(await built.action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    built.readPlacements.mockResolvedValue({ ...populated, id: "new" });
-    expect(await built.action.reconcile("undo")).toEqual({ kind: "saved" });
-    expect(built.addSpread).toHaveBeenCalledOnce();
-    expect(built.editPlacements).toHaveBeenCalledOnce();
-  });
-  it("should recreate a deleted spread with a new identity and use that identity on redo", async () => {
-    let order = ["opening", "next"];
-    const replace = vi.fn();
-    const add = vi.fn(() => {
-      order = ["opening", "new", "next"];
-      return Promise.resolve("new");
+    built.client.composition.mockResolvedValue([...absent, { id: "unconfirmed", chapter: "chapter" }]);
+    expect(await built.action.reconcile("undo")).toEqual({
+      kind: "conflict",
+      message: "A spread appeared without a confirmed identity. Review the saved book; creation will not be replayed.",
     });
-    const remove = vi.fn(() => {
-      order = ["opening", "next"];
-      return Promise.resolve();
-    });
-    const action = createSpreadCompensation({
-      album: "album",
-      chapter: "chapter",
-      spread,
-      order: ["opening", "deleted", "next"],
-      present: false,
-      identities: { resolve: (id) => (id === "deleted" && add.mock.calls.length > 0 ? "new" : id), replace },
-      prepare: () => Promise.resolve(undefined),
-      removed: vi.fn(),
-      client: {
-        addSpread: add,
-        deleteSpread: remove,
-        readPlacements: vi.fn().mockResolvedValue({ ...spread, id: "new" }),
-        editPlacements: vi.fn(),
-        templates: vi.fn(),
-        changeSpreadTemplate: vi.fn(),
-        composition: vi.fn(() => Promise.resolve(order.map((id) => ({ id, chapter: "chapter" })))),
-      },
-    });
-
-    expect(await action.apply("undo")).toEqual({ kind: "saved" });
-    expect(add).toHaveBeenCalledExactlyOnceWith("album", "chapter", "opening");
-    expect(replace).toHaveBeenCalledExactlyOnceWith("deleted", "new");
-    expect(await action.apply("redo")).toEqual({ kind: "saved" });
-    expect(remove).toHaveBeenCalledExactlyOnceWith("album", "new", true);
-  });
-
-  it("should not duplicate an unacknowledged creation when saved membership changed ambiguously", async () => {
-    const add = vi.fn().mockRejectedValue(new Error("Lost identity response"));
-    const composition = vi
-      .fn()
-      .mockResolvedValueOnce([{ id: "opening", chapter: "chapter" }])
-      .mockResolvedValue([
-        { id: "opening", chapter: "chapter" },
-        { id: "unconfirmed", chapter: "chapter" },
-      ]);
-    const action = createSpreadCompensation({
-      album: "album",
-      chapter: "chapter",
-      spread,
-      order: ["opening", "deleted"],
-      present: false,
-      identities: { resolve: (id) => id, replace: vi.fn() },
-      prepare: () => Promise.resolve(undefined),
-      removed: vi.fn(),
-      client: {
-        addSpread: add,
-        deleteSpread: vi.fn(),
-        readPlacements: vi.fn(),
-        editPlacements: vi.fn(),
-        templates: vi.fn(),
-        changeSpreadTemplate: vi.fn(),
-        composition,
-      },
-    });
-
-    expect(await action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    expect(await action.reconcile("undo")).toMatchObject({ kind: "conflict" });
-    expect(add).toHaveBeenCalledOnce();
+    expect(built.client.addSpread).toHaveBeenCalledOnce();
   });
 });
+
+function build(included = false) {
+  const aliases = new Map([["deleted", included ? "deleted" : "new"]]);
+  const client = {
+    addSpread: vi.fn().mockResolvedValue("new"),
+    deleteSpread: vi.fn().mockResolvedValue(undefined),
+    readPlacements: vi.fn().mockResolvedValue({ ...spread, id: included ? "deleted" : "new" }),
+    editPlacements: vi.fn(),
+    templates: vi.fn(),
+    changeSpreadTemplate: vi.fn(),
+    composition: vi.fn().mockResolvedValue(included ? present : absent),
+  };
+  const operations = {
+    album: "album",
+    chapter: "chapter",
+    spread,
+    order: ["opening", "deleted", "next"],
+    present: included,
+    identities: { resolve: (id: string) => aliases.get(id) ?? id, replace: vi.fn() },
+    prepare: vi.fn().mockResolvedValue(undefined),
+    removed: vi.fn(),
+    client,
+  };
+  return { action: createSpreadCompensation(operations), operations, client };
+}

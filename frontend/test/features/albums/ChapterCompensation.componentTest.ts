@@ -47,33 +47,27 @@ describe("chapter book compensation", () => {
   it("should group only actually saved portions and reconcile each uncertain portion without replay", async () => {
     const before: ChapterBookState = { details: { kind: "home", countries: ["ro"], sourceFolder: "/photos" }, gear: [] };
     const after: ChapterBookState = { details: { ...before.details, countries: ["it"] }, gear: [{ cameraId: "camera", lensIds: [] }] };
-    let details = after.details;
-    let gear = after.gear;
-    const saveDetails = vi.fn((value: ChapterBookState["details"]) => {
-      details = value;
-      return Promise.reject(new Error("Lost metadata response"));
-    });
-    const saveGear = vi.fn((value: ChapterBookState["gear"]) => {
-      gear = value;
-      return Promise.reject(new Error("Lost gear response"));
-    });
+    const readDetails = vi.fn().mockResolvedValueOnce(after.details).mockResolvedValueOnce(before.details);
+    const readGear = vi.fn().mockResolvedValueOnce(after.gear).mockResolvedValueOnce(before.gear);
+    const saveDetails = vi.fn().mockRejectedValue(new Error("Lost metadata response"));
+    const saveGear = vi.fn().mockRejectedValue(new Error("Lost gear response"));
     const action = createChapterCompensation({
       before,
       after,
       prepare: () => Promise.resolve(undefined),
-      readDetails: () => Promise.resolve(details),
-      readGear: () => Promise.resolve(gear),
+      readDetails,
+      readGear,
       saveDetails,
       saveGear,
     });
     expect(await action.apply("undo")).toMatchObject({ kind: "uncertain" });
     expect(await action.apply("redo")).toMatchObject({ kind: "blocked", partial: true });
     expect(await action.reconcile("undo")).toEqual({ kind: "unchanged" });
-    expect(saveDetails).toHaveBeenCalledOnce();
+    expect(saveDetails).toHaveBeenCalledExactlyOnceWith(before.details);
     expect(saveGear).not.toHaveBeenCalled();
     expect(await action.apply("undo")).toMatchObject({ kind: "uncertain" });
     expect(await action.reconcile("undo")).toEqual({ kind: "saved" });
-    expect(saveGear).toHaveBeenCalledOnce();
+    expect(saveGear).toHaveBeenCalledExactlyOnceWith(before.gear);
   });
 
   it("should compensate gear alone and preserve independent metadata", async () => {
@@ -106,34 +100,25 @@ describe("chapter book compensation", () => {
       details: { kind: "home", countries: ["ro", "it"], sourceFolder: "/photos" },
       gear: [{ cameraId: "camera", lensIds: ["lens"] }],
     };
-    let details = after.details;
-    let gear = after.gear;
-    const saveDetails = vi.fn((value: ChapterBookState["details"]) => {
-      details = value;
-      return Promise.resolve();
-    });
-    const saveGear = vi
-      .fn()
-      .mockRejectedValueOnce(new AlbumRequestError(422, "Retry gear"))
-      .mockImplementation((value: ChapterBookState["gear"]) => {
-        gear = value;
-        return Promise.resolve();
-      });
+    const readDetails = vi.fn().mockResolvedValueOnce(after.details).mockResolvedValueOnce(before.details);
+    const readGear = vi.fn().mockResolvedValueOnce(after.gear).mockResolvedValueOnce(after.gear).mockResolvedValueOnce(before.gear);
+    const saveDetails = vi.fn().mockResolvedValue(undefined);
+    const saveGear = vi.fn().mockRejectedValueOnce(new AlbumRequestError(422, "Retry gear")).mockResolvedValue(undefined);
     const action = createChapterCompensation({
       before,
       after,
       prepare: () => Promise.resolve(undefined),
-      readDetails: () => Promise.resolve(details),
-      readGear: () => Promise.resolve(gear),
+      readDetails,
+      readGear,
       saveDetails,
       saveGear,
     });
     expect(await action.apply("undo")).toMatchObject({ kind: "blocked", partial: true });
     expect(await action.apply("undo")).toEqual({ kind: "saved" });
     expect(saveDetails).toHaveBeenCalledOnce();
-    expect(gear).toEqual([]);
+    expect(saveGear.mock.calls).toEqual([[before.gear], [before.gear]]);
     expect(await action.apply("redo")).toEqual({ kind: "saved" });
-    expect(details).toEqual(after.details);
-    expect(gear).toEqual(after.gear);
+    expect(saveDetails.mock.calls).toEqual([[before.details], [after.details]]);
+    expect(saveGear.mock.calls).toEqual([[before.gear], [before.gear], [after.gear]]);
   });
 });

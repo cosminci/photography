@@ -1,582 +1,117 @@
-import { readAppConfig } from "../../src/app/AppConfig";
-import { coverGeometries } from "../features/albums/CoverGeometry";
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import type { ComponentProps } from "solid-js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/app/App";
+import { AlbumDashboard } from "../../src/features/albums/dashboard/AlbumDashboard";
+import { AlbumOpen } from "../../src/features/albums/open/AlbumOpen";
+import type { AlbumPhotoEvents } from "../../src/features/albums/model/Photo";
 import { editingSession } from "../features/editing/EditingSessionStub";
-import { AlbumRequestError, type Album, type AlbumClient, type AlbumPage, type AlbumSummary } from "../../src/features/albums/model/Album";
-import type { PlacementContext, PlacementSnapshot } from "../../src/features/albums/model/Placement";
-import type { AlbumPhotoEvents, PhotoEvent } from "../../src/features/albums/model/Photo";
-import type { WorkspaceEditingSession } from "../../src/features/editing/EditorSession";
+import { buildAlbumClient } from "../features/albums/AlbumClientStub";
 
-const events: AlbumPhotoEvents = {
-  subscribe: (_id, receive) => {
-    queueMicrotask(() => {
-      receive({ kind: "subscribed" });
-    });
-    return vi.fn();
-  },
-};
+vi.mock("../../src/features/albums/dashboard/AlbumDashboard", () => ({
+  AlbumDashboard: vi.fn(() => (
+    <>
+      <h1>Album dashboard</h1>
+      <a href="/albums/album">Open album</a>
+      <a href="/albums/other" target="_blank">
+        Open another tab
+      </a>
+      <a href="/albums/download" download="album.json">
+        Download
+      </a>
+      <a href="https://example.com/albums/remote">External album</a>
+      <a href="/settings">Settings</a>
+    </>
+  )),
+}));
+vi.mock("../../src/features/albums/open/AlbumOpen", () => ({
+  AlbumOpen: vi.fn((props: ComponentProps<typeof AlbumOpen>) => (
+    <>
+      <h1>Opened {props.id}</h1>
+      <button onClick={() => props.onReady?.()}>Finish opening</button>
+    </>
+  )),
+}));
 
-const firstAlbum: AlbumSummary = {
-  id: "00000000-0000-0000-0000-000000000001",
-  year: 2026,
-  title: "Journey of the Shepherds 2026",
-  createdAt: "2026-10-24T12:00:00Z",
-};
-const firstPage: AlbumPage = {
-  albums: [
-    firstAlbum,
-    ...Array.from({ length: 5 }, (_, index) => ({
-      ...firstAlbum,
-      id: `00000000-0000-0000-0000-${String(index + 2).padStart(12, "0")}`,
-      year: 2027 + index,
-      title: `Journey of the Shepherds ${String(2027 + index)}`,
-    })),
-  ],
-  page: 1,
-  pageSize: 6,
-  totalAlbums: 7,
-  totalPages: 2,
-};
-const lastAlbum = { ...firstAlbum, id: "00000000-0000-0000-0000-000000000007", year: 2032, title: "Journey of the Shepherds 2032" };
-const secondPage = { ...firstPage, albums: [lastAlbum], page: 2 };
-const nativeDialogMethods = {
-  showModal: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "showModal"),
-  close: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "close"),
-  getAnimations: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, "getAnimations"),
-};
-const dialogAnimationFinished = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
-const browserYear = vi.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
+describe("App", () => {
+  const client = buildAlbumClient();
+  const events: AlbumPhotoEvents = { subscribe: vi.fn() };
 
-describe("album dashboard and open", () => {
-  it("should carry the configured history limit into the opened workspace", async () => {
-    let album: Album = { ...firstAlbum, synopsis: "", authors: ["Cosmin", "Mara", "Iacob"] };
-    const client = buildClient({
-      open: vi.fn(() => Promise.resolve(album)),
-      saveAuthors: vi.fn<AlbumClient["saveAuthors"]>((_id, authors) => {
-        album = { ...album, authors };
-        return Promise.resolve(album);
-      }),
-    });
-    const config = readAppConfig({ VITE_BOOK_HISTORY_LIMIT: "1" });
-    window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
-    render(() => <App session={editingSession} client={client} events={events} historyLimit={config.historyLimit} />);
-    const mara = await screen.findByRole("button", { name: "Mara" });
-    await waitFor(() => expect(mara).toBeEnabled());
-    fireEvent.click(mara);
-    await waitFor(() => expect(mara).toHaveAttribute("aria-pressed", "false"));
-    const iacob = screen.getByRole("button", { name: "Iacob" });
-    await waitFor(() => expect(iacob).toBeEnabled());
-    fireEvent.click(iacob);
-    await waitFor(() => expect(iacob).toHaveAttribute("aria-pressed", "false"));
-    const undo = screen.getByRole("button", { name: "Undo: Change authors" });
-    await waitFor(() => expect(undo).toBeEnabled());
-    fireEvent.click(undo);
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Redo: Change authors" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Undo" })).toBeDisabled();
-    expect(iacob).toHaveAttribute("aria-pressed", "true");
-    expect(mara).toHaveAttribute("aria-pressed", "false");
-    expect(client.saveAuthors).toHaveBeenLastCalledWith(firstAlbum.id, ["Cosmin", "Iacob"]);
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("should retain the catalog until album acquisition and initial ownership settle, then focus the workspace", async () => {
-    let admit!: () => void;
-    const reading = new Promise<void>((resolve) => {
-      admit = resolve;
-    });
-    let confirm!: (value: boolean) => void;
-    const confirming = new Promise<boolean>((resolve) => {
-      confirm = resolve;
-    });
-    const select = vi.fn<WorkspaceEditingSession["select"]>((target) => (target === null ? Promise.resolve(true) : confirming));
-    const base = buildClient();
-    const client = buildClient({
-      open: vi.fn(async (id: string, signal?: AbortSignal) => {
-        await reading;
-        return base.open(id, signal);
-      }),
-    });
-    render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
-    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
+  it("should retain the catalog until the opened album is ready, then focus the workspace", async () => {
+    const select = vi.fn().mockResolvedValue(true);
+    render(() => <App client={client} events={events} session={{ ...editingSession, select }} />);
 
-    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
-    expect(screen.queryByText("Opening album…")).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
-    expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
-    admit();
-    await waitFor(() => {
-      expect(select).toHaveBeenCalledWith(expect.objectContaining({ kind: "spread" }), false);
-    });
-    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
-    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
-    confirm(true);
+    fireEvent.click(screen.getByRole("link", { name: "Open album" }));
 
-    expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeVisible();
+    expect(window.location.pathname).toBe("/albums/album");
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Opened album", hidden: true })).not.toBeVisible();
+    expect(select).toHaveBeenCalledWith(null);
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish opening", hidden: true }));
+
     expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Opened album" })).toBeVisible();
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "false");
     await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
+  });
+
+  it("should forward the addressed album, collaborators and history limit without exercising editing", () => {
+    window.history.replaceState(null, "", "/albums/album/");
+    render(() => <App client={client} events={events} session={editingSession} historyLimit={1} />);
+
+    expect(screen.getByRole("heading", { name: "Opened album" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
+    expect(vi.mocked(AlbumOpen).mock.lastCall?.[0]).toMatchObject({
+      client,
+      events,
+      session: editingSession,
+      id: "album",
+      historyLimit: 1,
+    });
+    expect(typeof vi.mocked(AlbumOpen).mock.lastCall?.[0].onReady).toBe("function");
+    fireEvent.click(screen.getByRole("button", { name: "Finish opening" }));
     expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "false");
   });
 
-  it("should reveal retryable opening failures instead of leaving the catalog busy", async () => {
-    const client = buildClient({ open: vi.fn().mockRejectedValue(new Error("offline")) });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
-    expect(await screen.findByRole("button", { name: "Retry album" })).toBeVisible();
-    expect(screen.queryByRole("status", { name: "Opening album" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Album dashboard" })).not.toBeInTheDocument();
-  });
-
-  it("should preserve the loaded document across catalog navigation and keep draft resolution ahead of history departure", async () => {
+  it("should follow browser history without replacing the document and release editing on catalog return", async () => {
+    window.history.replaceState(null, "", "/albums/album");
     const select = vi.fn().mockResolvedValue(true);
-    const documentBefore = document;
-    const base = buildClient();
-    const client = buildClient({
-      readPlacements: vi.fn().mockImplementation((id: string, context: PlacementContext) =>
-        context.kind === "cover"
-          ? base.readPlacements(id, context)
-          : Promise.resolve({
-              id: "opening",
-              kind: "spread",
-              placements: [],
-              layout: {
-                kind: "album_start",
-                bleed: { state: "disabled" as const, available: true },
-                templateId: "layout",
-                slots: [{ id: "text-slot", kind: "text", x: 50, y: 4, width: 48, height: 92 }],
-              },
-            }),
-      ),
-    });
-    render(() => <App session={{ ...editingSession, select }} client={client} events={events} />);
-    fireEvent.click(await screen.findByRole("link", { name: firstAlbum.title }));
-    await screen.findByRole("heading", { level: 1, name: firstAlbum.title });
-    expect(document).toBe(documentBefore);
-    fireEvent.click(screen.getByRole("button", { name: "Edit synopsis" }));
-    const editor = screen.getByRole("textbox", { name: "Synopsis" });
-    fireEvent.input(editor, { target: { value: "Retained text" } });
+    const originalDocument = document;
+    render(() => <App client={client} events={events} session={{ ...editingSession, select }} />);
+
     window.history.pushState(null, "", "/");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    await waitFor(() => {
-      expect(window.location.pathname).toBe(`/albums/${firstAlbum.id}`);
-    });
-    expect(editor).toHaveValue("Retained text");
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByRole("link", { name: "Album Layout Studio" }));
+
     await screen.findByRole("heading", { name: "Album dashboard" });
-    expect(select).toHaveBeenLastCalledWith(null);
-    expect(window.location.pathname).toBe("/");
-    expect(document).toBe(documentBefore);
-  });
-
-  beforeAll(() => {
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe = vi.fn();
-        disconnect = vi.fn();
-      },
-    );
-    HTMLDialogElement.prototype.showModal = function () {
-      this.setAttribute("open", "");
-    };
-    HTMLDialogElement.prototype.close = function () {
-      this.removeAttribute("open");
-    };
-    Object.defineProperty(HTMLDialogElement.prototype, "getAnimations", {
-      configurable: true,
-      value: () => [{ finished: dialogAnimationFinished() }],
-    });
-  });
-  afterAll(() => {
-    vi.unstubAllGlobals();
-    browserYear.mockRestore();
-    for (const [name, maybeDescriptor] of Object.entries(nativeDialogMethods)) {
-      if (maybeDescriptor === undefined) Reflect.deleteProperty(HTMLDialogElement.prototype, name);
-      else Object.defineProperty(HTMLDialogElement.prototype, name, maybeDescriptor);
-    }
-  });
-  it("should show persisted albums and preserve them while the next page loads", async () => {
-    let resolveNext: (page: AlbumPage) => void = () => {
-      throw new Error("Next page was not requested");
-    };
-    const nextPage = new Promise<AlbumPage>((resolve) => {
-      resolveNext = resolve;
-    });
-    const client = buildClient({ list: vi.fn().mockResolvedValueOnce(firstPage).mockReturnValueOnce(nextPage) });
-
-    render(() => <App session={editingSession} client={client} events={events} />);
-
-    expect(await screen.findByRole("link", { name: firstAlbum.title })).toHaveAttribute("href", `/albums/${firstAlbum.id}`);
-    expect(screen.queryByRole("region", { name: "Album start layouts" })).not.toBeInTheDocument();
-    expect(screen.getByRole("banner")).toContainElement(screen.getByRole("link", { name: "Album Layout Studio" }));
-    expect(screen.getByRole("heading", { name: "Album dashboard" })).toBeInTheDocument();
-    expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(screen.queryAllByRole("button", { name: /^Rename / })).toHaveLength(0);
-    expect(screen.getByRole("button", { name: `Delete ${firstAlbum.title}` })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(screen.getByRole("link", { name: firstAlbum.title })).toBeInTheDocument();
-    resolveNext(secondPage);
-    expect(await screen.findByText("Page 2")).toBeInTheDocument();
-  });
-
-  it("should ask for the browser year before creating an album, restore focus and keep opening separate", async () => {
-    const createdAlbum = { ...lastAlbum, year: 2040, title: "Journey of the Shepherds 2040" };
-    const client = buildClient({
-      create: vi.fn().mockResolvedValue(createdAlbum),
-      list: vi
-        .fn()
-        .mockResolvedValueOnce(firstPage)
-        .mockResolvedValueOnce({ ...firstPage, albums: [createdAlbum, ...firstPage.albums.slice(0, 5)], totalAlbums: 8 }),
-    });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    const add = screen.getByRole("button", { name: "Add album" });
-    add.focus();
-
-    fireEvent.click(add);
-    const dialog = screen.getByRole("dialog", { name: "Create an album" });
-    expect(within(dialog).getByRole("textbox", { name: "Album year" })).toHaveValue("2026");
-    expect(client.create).not.toHaveBeenCalled();
-    fireEvent.input(within(dialog).getByRole("textbox", { name: "Album year" }), { target: { value: " 2040 " } });
-    fireEvent.submit(within(dialog).getByRole("form", { name: "Album details" }));
-
-    await waitFor(() => {
-      expect(client.create).toHaveBeenCalledWith(2040);
-    });
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(add).toHaveFocus();
-    expect(window.location.pathname).toBe("/");
-    expect(await screen.findByRole("link", { name: createdAlbum.title })).toBeInTheDocument();
-  });
-
-  it("should retain a duplicate year with readable feedback and delete only after explicit confirmation", async () => {
-    const client = buildClient({ create: vi.fn().mockRejectedValue(new AlbumRequestError(400, "An album already exists for that year")) });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    await screen.findByRole("link", { name: firstAlbum.title });
-
-    fireEvent.click(screen.getByRole("button", { name: "Add album" }));
-    const input = screen.getByRole("textbox", { name: "Album year" });
-    fireEvent.input(input, { target: { value: "2026" } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("An album already exists for that year");
-    expect(input).toHaveValue("2026");
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByRole("button", { name: `Delete ${firstAlbum.title}` }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    });
-    expect(client.remove).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: `Delete ${firstAlbum.title}` }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
-
-    await waitFor(() => {
-      expect(client.remove).toHaveBeenCalledWith(firstAlbum.id);
-    });
-  });
-
-  it("should open a directly addressed album workspace read-only", async () => {
-    window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
-    const client = buildClient();
-
-    render(() => <App session={editingSession} client={client} events={events} />);
-
-    expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Synopsis composition" })).toBeInTheDocument();
-    expect(screen.queryByText("Read-only album")).not.toBeInTheDocument();
-    expect(screen.queryByText(firstAlbum.createdAt)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Back to album catalog" })).toHaveAttribute("href", "/");
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(client.open).toHaveBeenCalledWith(firstAlbum.id, expect.any(AbortSignal));
-  });
-
-  it("should distinguish initial loading, retryable list failure and successful empty albums", async () => {
-    const client = buildClient({
-      list: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("Offline"))
-        .mockResolvedValueOnce({ albums: [], page: 1, pageSize: 6, totalAlbums: 0, totalPages: 0 }),
-    });
-
-    render(() => <App session={editingSession} client={client} events={events} />);
-
-    expect(screen.getByRole("status", { name: "Loading albums" })).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Albums could not be loaded");
-    expect(screen.queryByRole("heading", { name: "No albums yet" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry albums" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    });
-    expect(screen.queryByRole("navigation", { name: "Album pages" })).not.toBeInTheDocument();
-    expect(screen.queryByText("No albums yet")).not.toBeInTheDocument();
-  });
-
-  it("should leave an empty dashboard blank with one Add action and restore its focus on close and create", async () => {
-    const client = buildClient({
-      list: vi
-        .fn()
-        .mockResolvedValueOnce({ albums: [], page: 1, pageSize: 6, totalAlbums: 0, totalPages: 0 })
-        .mockResolvedValueOnce({ albums: [firstAlbum], page: 1, pageSize: 6, totalAlbums: 1, totalPages: 1 }),
-    });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    await waitFor(() => {
-      expect(screen.queryByRole("status", { name: "Loading albums" })).not.toBeInTheDocument();
-    });
-    const firstAlbumAction = screen.getByRole("button", { name: "Add album" });
-    expect(screen.getAllByRole("button")).toEqual([firstAlbumAction]);
-    expect(screen.queryByText("No albums yet")).not.toBeInTheDocument();
-
-    fireEvent.click(firstAlbumAction);
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.getByRole("status")).toHaveTextContent("Closing album dialog.");
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(firstAlbumAction).toHaveFocus();
-    fireEvent.click(firstAlbumAction);
-    fireEvent.input(screen.getByRole("textbox", { name: "Album year" }), { target: { value: "2026" } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-
-    expect(await screen.findByRole("link", { name: firstAlbum.title })).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(screen.getByRole("button", { name: "Add album" })).toHaveFocus();
-  });
-
-  it("should retain an invalid year and allow correction before creating", async () => {
-    const createdAlbum = { ...firstAlbum, year: 2040, title: "Journey of the Shepherds 2040" };
-    const client = buildClient({
-      create: vi.fn().mockResolvedValue(createdAlbum),
-      list: vi
-        .fn()
-        .mockResolvedValueOnce(firstPage)
-        .mockResolvedValueOnce({ ...firstPage, albums: [createdAlbum, ...firstPage.albums.slice(0, 5)] }),
-    });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    const add = screen.getByRole("button", { name: "Add album" });
-    add.focus();
-
-    fireEvent.click(add);
-    const input = screen.getByRole("textbox", { name: "Album year" });
-    expect(input).toHaveFocus();
-    fireEvent.input(input, { target: { value: "   " } });
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Choose a year from 1900 to 2100.");
-    expect(input).toHaveValue("   ");
-    expect(client.create).not.toHaveBeenCalled();
-    fireEvent.input(input, { target: { value: " 2040 " } });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    fireEvent.submit(screen.getByRole("form", { name: "Album details" }));
-
-    await waitFor(() => {
-      expect(client.create).toHaveBeenCalledWith(2040);
-    });
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(add).toHaveFocus();
-  });
-
-  it("should protect a pending delete, preserve confirmation on failure and fall back after the last page disappears", async () => {
-    let rejectDelete: (error: Error) => void = () => {
-      throw new Error("Delete was not requested");
-    };
-    const pendingDelete = new Promise<void>((_resolve, reject) => {
-      rejectDelete = reject;
-    });
-    const client = buildClient({
-      list: vi
-        .fn()
-        .mockResolvedValueOnce(firstPage)
-        .mockResolvedValueOnce(secondPage)
-        .mockResolvedValueOnce({ ...firstPage, totalAlbums: 6, totalPages: 1 }),
-      remove: vi.fn().mockReturnValueOnce(pendingDelete).mockResolvedValueOnce(undefined),
-    });
-    render(() => <App session={editingSession} client={client} events={events} />);
-    await screen.findByRole("link", { name: firstAlbum.title });
-
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    await screen.findByText("Page 2");
-    fireEvent.click(screen.getByRole("button", { name: `Delete ${lastAlbum.title}` }));
-    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
-    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete permanently" })).toHaveAccessibleDescription("Saving album. Please wait.");
-    fireEvent(screen.getByRole("alertdialog"), new Event("cancel", { cancelable: true }));
-    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
-    rejectDelete(new Error("Offline"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not");
-    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
-
-    expect(await screen.findByText("Page 1")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-    });
-    expect(screen.getByRole("button", { name: "Add album" })).toHaveFocus();
-  });
-
-  it.each(["finished", "cancelled"])("should return to a previous page and dismiss a popup after its animation is %s", async (animationOutcome) => {
-    const client = buildClient({ list: vi.fn().mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage).mockResolvedValueOnce(firstPage) });
-    if (animationOutcome === "cancelled") dialogAnimationFinished.mockRejectedValueOnce(new DOMException("Animation cancelled", "AbortError"));
-    render(() => <App session={editingSession} client={client} events={events} />);
-    await screen.findByRole("link", { name: firstAlbum.title });
-
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    await screen.findByText("Page 2");
-    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
-    await screen.findByText("Page 1");
-    fireEvent.click(screen.getByRole("button", { name: "Add album" }));
-    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(screen.getByRole("button", { name: "Add album" })).toHaveFocus();
+    expect(screen.queryByRole("heading", { name: "Opened album" })).not.toBeInTheDocument();
+    expect(select).toHaveBeenCalledWith(null);
+    expect(document).toBe(originalDocument);
+    expect(vi.mocked(AlbumDashboard).mock.lastCall?.[0]).toEqual({ client });
   });
 
   it.each([
-    [404, "open"],
-    [500, "open"],
-    [404, "chapters"],
-    [500, "chapters"],
-  ] as const)("should distinguish missing album from retryable HTTP %i at %s and never show partial metadata", async (status, operation) => {
-    window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
-    const client = buildClient({
-      [operation]: vi
-        .fn()
-        .mockRejectedValueOnce(new AlbumRequestError(status, "Request failed"))
-        .mockResolvedValueOnce(operation === "open" ? { ...firstAlbum, synopsis: "After retry.", authors: ["Cosmin", "Mara", "Iacob"] } : []),
-    });
+    { name: "Open album", event: { ctrlKey: true } },
+    { name: "Open album", event: { metaKey: true } },
+    { name: "Open album", event: { shiftKey: true } },
+    { name: "Open album", event: { altKey: true } },
+    { name: "Open album", event: { button: 1 } },
+    { name: "Open another tab", event: {} },
+    { name: "Download", event: {} },
+    { name: "External album", event: {} },
+    { name: "Settings", event: {} },
+  ])("should leave native navigation alone for $name with $event", ({ name, event }) => {
+    render(() => <App client={client} events={events} session={editingSession} />);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, ...event });
 
-    render(() => <App session={editingSession} client={client} events={events} />);
+    screen.getByRole("link", { name }).dispatchEvent(click);
 
-    expect(screen.getByRole("status", { name: "Loading album" })).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent(status === 404 ? "could not be found" : "could not be loaded");
-    expect(screen.queryByRole("heading", { level: 1, name: firstAlbum.title })).not.toBeInTheDocument();
-    if (status === 500) {
-      fireEvent.click(screen.getByRole("button", { name: "Retry album" }));
-      expect(await screen.findByRole("heading", { level: 1, name: firstAlbum.title })).toBeInTheDocument();
-    } else {
-      expect(screen.queryByRole("button", { name: "Retry album" })).not.toBeInTheDocument();
-    }
-  });
-  it.each(["interrupted", "invalid"] as const)("should report an initial %s stream and recover by reading existing workspace state", async (kind) => {
-    window.history.replaceState(null, "", `/albums/${firstAlbum.id}`);
-    let receive: (event: PhotoEvent) => void = () => {
-      throw new Error("Not subscribed");
-    };
-    const liveEvents: AlbumPhotoEvents = {
-      subscribe: (_id, listener) => {
-        receive = listener;
-        return vi.fn();
-      },
-    };
-    const client = buildClient();
-    render(() => <App session={editingSession} client={client} events={liveEvents} />);
-
-    receive({ kind });
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      kind === "invalid" ? "Live photo update could not be decoded" : "Live photo updates interrupted",
-    );
-    if (kind === "invalid") {
-      expect(screen.getByRole("link", { name: "Reopen album" })).toHaveAttribute("href", window.location.href);
-      expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
-    }
-    expect(client.chapters).not.toHaveBeenCalled();
-    receive({ kind: "subscribed" });
-    await screen.findByRole("heading", { level: 1, name: firstAlbum.title });
-
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(client.chapters).toHaveBeenCalledOnce();
-    expect(client.refreshPhotos).not.toHaveBeenCalled();
+    expect(click.defaultPrevented).toBe(false);
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "false");
   });
 });
-
-function buildClient(overrides: Partial<AlbumClient> = {}): AlbumClient {
-  return {
-    exportBook: vi.fn().mockRejectedValue(new Error("Unexpected book export")),
-    photo: vi.fn().mockRejectedValue(new Error("Unexpected individual photo read")),
-    gearCatalog: vi.fn().mockResolvedValue({ cameras: [], lenses: [] }),
-    chapterGear: vi.fn().mockResolvedValue([]),
-    saveChapterGear: vi.fn(),
-    createCamera: vi.fn(),
-    updateCamera: vi.fn(),
-    deleteCamera: vi.fn(),
-    createLens: vi.fn(),
-    updateLens: vi.fn(),
-    deleteLens: vi.fn(),
-    readPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-      Promise.resolve(
-        context.kind === "cover"
-          ? {
-              kind: "cover",
-              placements: [],
-              frontSlotId: "front",
-              backSlotId: "back",
-              pageCount: 30,
-              geometry: coverGeometries.front,
-              spineOwner: "front",
-            }
-          : {
-              kind: "spread",
-              id: context.id,
-              placements: [],
-              layout: { kind: "album_start", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [] },
-            },
-      ),
-    ),
-    editPlacements: vi.fn().mockImplementation((_album: string, context: PlacementContext): Promise<PlacementSnapshot> =>
-      Promise.resolve(
-        context.kind === "cover"
-          ? {
-              kind: "cover",
-              placements: [],
-              frontSlotId: "front",
-              backSlotId: "back",
-              pageCount: 30,
-              geometry: coverGeometries.front,
-              spineOwner: "front",
-            }
-          : {
-              kind: "spread",
-              id: context.id,
-              placements: [],
-              layout: { kind: "album_start", bleed: { state: "disabled" as const, available: true }, templateId: "layout", slots: [] },
-            },
-      ),
-    ),
-    list: vi.fn().mockResolvedValue(firstPage),
-    create: vi.fn().mockResolvedValue(firstAlbum),
-    rename: vi.fn().mockResolvedValue(firstAlbum),
-    open: vi.fn().mockResolvedValue({ ...firstAlbum, synopsis: "The sea at dawn.", authors: ["Cosmin", "Mara", "Iacob"] }),
-    saveSynopsis: vi.fn(),
-    saveAuthors: vi.fn(),
-    saveDescription: vi.fn(),
-    saveCaption: vi.fn(),
-    remove: vi.fn().mockResolvedValue(undefined),
-    chapters: vi.fn().mockResolvedValue([]),
-    composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: null }]),
-    countries: vi.fn().mockResolvedValue([]),
-    photoSource: vi.fn().mockResolvedValue("/photos"),
-    createChapter: vi.fn(),
-    updateChapter: vi.fn(),
-    chapterPhotos: vi.fn(),
-    refreshPhotos: vi.fn(),
-    templates: vi.fn().mockResolvedValue([]),
-    addSpread: vi.fn(),
-    replaceChapterComposition: vi.fn(),
-    changeSpreadTemplate: vi.fn(),
-    deleteSpread: vi.fn(),
-    ...overrides,
-  };
-}

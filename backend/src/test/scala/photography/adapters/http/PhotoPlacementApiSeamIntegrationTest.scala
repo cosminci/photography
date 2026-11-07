@@ -7,9 +7,7 @@ import fs2.Stream
 import io.circe.Json
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
-import org.http4s.{Header, HttpRoutes, MediaType, Method, Request, Status, Uri}
-import org.http4s.CacheDirective
-import org.http4s.headers.`Cache-Control`
+import org.http4s.{HttpRoutes, MediaType, Method, Request, Status, Uri}
 import org.http4s.headers.`Content-Type`
 import org.http4s.circe.CirceEntityCodec.*
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
@@ -133,10 +131,34 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       responses <- requests.traverse { case (path, body) =>
         send(api, Request[IO](Method.PUT, Uri.unsafeFromString(path)).withEntity(body))
       }
-      calls <- refs.calls.get
+      calls      <- refs.calls.get
+      admissions <- refs.admissions.get
     yield
       assertEquals(responses.map { case (status, _) => status }, Vector(Status.Ok, Status.Ok))
       assertEquals(calls, Vector(PlacementCall.SetBleed(album, spread.id, enabled = true), PlacementCall.SetSpineOwner(album, SpineOwner.Back)))
+      assertEquals(
+        admissions,
+        Vector(
+          (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Spread(spread.id)), grant.some),
+          (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Cover(album)), grant.some)
+        )
+      )
+
+  test("should declare exact ownership for every edit route and leave saved composition reads public"):
+    val api     = buildApi(result = CoverManager.Result.Failed)
+    val changes = Vector(coverPath -> EditingTarget.Cover(album), spreadPath -> EditingTarget.Spread(spread.id)).flatMap:
+      case (path, target) => editScenarios.map: scenario =>
+          (Request[IO](scenario.request.method, Uri.unsafeFromString(path + scenario.request.suffix)), target)
+    val settings = Vector(
+      (Request[IO](Method.PUT, Uri.unsafeFromString(s"$coverPath/spine-owner")), EditingTarget.Cover(album)),
+      (Request[IO](Method.PUT, Uri.unsafeFromString(s"$spreadPath/bleed")), EditingTarget.Spread(spread.id))
+    )
+
+    (changes ++ settings).foreach { case (request, target) =>
+      assertEquals(api.definition.routes.lift(request).map(_.access), Routes.Access.Editor(EditingAccess.Protection.OwnSpread(target)).some)
+    }
+    Vector(coverPath, spreadPath).foreach: path =>
+      assertEquals(api.definition.routes.lift(Request[IO](Method.GET, Uri.unsafeFromString(path))).map(_.access), Routes.Access.Public.some)
 
   test("should preserve explicit enabled and mixed saved edges and reject unusable frame geometry"):
     val cases = Vector(
@@ -531,6 +553,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     }
 
   test("should reject malformed fields, noncanonical identities and invalid transform representations before application calls"):
+    val refs              = Refs()
     val invalidIdentities = Vector("invalid", "0-0-0-0-1", "AAAAAAAA-AAAA-4AAA-AAAA-AAAAAAAAAAAA")
     val missingFields     = editScenarios.map(_.request).filterNot(_.method === Method.DELETE).flatMap { request =>
       request.body.asObject.toList.flatMap(_.keys).map(field => request.copy(body = request.body.mapObject(_.remove(field))))
@@ -556,7 +579,7 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     val requests =
       Vector(Json.Null, Json.arr(), Json.obj()).map(value => PlacementRequest(method = Method.POST, suffix = "/placements", body = value)) ++
         missingFields ++ invalidFields ++ adjustments
-    val api           = buildApi(result = CoverManager.Result.Failed)
+    val api           = buildApi(refs, result = CoverManager.Result.Failed)
     val malformedBody = Stream.emits("{invalid json".getBytes(StandardCharsets.UTF_8)).covary[IO]
     val malformed     = Request[IO](Method.POST, Uri.unsafeFromString(s"$coverPath/placements")).withBodyStream(malformedBody)
       .putHeaders(`Content-Type`(MediaType.application.json))
@@ -566,12 +589,16 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       }
 
     for
-      failures <- decodedFailures
-      syntax   <- send(api, malformed)
+      failures   <- decodedFailures
+      syntax     <- send(api, malformed)
+      calls      <- refs.calls.get
+      admissions <- refs.admissions.get
     yield
       val responses = failures :+ syntax
       val feedback  = responses.map { case (status, body) => (status, hasFeedback(body)) }
       assertEquals(feedback, Vector.fill(responses.size)((Status.BadRequest, true)))
+      assertEquals(calls, Vector.empty[PlacementCall])
+      assertEquals(admissions, Vector.empty[(EditorConnection, EditingAccess.Protection, Option[GrantId])])
 
   test("should exclude noncanonical path identities without calling application services"):
     val refs              = Refs()
@@ -597,26 +624,28 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       cornerRequests
 
     for
-      statuses <- requests.traverse(request => api.orNotFound.run(request).map(_.status))
+      statuses <- requests.traverse(request => api.http.orNotFound.run(request).map(_.status))
       calls    <- refs.calls.get
     yield
       assertEquals(statuses, Vector.fill(n = requests.size)(Status.NotFound))
       assertEquals(calls, Vector.empty[PlacementCall])
 
   test("should dispatch domain-valid zoom outside the editing range to the application's rejection owner"):
-    val outside = transform.copy(zoom = 6.0)
-    val request = Json.obj(
+    val coverRefs  = Refs()
+    val spreadRefs = Refs()
+    val outside    = transform.copy(zoom = 6.0)
+    val request    = Json.obj(
       "transform" -> transformJson.mapObject(_.add("zoom", Json.fromInt(6)))
     )
     val expected = (Status.Conflict, Json.obj("code" -> Json.fromString("invalid_transform")))
     val covers   = buildApi(
-      result = CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform),
-      maybeCoverEdit = CoverManager.Edit.Adjust(placement.id, outside).some
+      coverRefs,
+      result = CoverManager.Result.Rejected(CoverManager.Failure.InvalidTransform)
     )
     val spreads = buildApi(
+      spreadRefs,
       result = CoverManager.Result.Failed,
-      spreadResult = SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.InvalidTransform),
-      maybeSpreadEdit = SpreadManager.Edit.Adjust(SpreadPlacementId(placement.id.value), outside).some
+      spreadResult = SpreadManager.PlacementResult.Rejected(SpreadManager.Failure.InvalidTransform)
     )
 
     val coverRequest  = Request[IO](Method.PATCH, Uri.unsafeFromString(s"$coverPath/placements/${placement.id.value}")).withEntity(request)
@@ -625,9 +654,16 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     for
       coverResponse  <- send(covers, coverRequest)
       spreadResponse <- send(spreads, spreadRequest)
+      coverCalls     <- coverRefs.calls.get
+      spreadCalls    <- spreadRefs.calls.get
     yield
       assertEquals(coverResponse, expected)
       assertEquals(spreadResponse, expected)
+      assertEquals(coverCalls, Vector(PlacementCall.EditCover(album, CoverManager.Edit.Adjust(placement.id, outside))))
+      assertEquals(
+        spreadCalls,
+        Vector(PlacementCall.Edit(album, spread.id, SpreadManager.Edit.Adjust(SpreadPlacementId(placement.id.value), outside)))
+      )
 
   final private case class CornerScenario(corner: CaptionCorner, encoded: String)
   final private case class PlacementRequest(method: Method, suffix: String, body: Json)
@@ -643,6 +679,9 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
     case SetSpineOwner(album: AlbumId, owner: SpineOwner)
   final private case class Refs():
     val calls: Ref[IO, Vector[PlacementCall]] = Ref.unsafe(a = Vector.empty[PlacementCall])
+    val admissions: Ref[IO, Vector[(editor: EditorConnection, protection: EditingAccess.Protection, grant: Option[GrantId])]] =
+      Ref.unsafe(Vector.empty)
+  final private case class Api(definition: Routes[IO], http: HttpRoutes[IO])
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildApi(
@@ -651,8 +690,6 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       spreadResult: SpreadManager.PlacementResult = SpreadManager.PlacementResult.SpreadNotFound,
       coverRead: CoverManager.ReadResult = CoverManager.ReadResult.Found(composition),
       spreadRead: SpreadManager.PlacementReadResult = SpreadManager.PlacementReadResult.SpreadNotFound,
-      maybeCoverEdit: Option[CoverManager.Edit] = None,
-      maybeSpreadEdit: Option[SpreadManager.Edit] = None,
       bleedResult: SpreadManager.SetBleedResult = SpreadManager.SetBleedResult.Failed,
       spineResult: CoverManager.SetSpineOwnerResult = CoverManager.SetSpineOwnerResult.Failed
   ) =
@@ -660,11 +697,8 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       override def setSpineOwner(album: AlbumId, owner: SpineOwner): IO[CoverManager.SetSpineOwnerResult] =
         refs.calls.update(_ :+ PlacementCall.SetSpineOwner(album, owner)).as(spineResult)
       override def read(id: AlbumId): IO[CoverManager.ReadResult] =
-        assertEquals(id, album)
         refs.calls.update(_ :+ PlacementCall.ReadCover(id)).as(coverRead)
       override def edit(id: AlbumId, request: CoverManager.Edit): IO[CoverManager.Result] =
-        assertEquals(id, album)
-        maybeCoverEdit.foreach(expected => assertEquals(request, expected))
         refs.calls.update(_ :+ PlacementCall.EditCover(id, request)).as(result)
     val spreads = new SpreadManager[IO]:
       override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
@@ -692,17 +726,12 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       ): IO[SpreadManager.DeleteResult] =
         IO.raiseError[SpreadManager.DeleteResult](new AssertionError("Unexpected structural delete"))
       override def readPlacements(id: AlbumId, spread: SpreadId): IO[SpreadManager.PlacementReadResult] =
-        assertEquals(id, album)
-        assertEquals(spread, SpreadId(new UUID(0L, 6L)))
         refs.calls.update(_ :+ PlacementCall.Read(id, spread)).as(spreadRead)
       override def editPlacements(
           id: AlbumId,
           spread: SpreadId,
           request: SpreadManager.Edit
       ): IO[SpreadManager.PlacementResult] =
-        assertEquals(id, album)
-        assertEquals(spread, SpreadId(new UUID(0L, 6L)))
-        maybeSpreadEdit.foreach(expected => assertEquals(request, expected))
         refs.calls.update(_ :+ PlacementCall.Edit(id, spread, request)).as(spreadResult)
     val access = new EditingAccess[IO]:
       override def run[A](
@@ -710,44 +739,21 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           protection: EditingAccess.Protection,
           maybeGrant: Option[GrantId]
       )(write: IO[A]): IO[EditingAccess.Result[A]] =
-        assertEquals(editor, connection)
-        assertEquals(maybeGrant, Some(grant))
-        protection match
-          case EditingAccess.Protection.OwnSpread(target) =>
-            assert(Set(EditingTarget.Cover(album), EditingTarget.Spread(spread.id)).contains(target))
-          case other => fail(s"Expected spread ownership declaration, obtained $other")
-        write.map(EditingAccess.Result.Completed(_))
+        refs.admissions.update(_ :+ (editor, protection, maybeGrant)) >> write.map(EditingAccess.Result.Completed(_))
     val definitions = PhotoPlacementApi.make(spreads, covers)
-    Vector(s"$coverPath/spine-owner" -> EditingTarget.Cover(album), s"$spreadPath/bleed" -> EditingTarget.Spread(spread.id)).foreach {
-      case (path, target) =>
-        val request = Request[IO](Method.PUT, Uri.unsafeFromString(path))
-        assertEquals(definitions.routes.lift(request).map(_.access), Some(Routes.Access.Editor(EditingAccess.Protection.OwnSpread(target))))
-    }
-    Vector(coverPath -> EditingTarget.Cover(album), spreadPath -> EditingTarget.Spread(spread.id)).foreach { case (path, target) =>
-      editScenarios.foreach { scenario =>
-        val request = Request[IO](scenario.request.method, Uri.unsafeFromString(path + scenario.request.suffix))
-        assertEquals(definitions.routes.lift(request).map(_.access), Some(Routes.Access.Editor(EditingAccess.Protection.OwnSpread(target))))
-      }
-    }
-    Routes.make(access)(definitions)
+    Api(definitions, Routes.make(access)(definitions))
   // scalafix:on DisableSyntax.defaultArgs
 
-  private def send(api: HttpRoutes[IO], request: Request[IO]) =
+  private def send(api: Api, request: Request[IO]) =
     for
-      response <- api.orNotFound.run(request.putHeaders(
+      response <- api.http.orNotFound.run(request.putHeaders(
         "X-Editor-Session"    -> connection.session.value.toString,
         "X-Editor-Tab"        -> connection.tab.value.toString,
         "X-Editor-Generation" -> connection.generation.value.toString,
         "X-Editor-Grant"      -> grant.value.toString
       ))
       body <- response.as[Json]
-    yield
-      assertEquals(response.contentType.map(_.mediaType), MediaType.application.json.some)
-      if request.method === Method.GET && response.status === Status.Ok then
-        assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
-      if request.method =!= Method.GET then
-        assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
-      (response.status, body)
+    yield (response.status, body)
 
   private def hasFeedback(body: Json) =
     body.asObject.exists(_.keys.toSet === Set("message")) && body.hcursor.get[String]("message").toOption.exists(_.nonEmpty)

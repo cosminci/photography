@@ -1,6 +1,6 @@
 package photography.adapters.http
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.data.NonEmptyList
 import cats.syntax.all.*
 import io.circe.Json
@@ -17,11 +17,12 @@ import java.util.UUID
 final class AlbumCompositionApiSeamIntegrationTest extends CatsEffectSuite:
   private val album          = AlbumId(new UUID(0L, 1L))
   private val chapter        = ChapterId(new UUID(0L, 2L))
-  private val opening        = Member(SpreadId(new UUID(0L, 3L)), maybeChapter = None)
+  private val opening        = Member(SpreadId(new UUID(0L, 3L)), maybeChapter = none[ChapterId])
   private val chapterOpening = Member(SpreadId(new UUID(0L, 4L)), maybeChapter = chapter.some)
   private val path           = s"/api/albums/${album.value}/composition"
 
   test("should expose ordered membership without acquiring spread geometry"):
+    val calls    = Ref.unsafe[IO, Vector[AlbumId]](Vector.empty)
     val members  = NonEmptyList.of(opening, chapterOpening)
     val expected = Json.obj("spreads" -> Json.arr(
       Json.obj("id" -> Json.fromString(opening.id.value.toString), "chapter"        -> Json.Null),
@@ -29,31 +30,36 @@ final class AlbumCompositionApiSeamIntegrationTest extends CatsEffectSuite:
     ))
 
     for
-      response <- read(buildRepository(CompositionResult.Found(members).pure[IO]), path)
-      body     <- response.as[Json]
+      response  <- read(buildRepository(calls, CompositionResult.Found(members).pure[IO]), path)
+      body      <- response.as[Json]
+      requested <- calls.get
     yield
       assertEquals(response.status, Status.Ok)
       assertEquals(body, expected)
       assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
+      assertEquals(requested, Vector(album))
 
   test("should preserve absent ownership and reject noncanonical IDs before reading"):
-    val absent    = buildRepository(CompositionResult.AlbumNotFound.pure[IO])
-    val untouched = buildRepository(IO.raiseError[CompositionResult](new AssertionError("Unexpected read")))
+    val calls  = Ref.unsafe[IO, Vector[AlbumId]](Vector.empty)
+    val absent = buildRepository(calls, CompositionResult.AlbumNotFound.pure[IO])
 
     for
       missing     <- read(absent, path)
       missingBody <- missing.as[Json]
-      invalid     <- read(untouched, "/api/albums/1-1-1-1-1/composition")
+      invalid     <- read(absent, "/api/albums/1-1-1-1-1/composition")
       invalidBody <- invalid.as[Json]
+      requested   <- calls.get
     yield
       val expected = Json.obj("code" -> Json.fromString("album_not_found"))
       assertEquals(missing.status, Status.NotFound)
       assertEquals(invalid.status, Status.NotFound)
       assertEquals(missingBody, expected)
       assertEquals(invalidBody, expected)
+      assertEquals(requested, Vector(album))
 
   test("should expose unavailable composition rather than successful empty membership"):
-    val repository = buildRepository(CompositionResult.Failed(Failure.Unavailable).pure[IO])
+    val calls      = Ref.unsafe[IO, Vector[AlbumId]](Vector.empty)
+    val repository = buildRepository(calls, CompositionResult.Failed(Failure.Unavailable).pure[IO])
 
     for
       response <- read(repository, path)
@@ -62,10 +68,10 @@ final class AlbumCompositionApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(response.status, Status.InternalServerError)
       assertEquals(body, Json.obj("code" -> Json.fromString("service_failure")))
 
-  private def buildRepository(result: IO[CompositionResult]): AlbumCompositionRepository.MembershipRead[IO] =
+  private def buildRepository(calls: Ref[IO, Vector[AlbumId]], result: IO[CompositionResult]): AlbumCompositionRepository.MembershipRead[IO] =
     new AlbumCompositionRepository.MembershipRead[IO]:
       override def composition(id: AlbumId): IO[CompositionResult] =
-        IO(assertEquals(id.value, album.value)) *> result
+        calls.update(_ :+ id) >> result
       override def opening(id: AlbumId, maybeChapter: Option[ChapterId]): IO[AlbumCompositionRepository.OpeningResult] =
         IO.raiseError[AlbumCompositionRepository.OpeningResult](new AssertionError("Unexpected targeted opening read"))
 

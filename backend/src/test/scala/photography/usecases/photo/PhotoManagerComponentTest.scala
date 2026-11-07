@@ -47,7 +47,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
     cases.traverse_ { case (response, expected) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val manager = buildManager(events, maybeFound = response.some, resolving = events.update(_ :+ "resolve"))
+        val manager = buildManager(Refs(events), maybeFound = response.some, resolving = events.update(_ :+ "resolve"))
 
         for
           result <- manager.read(existing.id)
@@ -67,39 +67,40 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
     cases.traverse_ { case (response, expected) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val caption        = (id: PhotoId, text: String) => events.update(_ :+ s"caption:${id.value}:$text").as(response)
-        val manager        = buildManager(events, caption = caption)
+        val refs           = Refs(events)
+        val manager        = buildManager(refs, caption = response.pure[IO])
         val texts          = Vector("日本\nVacanță", "", " ")
         val expectedEvents = texts.flatMap(text => Vector("transaction", s"caption:${existing.id.value}:$text"))
 
         for
           results <- texts.traverse(text => manager.saveCaption(chapter, existing.id, text = text))
           actual  <- events.get
+          writes  <- refs.captions.get
         yield
           assertEquals(results, Vector.fill(texts.size)(expected))
           assertEquals(actual, expectedEvents)
+          assertEquals(writes, texts.map(text => (chapter = chapter, photo = existing.id, text = text)))
     }
 
   test("should expose uncertain caption acknowledgement without reading or retrying"):
     Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-      val caption = (_: PhotoId, _: String) => events.update(_ :+ "caption") >> error.raiseError[IO, PhotoRepository.SaveCaptionResult]
-      val manager = buildManager(events, caption = caption)
+      val manager = buildManager(Refs(events), caption = error.raiseError[IO, PhotoRepository.SaveCaptionResult])
 
       for
         result <- manager.saveCaption(chapter, existing.id, text = "Saved?")
         actual <- events.get
       yield
         assertEquals(result, SaveCaptionResult.Uncertain)
-        assertEquals(actual, Vector("transaction", "caption"))
+        assertEquals(actual, Vector("transaction", s"caption:${existing.id.value}:Saved?"))
 
   test("should finish the caption transaction handoff before honoring cancellation"):
     TestControl.executeEmbed:
       val signals = (Ref.of[IO, Vector[String]](Vector.empty), Deferred[IO, Unit], Deferred[IO, Unit], Deferred[IO, Unit], Deferred[IO, Unit]).tupled
 
       signals.flatMap { case (events, entered, release, committed, cancelStarted) =>
-        val caption = (_: PhotoId, _: String) =>
+        val caption =
           entered.complete(()).void >> release.get >> committed.complete(()).as(PhotoRepository.SaveCaptionResult.Saved)
-        val manager = buildManager(events, caption = caption)
+        val manager = buildManager(Refs(events), caption = caption)
 
         for
           worker       <- manager.saveCaption(chapter, existing.id, text = "Caption").start
@@ -118,8 +119,10 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       (metadata, ThumbnailQuality.Low)
     ).traverse_ { case (changed, previousQuality) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val save = (photo: Photo) =>
-          IO(assertEquals(photo, existing.copy(metadata = changed, thumbnail = stored))).as(PhotoRepository.WriteResult.Applied)
+        val refs           = Refs(events)
+        val expectedPhoto  = existing.copy(metadata = changed, thumbnail = stored)
+        val expectedIntent =
+          PhotoWriteIntent.Publication(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, stored.location, thumbnail.location.some)
         val expectedEvents = Vector(
           "transaction",
           "read",
@@ -132,36 +135,48 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         )
         val previous = existing.copy(thumbnail = thumbnail.copy(quality = previousQuality))
         val manager  = buildManager(
-          events,
+          refs,
           readResult = PhotoStorage.ReadResult.Read(content, changed).pure[IO],
-          existingPhotos = Vector(previous),
-          save = save,
-          finalization = intent =>
-            val expected =
-              PhotoWriteIntent.Publication(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, stored.location, thumbnail.location.some)
-            IO(assertEquals(intent, expected)).as(PhotoWriteRecovery.RecoveryResult.Recovered)
+          existingPhotos = Vector(previous)
         )
-        manager.refresh(chapter, original.source).flatMap: result =>
-          events.get.map: actual =>
-            assertEquals(result.issues, Vector.empty[Issue])
-            assertEquals(result.unsupportedCount, 2)
-            assertEquals(actual, expectedEvents)
+
+        for
+          result     <- manager.refresh(chapter, original.source)
+          actual     <- events.get
+          photos     <- refs.publications.get
+          recorded   <- refs.recorded.get
+          finalized  <- refs.finalized.get
+          sources    <- refs.sources.get
+          originals  <- refs.originals.get
+          generated  <- refs.generated.get
+          thumbnails <- refs.thumbnails.get
+        yield
+          assertEquals(result, RefreshResult(unsupportedCount = 2, issues = Vector.empty[Issue]))
+          assertEquals(actual, expectedEvents)
+          assertEquals(photos, Vector(expectedPhoto))
+          assertEquals(recorded, Vector(expectedIntent))
+          assertEquals(finalized, Vector(expectedIntent))
+          assertEquals(sources, Vector(original.source))
+          assertEquals(originals, Vector(original))
+          assertEquals(generated, Vector(content))
+          assertEquals(thumbnails, Vector((location = stored.location, image = image)))
     }
 
   test("should generate new identities and skip unchanged hashes at the selected quality"):
     Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-      val save = (photo: Photo) =>
-        IO(assertEquals(photo, Photo(PhotoId(new UUID(0L, 9L)), chapter, original, metadata, stored, maybeCaption = None)))
-          .as(PhotoRepository.WriteResult.Applied)
+      val refs          = Refs(events)
+      val expectedPhoto = Photo(PhotoId(new UUID(0L, 9L)), chapter, original, metadata, stored, maybeCaption = None)
       for
-        fresh     <- buildManager(events, existingPhotos = Vector.empty[Photo], save = save).refresh(chapter, original.source)
+        fresh     <- buildManager(refs, existingPhotos = Vector.empty[Photo]).refresh(chapter, original.source)
         _         <- events.set(Vector.empty)
-        unchanged <- buildManager(events).refresh(chapter, original.source)
+        unchanged <- buildManager(refs).refresh(chapter, original.source)
         actual    <- events.get
+        published <- refs.publications.get
       yield
         assertEquals(fresh.issues, Vector.empty[Issue])
         assertEquals(unchanged.issues, Vector.empty[Issue])
         assertEquals(actual, Vector("transaction", "read"))
+        assertEquals(published, Vector(expectedPhoto))
 
   test("should attempt absence retirement only after completed enumeration and hand its evidence to recovery"):
     Vector(
@@ -169,15 +184,22 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       (PhotoRepository.WriteResult.Failed, Vector(Issue.Persistence))
     ).traverse_ { case (result, issues) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val remove       = (id: PhotoId) => IO(assertEquals(id, existing.id)).as(result)
-        val finalization = (intent: PhotoWriteIntent) =>
-          val expected = PhotoWriteIntent.Retirement(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, thumbnail.location)
-          IO(assertEquals(intent, expected)).as(PhotoWriteRecovery.RecoveryResult.Recovered)
-        buildManager(events, discovery = absent.pure[IO], remove = remove, finalization = finalization).refresh(chapter, original.source).flatMap:
-          actual =>
-            events.get.map: recorded =>
-              assertEquals(actual.issues, issues)
-              assertEquals(recorded, Vector("transaction", "transaction", "record", "resolve"))
+        val refs           = Refs(events)
+        val expectedIntent = PhotoWriteIntent.Retirement(PhotoWriteIntentId(new UUID(0L, 9L)), chapter, existing.id, thumbnail.location)
+        val manager        = buildManager(refs, discovery = absent.pure[IO], remove = result.pure[IO])
+
+        for
+          actual    <- manager.refresh(chapter, original.source)
+          events    <- refs.events.get
+          removed   <- refs.removals.get
+          recorded  <- refs.recorded.get
+          finalized <- refs.finalized.get
+        yield
+          assertEquals(actual.issues, issues)
+          assertEquals(events, Vector("transaction", "transaction", "record", "resolve"))
+          assertEquals(removed, Vector(existing.id))
+          assertEquals(recorded, Vector(expectedIntent))
+          assertEquals(finalized, Vector(expectedIntent))
     }
 
   test("should retain inventory when discovery or inventory reading fails"):
@@ -188,10 +210,17 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       (complete.pure[IO], IO.raiseError[PhotoRepository.ListResult](error), Issue.Persistence)
     ).traverse_ { case (discovery, listed, issue) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        buildManager(events, discovery = discovery, maybeListed = listed.some).refresh(chapter, original.source).flatMap: actual =>
-          events.get.map: recorded =>
-            assertEquals(actual.issues, Vector(issue))
-            assert(!recorded.exists(_.startsWith("remove:")))
+        val refs    = Refs(events)
+        val manager = buildManager(refs, discovery = discovery, maybeListed = listed.some)
+
+        for
+          actual    <- manager.refresh(chapter, original.source)
+          removed   <- refs.removals.get
+          published <- refs.publications.get
+        yield
+          assertEquals(actual.issues, Vector(issue))
+          assertEquals(removed, Vector.empty)
+          assertEquals(published, Vector.empty)
     }
 
   test("should retain previous photos and continue after individual read or generation failures"):
@@ -212,17 +241,34 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         Issue.Undecodable(original.filename)
       ),
       (IO.raiseError[PhotoStorage.ReadResult](error), PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO], Issue.Unexpected),
-      (read.pure[IO], PhotoThumbnailGenerator.GenerationResult.Failed(error).pure[IO], Issue.Generation(original.filename))
+      (
+        PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO],
+        PhotoThumbnailGenerator.GenerationResult.Failed(error).pure[IO],
+        Issue.Generation(original.filename)
+      )
     ).traverse_ { case (reading, generation, issue) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val discovery = PhotoStorage.DiscoveryResult.Complete(Vector(original, original.copy(filename = "two.jpg")), unsupportedCount = 0)
-        buildManager(events, discovery = discovery.pure[IO], readResult = reading, generation = generation, existingPhotos = Vector.empty[Photo])
-          .refresh(chapter, original.source).flatMap: actual =>
-            events.get.map: recorded =>
-              assertEquals(actual.issues.size, 2)
-              assertEquals(actual.issues.headOption, issue.some)
-              assertEquals(recorded.count(_ === "read"), 2)
-              assert(!recorded.contains("store"))
+        val expectedOriginals = Vector(original, original.copy(filename = "two.jpg"))
+        val discovery         = PhotoStorage.DiscoveryResult.Complete(expectedOriginals, unsupportedCount = 0)
+        val refs              = Refs(events)
+        val secondIssue       = issue match
+          case Issue.Read(_)        => Issue.Read("two.jpg")
+          case Issue.Unstable(_)    => Issue.Unstable("two.jpg")
+          case Issue.Undecodable(_) => Issue.Undecodable("two.jpg")
+          case Issue.Generation(_)  => Issue.Generation("two.jpg")
+          case _                    => issue
+        val manager = buildManager(refs, discovery = discovery.pure[IO], readResult = reading, generation = generation)
+
+        for
+          actual       <- manager.refresh(chapter, original.source)
+          originals    <- refs.originals.get
+          publications <- refs.publications.get
+          removals     <- refs.removals.get
+        yield
+          assertEquals(actual.issues, Vector(issue, secondIssue))
+          assertEquals(originals, expectedOriginals)
+          assertEquals(publications, Vector.empty)
+          assertEquals(removals, Vector.empty)
     }
 
   test("should preserve publication failures alongside explicit finalization issues"):
@@ -247,7 +293,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
           val outcome = if issues.isEmpty then PhotoWriteRecovery.RecoveryResult.Recovered else PhotoWriteRecovery.RecoveryResult.Failed(issues)
           val manager =
-            buildManager(events, existingPhotos = Vector.empty[Photo], storage = storage, save = _ => writing, finalization = _ => outcome.pure[IO])
+            buildManager(Refs(events), existingPhotos = Vector.empty[Photo], storage = storage, save = writing, finalization = outcome.pure[IO])
 
           for
             result <- manager.refresh(chapter, original.source)
@@ -264,14 +310,21 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         case (events, saving, release) =>
           val writeResult  = if committed then PhotoRepository.WriteResult.Applied else PhotoRepository.WriteResult.Failed
           val handoff      = saving.complete(()).void >> release.get
-          val save         = (_: Photo) => handoff.as(writeResult)
-          val remove       = (_: PhotoId) => if committed then writeResult.pure[IO] else handoff.as(writeResult)
-          val finalization = (_: PhotoWriteIntent) =>
+          val save         = handoff.as(writeResult)
+          val remove       = if committed then writeResult.pure[IO] else handoff.as(writeResult)
+          val finalization =
             (if retiring && committed then handoff else IO.unit).as(PhotoWriteRecovery.RecoveryResult.Recovered)
           val reading   = PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
           val discovery = if retiring then absent else complete
           val manager   =
-            buildManager(events, discovery = discovery.pure[IO], save = save, remove = remove, finalization = finalization, readResult = reading)
+            buildManager(
+              Refs(events),
+              discovery = discovery.pure[IO],
+              save = save,
+              remove = remove,
+              finalization = finalization,
+              readResult = reading
+            )
           val program =
             for
               refresh      <- manager.refresh(chapter, original.source).flatTap(_ => IO.cede).start
@@ -299,7 +352,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
   test("should preserve absent photos when a retirement identity cannot be allocated"):
     Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-      val manager = buildManager(events, discovery = absent.pure[IO], nextId = IO.raiseError[UUID](error))
+      val manager = buildManager(Refs(events), discovery = absent.pure[IO], nextId = IO.raiseError[UUID](error))
 
       for
         result <- manager.refresh(chapter, original.source)
@@ -311,7 +364,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
   test("should reject publication before storing media when its durable evidence cannot be recorded"):
     Vector(PhotoRepository.RecordWriteResult.Failed.pure[IO], IO.raiseError[PhotoRepository.RecordWriteResult](error)).traverse_ { recording =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-        val noEvidence = buildManager(events, existingPhotos = Vector.empty[Photo], recording = recording)
+        val noEvidence = buildManager(Refs(events), existingPhotos = Vector.empty[Photo], recording = recording)
 
         for
           rejected <- noEvidence.refresh(chapter, original.source)
@@ -321,9 +374,21 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
           assert(!before.contains("store"))
     }
 
+  final private case class Refs(events: Ref[IO, Vector[String]]):
+    val sources: Ref[IO, Vector[PhotoSource]]                                               = Ref.unsafe(Vector.empty)
+    val originals: Ref[IO, Vector[OriginalPhotoLocation]]                                   = Ref.unsafe(Vector.empty)
+    val generated: Ref[IO, Vector[PhotoContent]]                                            = Ref.unsafe(Vector.empty)
+    val thumbnails: Ref[IO, Vector[(location: ThumbnailLocation, image: EncodedThumbnail)]] = Ref.unsafe(Vector.empty)
+    val inventoryReads: Ref[IO, Vector[ChapterId]]                                          = Ref.unsafe(Vector.empty)
+    val publications: Ref[IO, Vector[Photo]]                                                = Ref.unsafe(Vector.empty)
+    val removals: Ref[IO, Vector[PhotoId]]                                                  = Ref.unsafe(Vector.empty)
+    val recorded: Ref[IO, Vector[PhotoWriteIntent]]                                         = Ref.unsafe(Vector.empty)
+    val finalized: Ref[IO, Vector[PhotoWriteIntent]]                                        = Ref.unsafe(Vector.empty)
+    val captions: Ref[IO, Vector[(chapter: ChapterId, photo: PhotoId, text: String)]]       = Ref.unsafe(Vector.empty)
+
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
-      events: Ref[IO, Vector[String]],
+      refs: Refs,
       discovery: IO[PhotoStorage.DiscoveryResult] = complete.pure[IO],
       readResult: IO[PhotoStorage.ReadResult] = read.pure[IO],
       generation: IO[PhotoThumbnailGenerator.GenerationResult] = PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO],
@@ -331,50 +396,53 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       existingPhotos: Vector[Photo] = Vector(existing),
       maybeListed: Option[IO[PhotoRepository.ListResult]] = None,
       quality: ThumbnailQuality = ThumbnailQuality.Standard,
-      save: Photo => IO[PhotoRepository.WriteResult] = _ => PhotoRepository.WriteResult.Applied.pure[IO],
-      remove: PhotoId => IO[PhotoRepository.WriteResult] = _ => PhotoRepository.WriteResult.Applied.pure[IO],
+      save: IO[PhotoRepository.WriteResult] = PhotoRepository.WriteResult.Applied.pure[IO],
+      remove: IO[PhotoRepository.WriteResult] = PhotoRepository.WriteResult.Applied.pure[IO],
       recording: IO[PhotoRepository.RecordWriteResult] = PhotoRepository.RecordWriteResult.Recorded.pure[IO],
-      finalization: PhotoWriteIntent => IO[PhotoWriteRecovery.RecoveryResult] = _ => PhotoWriteRecovery.RecoveryResult.Recovered.pure[IO],
+      finalization: IO[PhotoWriteRecovery.RecoveryResult] = PhotoWriteRecovery.RecoveryResult.Recovered.pure[IO],
       resolving: IO[Unit] = IO.unit,
       nextId: IO[UUID] = new UUID(0L, 9L).pure[IO],
       maybeFound: Option[IO[PhotoRepository.FindResult]] = None,
-      caption: (PhotoId, String) => IO[PhotoRepository.SaveCaptionResult] =
-        (_, _) => IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
+      caption: IO[PhotoRepository.SaveCaptionResult] =
+        IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
   ) =
+    val events = refs.events
     given IdGenerator[IO] with
       override def generateId: IO[UUID] = nextId
     given Transaction[Db, IO] with
       override def run[A](program: Db[A]): IO[A]     = events.update(_ :+ "transaction") >> program.run(())
       override def resolve[A](program: Db[A]): IO[A] = resolving >> program.run(())
     val photoStorage = new PhotoStorage[IO]:
-      override def discoverOriginals(source: PhotoSource): IO[PhotoStorage.DiscoveryResult] = IO(assertEquals(source, original.source)) >>
+      override def discoverOriginals(source: PhotoSource): IO[PhotoStorage.DiscoveryResult] = refs.sources.update(_ :+ source) >>
         discovery
-      override def readOriginal(location: OriginalPhotoLocation): IO[PhotoStorage.ReadResult] = events.update(_ :+ "read") >> readResult
+      override def readOriginal(location: OriginalPhotoLocation): IO[PhotoStorage.ReadResult] =
+        refs.originals.update(_ :+ location) >> events.update(_ :+ "read") >> readResult
     val thumbnailStorage = new ThumbnailStorage[IO]:
       override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
         IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
       override def storeThumbnail(location: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
-        IO(assertEquals(location, stored.location)) >> IO(assertEquals(value, image)) >> events.update(_ :+ "store") >> storage
+        refs.thumbnails.update(_.appended((location = location, image = value))) >> events.update(_ :+ "store") >> storage
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
         IO.raiseError[ThumbnailStorage.RemoveResult](new AssertionError("Unexpected cleanup outside recovery"))
     val writePhoto  = save
     val removePhoto = remove
     val repository  = new PhotoRepository[Db]:
       override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
-        val found = maybeFound.getOrElse(existingPhotos.find(_.id.value === photo.value)
-          .fold[PhotoRepository.FindResult](PhotoRepository.FindResult.NotFound)(PhotoRepository.FindResult.Found(_)).pure[IO])
+        val found = maybeFound.getOrElse(PhotoRepository.FindResult.Found(existing).pure[IO])
         Kleisli.liftF[IO, Unit, PhotoRepository.FindResult](events.update(_ :+ s"find:${photo.value}") >> found)
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.SaveCaptionResult](caption(id, text))
+        val write = refs.captions.update(_.appended((chapter = chapter, photo = id, text = text))) >>
+          events.update(_ :+ s"caption:${id.value}:$text") >> caption
+        Kleisli.liftF[IO, Unit, PhotoRepository.SaveCaptionResult](write)
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =
         val listed = maybeListed.getOrElse(PhotoRepository.ListResult.Listed(existingPhotos).pure[IO])
-        Kleisli.liftF[IO, Unit, PhotoRepository.ListResult](IO(assertEquals(id, chapter)) >> listed)
+        Kleisli.liftF[IO, Unit, PhotoRepository.ListResult](refs.inventoryReads.update(_ :+ id) >> listed)
       override def save(photo: Photo): Db[PhotoRepository.WriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](writePhoto(photo))
+        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](refs.publications.update(_ :+ photo) >> writePhoto)
       override def remove(photo: PhotoId): Db[PhotoRepository.WriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](removePhoto(photo))
+        Kleisli.liftF[IO, Unit, PhotoRepository.WriteResult](refs.removals.update(_ :+ photo) >> removePhoto)
       override def recordWrite(intent: PhotoWriteIntent): Db[PhotoRepository.RecordWriteResult] =
-        Kleisli.liftF[IO, Unit, PhotoRepository.RecordWriteResult](events.update(_ :+ "record") >> recording)
+        Kleisli.liftF[IO, Unit, PhotoRepository.RecordWriteResult](refs.recorded.update(_ :+ intent) >> events.update(_ :+ "record") >> recording)
       override def completeWrite(id: PhotoWriteIntentId): Db[PhotoRepository.CompleteWriteResult] =
         Kleisli.liftF[
           IO,
@@ -387,11 +455,11 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
     val generator       = new PhotoThumbnailGenerator[IO]:
       override def quality: ThumbnailQuality                                                   = selectedQuality
       override def generate(value: PhotoContent): IO[PhotoThumbnailGenerator.GenerationResult] =
-        IO(assertEquals(value, content)) >> events.update(_ :+ "generate") >> generation
+        refs.generated.update(_ :+ value) >> events.update(_ :+ "generate") >> generation
     val recovery = new PhotoWriteRecovery[IO]:
       override def recover: IO[PhotoWriteRecovery.RecoveryResult] =
         IO.raiseError[PhotoWriteRecovery.RecoveryResult](new AssertionError("Unexpected startup recovery"))
       override def resolve(intent: PhotoWriteIntent): IO[PhotoWriteRecovery.RecoveryResult] =
-        events.update(_ :+ "resolve") >> finalization(intent)
+        refs.finalized.update(_ :+ intent) >> events.update(_ :+ "resolve") >> finalization
     PhotoManager.make(photoStorage, thumbnailStorage, repository, generator, recovery)
   // scalafix:on DisableSyntax.defaultArgs

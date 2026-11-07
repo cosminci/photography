@@ -1,6 +1,7 @@
 import { createRoot, createSignal } from "solid-js";
 import { waitFor } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 import { createLiveWorkspace } from "../../../src/features/albums/open/LiveWorkspace";
 import type { AlbumPhotoEvents, PhotoEvent, PhotoInventory } from "../../../src/features/albums/model/Photo";
 import { snapshotSpread, type Workspace } from "../../../src/features/albums/model/Workspace";
@@ -67,8 +68,51 @@ const workspace: Workspace = {
   photoInventories: { a: inventory, b: inventory },
 };
 type ResourceClient = Parameters<typeof createLiveWorkspace>[1];
+type ResourceOverrides = Partial<{ [Key in keyof ResourceClient]: Mock<ResourceClient[Key]> }>;
 
 describe("live workspace application coordination", () => {
+  it("should reject spread projections that disagree with saved chapter membership without publishing a partial workspace", async () => {
+    const client = buildClient({ composition: vi.fn().mockResolvedValue([{ id: "opening", chapter: "a" }]) });
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const { live, dispose } = createRoot((release) => ({
+      live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
+      dispose: release,
+    }));
+
+    receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(live.error()).toEqual(new Error("Spread identity mismatch"));
+    });
+
+    expect(live.workspace()).toBeUndefined();
+    expect(client.refreshPhotos).not.toHaveBeenCalled();
+    dispose();
+  });
+  it("should expose failed initial metadata acquisition and retry without starting photo imports", async () => {
+    const failure = new AlbumRequestError(500, "Album unavailable");
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const client = buildClient({ open: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(album) });
+    const { live, dispose } = createRoot((release) => ({
+      live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
+      dispose: release,
+    }));
+
+    await waitFor(() => {
+      expect(live.error()).toBe(failure);
+    });
+
+    expect(live.loading()).toBe(false);
+    expect(live.workspace()).toBeUndefined();
+    expect(client.chapters).not.toHaveBeenCalled();
+    receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(live.workspace()).toEqual(workspace);
+    });
+    expect(live.error()).toBeUndefined();
+    expect(client.open).toHaveBeenCalledTimes(2);
+    expect(client.refreshPhotos).not.toHaveBeenCalled();
+    dispose();
+  });
   it.each(["metadata", "spread", "inventory"] as const)(
     "should reject stale %s acquisition after publishing complete acknowledged metadata",
     async (stage) => {
@@ -227,12 +271,11 @@ describe("live workspace application coordination", () => {
     const beforeDeletion = [...members.slice(0, 2), { id: "deleted-photo", chapter: "a" }, ...members.slice(2)];
     const client = buildClient({
       composition: vi.fn().mockResolvedValueOnce(beforeDeletion).mockResolvedValue(members),
-      readPlacements: vi.fn().mockImplementation((_album: string, context: { id: string }) => {
-        if (context.id === "deleted-photo") return Promise.reject(new AlbumRequestError(404, "Spread not found"));
-        const spread = workspace.spreads.find((candidate) => candidate.id === context.id);
-        if (spread === undefined) throw new Error("Unexpected spread");
-        return Promise.resolve(snapshotSpread(spread));
-      }),
+      readPlacements: buildClient()
+        .readPlacements.mockResolvedValueOnce(readSavedSpread("opening"))
+        .mockResolvedValueOnce(readSavedSpread("a-opening"))
+        .mockRejectedValueOnce(new AlbumRequestError(404, "Spread not found"))
+        .mockResolvedValueOnce(readSavedSpread("b-opening")),
     });
     const { live, dispose } = createRoot((release) => ({
       live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
@@ -245,6 +288,7 @@ describe("live workspace application coordination", () => {
     });
 
     expect(client.composition).toHaveBeenCalledTimes(2);
+    expect(client.readPlacements).toHaveBeenNthCalledWith(3, album.id, { kind: "spread", id: "deleted-photo" }, expect.any(AbortSignal));
     expect(live.error()).toBeUndefined();
     expect(live.liveStatus()).toBe("live");
     dispose();
@@ -324,8 +368,42 @@ describe("live workspace application coordination", () => {
     dispose();
   });
 
+  it("should acquire photo spreads inside their saved chapter block", async () => {
+    const photos: Workspace["spreads"][number] = {
+      id: "a-photo",
+      chapter: "a",
+      kind: "photos_only",
+      templateId: "layout",
+      slots: [],
+      placements: [],
+      bleed: { state: "disabled", available: true },
+    };
+    const saved = { ...workspace, spreads: [...workspace.spreads.slice(0, 2), photos, ...workspace.spreads.slice(2)] };
+    const client = buildClient({
+      composition: vi.fn().mockResolvedValue(saved.spreads.map(({ id, chapter }) => ({ id, chapter }))),
+      readPlacements: repeatingSpreads(saved.spreads.map(snapshotSpread)),
+    });
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const root = createRoot((dispose) => ({ dispose, live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())) }));
+
+    receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(root.live.workspace()).toEqual(saved);
+    });
+
+    expect(root.live.error()).toBeUndefined();
+    root.dispose();
+  });
+
   it("should reject duplicate chapters, duplicate spreads, missing openings and mismatched spread identities", async () => {
-    const cases: readonly { name: string; overrides: Partial<ResourceClient>; message: string }[] = [
+    const photoWithoutOpening: SpreadSnapshot = {
+      kind: "spread",
+      id: "photo",
+      placements: [],
+      layout: { kind: "photos_only", templateId: "layout", slots: [], bleed: { state: "disabled", available: true } },
+    };
+    const anotherOpening: SpreadSnapshot = { ...readSavedSpread("opening"), id: "another-opening" };
+    const cases: readonly { name: string; overrides: ResourceOverrides; message: string; spreadReads?: readonly string[] }[] = [
       {
         name: "duplicate chapters",
         overrides: { chapters: vi.fn().mockResolvedValue([...workspace.chapters, workspace.chapters[0]]) },
@@ -375,23 +453,23 @@ describe("live workspace application coordination", () => {
             { id: "opening", chapter: null },
             { id: "photo", chapter: "a" },
           ]),
-          readPlacements: vi.fn().mockImplementation((_album: string, context: { id: string }) =>
-            Promise.resolve(
-              context.id === "opening"
-                ? readSavedSpread("opening")
-                : snapshotSpread({
-                    id: "photo",
-                    chapter: "a",
-                    kind: "photos_only",
-                    bleed: { state: "disabled" as const, available: true },
-                    templateId: "layout",
-                    slots: [],
-                    placements: [],
-                  }),
-            ),
-          ),
+          readPlacements: repeatingSpreads([readSavedSpread("opening"), photoWithoutOpening]),
         },
         message: "Invalid chapter spread block",
+        spreadReads: ["opening", "photo"],
+      },
+      {
+        name: "photo spread in another chapter block",
+        overrides: {
+          composition: vi.fn().mockResolvedValue([
+            { id: "opening", chapter: null },
+            { id: "a-opening", chapter: "a" },
+            { id: "photo", chapter: "b" },
+          ]),
+          readPlacements: repeatingSpreads([readSavedSpread("opening"), readSavedSpread("a-opening"), photoWithoutOpening]),
+        },
+        message: "Invalid chapter spread block",
+        spreadReads: ["opening", "a-opening", "photo"],
       },
       {
         name: "foreign spread",
@@ -410,21 +488,10 @@ describe("live workspace application coordination", () => {
             { id: "opening", chapter: null },
             { id: "another-opening", chapter: null },
           ]),
-          readPlacements: vi.fn().mockImplementation((_album: string, context: { id: string }) =>
-            Promise.resolve(
-              snapshotSpread({
-                id: context.id,
-                chapter: null,
-                kind: "album_start",
-                bleed: { state: "disabled" as const, available: true },
-                templateId: "layout",
-                slots: [],
-                placements: [],
-              }),
-            ),
-          ),
+          readPlacements: repeatingSpreads([readSavedSpread("opening"), anotherOpening]),
         },
         message: "Invalid chapter spread block",
+        spreadReads: ["opening", "another-opening"],
       },
     ];
     for (const scenario of cases) {
@@ -442,6 +509,9 @@ describe("live workspace application coordination", () => {
 
       expect(live.workspace(), scenario.name).toBeUndefined();
       expect(client.chapters, scenario.name).toHaveBeenCalledTimes(3);
+      scenario.spreadReads?.forEach((id, index) => {
+        expect(client.readPlacements).toHaveBeenNthCalledWith(index + 1, album.id, { kind: "spread", id }, expect.any(AbortSignal));
+      });
       dispose();
     }
   });
@@ -778,23 +848,17 @@ describe("live workspace application coordination", () => {
   });
 });
 
-function buildClient(overrides: Partial<ResourceClient> = {}) {
+function buildClient(overrides: ResourceOverrides = {}) {
   return {
-    open: vi.fn<ResourceClient["open"]>(overrides.open ?? (() => Promise.resolve(album))),
-    chapters: vi.fn<ResourceClient["chapters"]>(overrides.chapters ?? (() => Promise.resolve(workspace.chapters))),
-    composition: vi.fn<ResourceClient["composition"]>(
-      overrides.composition ?? (() => Promise.resolve(workspace.spreads.map(({ id, chapter }) => ({ id, chapter })))),
-    ),
-    readPlacements: vi.fn<ResourceClient["readPlacements"]>(
-      overrides.readPlacements ??
-        ((_album, context) => {
-          return Promise.resolve(readSavedSpread(context.id));
-        }),
-    ),
-    countries: vi.fn<ResourceClient["countries"]>(overrides.countries ?? (() => Promise.resolve(workspace.countries))),
-    photoSource: vi.fn<ResourceClient["photoSource"]>(overrides.photoSource ?? (() => Promise.resolve(workspace.photoRoot))),
-    chapterPhotos: vi.fn<ResourceClient["chapterPhotos"]>(overrides.chapterPhotos ?? (() => Promise.resolve(inventory))),
-    refreshPhotos: vi.fn<ResourceClient["refreshPhotos"]>(overrides.refreshPhotos ?? (() => Promise.resolve("coalesced"))),
+    open: vi.fn<ResourceClient["open"]>().mockResolvedValue(album),
+    chapters: vi.fn<ResourceClient["chapters"]>().mockResolvedValue(workspace.chapters),
+    composition: vi.fn<ResourceClient["composition"]>().mockResolvedValue(workspace.spreads.map(({ id, chapter }) => ({ id, chapter }))),
+    readPlacements: vi.fn<ResourceClient["readPlacements"]>().mockImplementation((_album, context) => Promise.resolve(readSavedSpread(context.id))),
+    countries: vi.fn<ResourceClient["countries"]>().mockResolvedValue(workspace.countries),
+    photoSource: vi.fn<ResourceClient["photoSource"]>().mockResolvedValue(workspace.photoRoot),
+    chapterPhotos: vi.fn<ResourceClient["chapterPhotos"]>().mockResolvedValue(inventory),
+    refreshPhotos: vi.fn<ResourceClient["refreshPhotos"]>().mockResolvedValue("coalesced"),
+    ...overrides,
   };
 }
 
@@ -802,6 +866,15 @@ function readSavedSpread(id: string): SpreadSnapshot {
   const spread = workspace.spreads.find((candidate) => candidate.id === id);
   if (spread === undefined) throw new Error("Unknown spread");
   return snapshotSpread(spread);
+}
+
+function repeatingSpreads(snapshots: readonly SpreadSnapshot[]) {
+  let next = 0;
+  return vi.fn<ResourceClient["readPlacements"]>().mockImplementation(() => {
+    const saved = snapshots[next++ % snapshots.length];
+    if (saved === undefined) throw new Error("Expected an arranged spread response");
+    return Promise.resolve(saved);
+  });
 }
 
 function buildEvents(receive: ReturnType<typeof vi.fn<(event: PhotoEvent) => void>>, close: () => void): AlbumPhotoEvents {

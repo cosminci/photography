@@ -1,6 +1,6 @@
 package photography.adapters.http
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
@@ -19,21 +19,24 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
   private val uri                           = Uri.unsafeFromString(s"/thumbnails/${location.value}/$version.jpg")
 
   test("should translate versioned delivery into immutable JPEG responses and honor conditional GET and HEAD"):
-    val app        = PublicRoutes(ThumbnailApi.make(buildStorage(ThumbnailStorage.ReadResult.Read(bytes).pure[IO]))).orNotFound
+    val calls      = Ref.unsafe[IO, Vector[ThumbnailRead]](Vector.empty)
+    val app        = PublicRoutes(ThumbnailApi.make(buildStorage(calls, ThumbnailStorage.ReadResult.Read(bytes).pure[IO]))).orNotFound
     val conditions = Vector("*" -> Status.NotModified, s"""W/"$version"""" -> Status.NotModified, """"different"""" -> Status.Ok)
 
     for
-      response <- app.run(Request[IO](Method.GET, uri))
-      actual   <- response.body.compile.toVector
-      head     <- app.run(Request[IO](Method.HEAD, uri))
-      headBody <- head.body.compile.toVector
-      cached   <- conditions.traverse { case (condition, expected) =>
+      response  <- app.run(Request[IO](Method.GET, uri))
+      actual    <- response.body.compile.toVector
+      requested <- calls.get
+      head      <- app.run(Request[IO](Method.HEAD, uri))
+      headBody  <- head.body.compile.toVector
+      cached    <- conditions.traverse { case (condition, expected) =>
         app.run(Request[IO](Method.GET, uri).putHeaders("If-None-Match" -> condition)).flatMap: value =>
           value.body.compile.toVector.map(body => (value.status, expected, body))
       }
     yield
       assertEquals(response.status, Status.Ok)
       assertEquals(actual, bytes: Vector[Byte])
+      assertEquals(requested, Vector(ThumbnailRead(location, version)))
       assertEquals(response.contentType.map(_.mediaType), MediaType.image.jpeg.some)
       assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "private, max-age=31536000, immutable".some)
       assertEquals(response.headers.get(CIString("ETag")).map(_.head.value), s""""$version"""".some)
@@ -45,7 +48,8 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
       }
 
   test("should reject traversal and malformed paths without invoking delivery and translate missing and failed reads"):
-    val forbidden = buildStorage(IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected read")))
+    val calls     = Ref.unsafe[IO, Vector[ThumbnailRead]](Vector.empty)
+    val forbidden = buildStorage(calls, ThumbnailStorage.ReadResult.NotFound.pure[IO])
     val paths     = Vector(
       "/thumbnails/../original.jpg",
       s"/thumbnails/${location.value}/../original.jpg",
@@ -55,25 +59,29 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
       s"/thumbnails/${location.value}/bad.jpg",
       "/unrelated"
     )
-    val failures = Vector(ThumbnailStorage.ReadResult.NotFound -> Status.NotFound, ThumbnailStorage.ReadResult.Failed -> Status.InternalServerError)
+    val failures = Vector(ThumbnailStorage.ReadResult.NotFound, ThumbnailStorage.ReadResult.Failed)
 
-    paths.traverse_(path =>
+    val excluded = paths.traverse_(path =>
       PublicRoutes(ThumbnailApi.make(forbidden)).orNotFound.run(Request[IO](uri = Uri.unsafeFromString(path))).map(r =>
         assertEquals(r.status, Status.NotFound)
       )
-    ) >>
-      failures.traverse_ { case (result, expected) =>
-        val service = buildStorage(result.pure[IO])
-        PublicRoutes(ThumbnailApi.make(service)).orNotFound.run(Request[IO](uri = uri)).map(r => assertEquals(r.status, expected))
+    )
+    for
+      _        <- excluded
+      statuses <- failures.traverse { result =>
+        val service = buildStorage(calls, result.pure[IO])
+        PublicRoutes(ThumbnailApi.make(service)).orNotFound.run(Request[IO](uri = uri)).map(_.status)
       }
+      requested <- calls.get
+    yield
+      assertEquals(statuses, Vector(Status.NotFound, Status.InternalServerError))
+      assertEquals(requested, Vector.fill(2)(ThumbnailRead(location, version)))
 
-  private def buildStorage(response: IO[ThumbnailStorage.ReadResult]) =
+  final private case class ThumbnailRead(location: ThumbnailLocation, version: String :| Not[Blank])
+  private def buildStorage(calls: Ref[IO, Vector[ThumbnailRead]], response: IO[ThumbnailStorage.ReadResult]) =
     new ThumbnailStorage[IO]:
       override def readThumbnail(id: ThumbnailLocation, requestedVersion: String :| Not[Blank]) =
-        IO {
-          assertEquals(id, location)
-          assertEquals(requestedVersion, version)
-        } >> response
+        calls.update(_ :+ ThumbnailRead(id, requestedVersion)) >> response
       override def storeThumbnail(id: ThumbnailLocation, image: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
         IO.raiseError[ThumbnailStorage.StoreResult](new AssertionError("Unexpected write"))
       override def removeThumbnail(id: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =

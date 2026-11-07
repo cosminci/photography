@@ -190,11 +190,11 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       for
         manager      <- buildManager(refs, maybeAlbum = occupied.some)
         result       <- manager.editPlacements(album.id, first.id, Edit.SetCaptionCorner(selected.id, corner))
-        replacements <- refs.replacements.get
+        replacements <- refs.placementWrites.get
         layouts      <- refs.layouts.get
       yield
         assertEquals(result, PlacementResult.Saved(expected))
-        assertEquals(replacements, Vector(expected))
+        assertEquals(replacements, Vector(first.id -> expected.placements))
         assertEquals(layouts, Vector.empty[Spread])
     }
 
@@ -409,19 +409,34 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
         case value: Spread.AlbumStart   => album.copy(opening = value)
         case value: Spread.ChapterStart => album.copy(chapters = Vector(chapter.copy(opening = value)))
         case value: Spread.PhotosOnly   => buildAlbumWithSpreads(spreads = Vector(value))
-      val expected = SpreadPlacement(SpreadPlacementId(buildUuid(index = 1000L)), slot, photo, untouched, CaptionCorner.BottomRight)
+      val expected   = SpreadPlacement(SpreadPlacementId(buildUuid(index = 1000L)), slot, photo, untouched, CaptionCorner.BottomRight)
+      val populated  = replaceTestPlacements(target, placements = Vector(expected))
+      val savedReads = responses(Vector(target, populated, populated, target).map: spread =>
+        AlbumCompositionRepository.SpreadResult.Found(spread match
+          case value: Spread.AlbumStart   => Located.AlbumOpening(value)
+          case value: Spread.ChapterStart => Located.ChapterOpening(chapter.id, value)
+          case value: Spread.PhotosOnly   => Located.Photo(chapter.id, value)))
 
       for
-        manager <- buildManager(refs, maybeAlbum = current.some)
+        manager <- buildManager(refs, maybeAlbum = current.some, spreadReads = savedReads.some)
         placed  <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo))
         read    <- manager.readPlacements(album.id, target.id)
         removed <- manager.editPlacements(album.id, target.id, Edit.Remove(expected.id))
         fresh   <- manager.editPlacements(album.id, target.id, Edit.Place(slot, photo))
+        writes  <- refs.placementWrites.get
       yield
         assertEquals(describePlacementResult(placed), Vector(expected))
-        assertEquals(read, PlacementReadResult.Found(replaceTestPlacements(target, placements = Vector(expected))))
+        assertEquals(read, PlacementReadResult.Found(populated))
         assertEquals(removed, PlacementResult.Saved(target))
         assertEquals(describePlacementResult(fresh), Vector(expected.copy(id = SpreadPlacementId(buildUuid(index = 1001L)))))
+        assertEquals(
+          writes,
+          Vector(
+            target.id -> Vector(expected),
+            target.id -> Vector.empty[SpreadPlacement],
+            target.id -> Vector(expected.copy(id = SpreadPlacementId(buildUuid(index = 1001L))))
+          )
+        )
     }
 
   test("should adjust, move, swap and replace while retaining slot geometry and photo transforms"):
@@ -435,15 +450,25 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     val movedSource = source.copy(transform = adjusted, slot = destination.slot)
     val swapped     = Vector(movedSource, destination.copy(slot = source.slot))
     val incoming    = SpreadPlacement(SpreadPlacementId(buildUuid(index = 1000L)), source.slot, replacement, untouched, CaptionCorner.BottomRight)
+    val snapshots   = Vector(
+      firstOccupied,
+      firstOccupied.copy(placements = changed),
+      firstOccupied.copy(placements = swapped),
+      firstOccupied.copy(placements = swapped),
+      firstOccupied.copy(placements = Vector(movedSource, incoming)),
+      firstOccupied.copy(placements = Vector(movedSource))
+    )
+    val savedReads = responses(snapshots.map(spread => AlbumCompositionRepository.SpreadResult.Found(Located.Photo(chapter.id, spread))))
 
     for
-      manager      <- buildManager(refs, maybeAlbum = current.some)
+      manager      <- buildManager(refs, maybeAlbum = current.some, spreadReads = savedReads.some)
       saved        <- manager.editPlacements(album.id, first.id, Edit.Adjust(source.id, adjusted))
       moved        <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot))
       same         <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, destination.slot))
       replaced     <- manager.editPlacements(album.id, first.id, Edit.Place(source.slot, replacement))
       removed      <- manager.editPlacements(album.id, first.id, Edit.Remove(incoming.id))
       movedToEmpty <- manager.editPlacements(album.id, first.id, Edit.Move(source.id, source.slot))
+      writes       <- refs.placementWrites.get
     yield
       assertEquals(saved, PlacementResult.Saved(firstOccupied.copy(placements = changed)))
       assertEquals(moved, PlacementResult.Saved(firstOccupied.copy(placements = swapped)))
@@ -451,6 +476,17 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(replaced, PlacementResult.Saved(firstOccupied.copy(placements = Vector(movedSource, incoming))))
       assertEquals(removed, PlacementResult.Saved(firstOccupied.copy(placements = Vector(movedSource))))
       assertEquals(movedToEmpty, PlacementResult.Saved(firstOccupied.copy(placements = Vector(source.copy(transform = adjusted)))))
+      assertEquals(
+        writes,
+        Vector(
+          changed,
+          swapped,
+          swapped,
+          Vector(movedSource, incoming),
+          Vector(movedSource),
+          Vector(source.copy(transform = adjusted))
+        ).map(first.id -> _)
+      )
 
   test("should reject stale placement targets and invalid zoom without replacing a spread"):
     val occupied  = buildAlbumWithSpreads(spreads = Vector(firstOccupied))
@@ -474,32 +510,51 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       for
         manager <- buildManager(refs, maybeAlbum = occupied.some)
         result  <- manager.editPlacements(album.id, first.id, request)
-        writes  <- refs.replacements.get
+        writes  <- refs.placementWrites.get
       yield
         assertEquals(result, PlacementResult.Rejected(failure))
-        assertEquals(writes, Vector.empty[Spread])
+        assertEquals(writes, Vector.empty[(SpreadId, Vector[SpreadPlacement])])
     }
 
   test("should reject wrong-owner and used photos and serialize current placement decisions"):
     val refs         = Refs()
     val photo        = PhotoId(buildUuid(index = 570L))
     val foreignPhoto = PhotoId(buildUuid(index = 590L))
+    val missing      = PhotoId(buildUuid(index = 9999L))
+    val inspections  = responses(Vector(
+      PhotoPlacementRepository.InspectResult.Found(inCollection = false, placed = false),
+      PhotoPlacementRepository.InspectResult.NotFound,
+      PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = false),
+      PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = true)
+    ))
 
     for
-      manager       <- buildManager(refs)
-      secondManager <- buildManager(refs)
+      manager       <- buildManager(refs, inspection = inspections)
+      secondManager <- buildManager(refs, inspection = PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = true).pure[IO])
       foreignResult <- manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, foreignPhoto))
       missingPhoto  <-
-        manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, PhotoId(buildUuid(index = 9999L))))
+        manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, missing))
       outcomes <-
         first.photoSlots.toList.parTraverse(slot => manager.editPlacements(album.id, first.id, Edit.Place(slot.id, photo)))
-      used <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo))
+      used    <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo))
+      effects <- refs.effects.get
     yield
       assertEquals(foreignResult, PlacementResult.Rejected(Failure.PhotoNotInCollection))
       assertEquals(missingPhoto, PlacementResult.Rejected(Failure.PhotoNotInCollection))
       assertEquals(outcomes.count { case PlacementResult.Saved(_) => true; case _ => false }, 1)
       assertEquals(outcomes.count { case PlacementResult.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }, 1)
       assertEquals(used, PlacementResult.Rejected(Failure.PhotoAlreadyUsed))
+      assertEquals(
+        effects,
+        Vector(
+          Effect.Inspect(album.id, chapter.id.some, foreignPhoto),
+          Effect.Inspect(album.id, chapter.id.some, missing),
+          Effect.Inspect(album.id, chapter.id.some, photo),
+          Effect.Place(first.id),
+          Effect.Inspect(album.id, chapter.id.some, photo),
+          Effect.Inspect(album.id, chapter.id.some, photo)
+        )
+      )
 
   test("should distinguish missing placement targets and fail explicitly on reads, photo inspection and writes"):
     val refs    = Refs()
@@ -533,12 +588,13 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(failedWrite, PlacementResult.Failed)
 
   test("should replace the observed chapter order and reject stale intent without replaying it"):
-    val refs     = Refs()
-    val observed = NonEmptyList.of(chapterOpening.id, first.id, second.id)
-    val proposed = NonEmptyList.of(chapterOpening.id, second.id, first.id)
+    val refs        = Refs()
+    val observed    = NonEmptyList.of(chapterOpening.id, first.id, second.id)
+    val proposed    = NonEmptyList.of(chapterOpening.id, second.id, first.id)
+    val savedOrders = responses(Vector(observed.some, proposed.some))
 
     for
-      manager <- buildManager(refs)
+      manager <- buildManager(refs, orderReads = savedOrders.some)
       saved   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
       stale   <- manager.replaceChapterOrder(album.id, chapter.id, observed, proposed)
       orders  <- refs.orders.get
@@ -597,22 +653,38 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(after, Vector((chapter.id, proposed)))
 
   test("should commit spread bleed atomically while retaining geometry and placements and reject empty eligibility"):
-    val refs      = Refs()
-    val expected  = firstOccupied.withBleed(enabled = true).fold(message => fail(message), identity)
-    val populated = buildAlbumWithSpreads(Vector(firstOccupied, second))
+    val refs     = Refs()
+    val expected = firstOccupied.copy(photoSlots =
+      NonEmptyList.of(
+        buildPhotoSlot(index = 4000L, box).copy(bleed = Set(SpreadEdge.Top, SpreadEdge.Bottom, SpreadEdge.Left)),
+        buildPhotoSlot(index = 4001L, wideBox).copy(bleed = Set(SpreadEdge.Top, SpreadEdge.Bottom, SpreadEdge.Right))
+      )
+    )
+    val populated  = buildAlbumWithSpreads(Vector(firstOccupied, second))
+    val savedReads = responses(Vector(
+      AlbumCompositionRepository.SpreadResult.Found(Located.Photo(chapter.id, firstOccupied)),
+      AlbumCompositionRepository.SpreadResult.Found(Located.Photo(chapter.id, expected)),
+      AlbumCompositionRepository.SpreadResult.Found(Located.AlbumOpening(albumOpening))
+    ))
 
     for
-      manager      <- buildManager(refs, maybeAlbum = populated.some)
+      manager      <- buildManager(refs, maybeAlbum = populated.some, spreadReads = savedReads.some)
       enabled      <- manager.setBleed(album.id, firstOccupied.id, enabled = true)
       disabled     <- manager.setBleed(album.id, firstOccupied.id, enabled = false)
       rejected     <- manager.setBleed(album.id, albumOpening.id, enabled = true)
-      replacements <- refs.replacements.get
+      replacements <- refs.bleedWrites.get
       layouts      <- refs.layouts.get
     yield
       assertEquals(enabled, SetBleedResult.Saved(expected))
       assertEquals(disabled, SetBleedResult.Saved(firstOccupied))
       assertEquals(rejected, SetBleedResult.Rejected)
-      assertEquals(replacements, Vector(expected, firstOccupied))
+      assertEquals(
+        replacements,
+        Vector(
+          firstOccupied.id -> expected.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap,
+          firstOccupied.id -> firstOccupied.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap
+        )
+      )
       assertEquals(layouts, Vector.empty[Spread])
 
   test("should expose missing and failed bleed writes without changing another spread"):
@@ -634,12 +706,19 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(failedRead, SetBleedResult.Failed)
       assertEquals(failedWrite, SetBleedResult.Failed)
 
+  private enum Effect:
+    case Inspect(album: AlbumId, chapter: Option[ChapterId], photo: PhotoId)
+    case Place(spread: SpreadId)
+
   final private case class Refs():
-    val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]]    = Ref.unsafe(Vector.empty)
-    val replacements: Ref[IO, Vector[Spread]]                                        = Ref.unsafe(Vector.empty)
-    val layouts: Ref[IO, Vector[Spread]]                                             = Ref.unsafe(Vector.empty)
-    val orders: Ref[IO, Vector[(chapter: ChapterId, order: NonEmptyList[SpreadId])]] = Ref.unsafe(Vector.empty)
-    val removals: Ref[IO, Vector[SpreadId]]                                          = Ref.unsafe(Vector.empty)
+    val inserts: Ref[IO, Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]]         = Ref.unsafe(Vector.empty)
+    val replacements: Ref[IO, Vector[Spread]]                                             = Ref.unsafe(Vector.empty)
+    val layouts: Ref[IO, Vector[Spread]]                                                  = Ref.unsafe(Vector.empty)
+    val orders: Ref[IO, Vector[(chapter: ChapterId, order: NonEmptyList[SpreadId])]]      = Ref.unsafe(Vector.empty)
+    val removals: Ref[IO, Vector[SpreadId]]                                               = Ref.unsafe(Vector.empty)
+    val placementWrites: Ref[IO, Vector[(SpreadId, Vector[SpreadPlacement])]]             = Ref.unsafe(Vector.empty)
+    val bleedWrites: Ref[IO, Vector[(SpreadId, Map[PhotoSpreadSlotId, Set[SpreadEdge]])]] = Ref.unsafe(Vector.empty)
+    val effects: Ref[IO, Vector[Effect]]                                                  = Ref.unsafe(Vector.empty)
 
   private def describeInserts(values: Vector[(chapter: ChapterId, spread: Spread.PhotosOnly)]) =
     values.map { case (chapterId, spread) => (chapterId, spread.id, spread.template, spread.photoSlots.map(_.box).toList, spread.placements) }
@@ -670,13 +749,6 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     case value: Spread.ChapterStart => value.copy(placements = placements)
     case value: Spread.PhotosOnly   => value.copy(placements = placements)
 
-  private def replaceTestBleed(spread: Spread, edges: Map[PhotoSpreadSlotId, Set[SpreadEdge]]) =
-    val update = (slot: SpreadSlot.Photo) => slot.copy(bleed = edges.getOrElse(slot.id, fail("Missing photo slot bleed")))
-    spread match
-      case value: Spread.AlbumStart   => value.copy(photoSlots = value.photoSlots.map(update))
-      case value: Spread.ChapterStart => value.copy(photoSlots = value.photoSlots.map(update))
-      case value: Spread.PhotosOnly   => value.copy(photoSlots = value.photoSlots.map(update))
-
   private def describePlacementResult(result: PlacementResult) = result match
     case PlacementResult.Saved(spread) => spread.placements
     case other                         => fail(s"Expected saved placements, obtained $other")
@@ -685,11 +757,18 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
   private def buildManager(
       refs: Refs,
       maybeAlbum: Option[Album] = album.some,
-      maybeReadError: Option[Throwable] = None,
-      maybeWriteError: Option[Throwable] = None,
-      maybeTemplateResult: Option[FindTemplateResult] = None,
-      maybeInspectionError: Option[Throwable] = None
+      maybeReadError: Option[Throwable] = none,
+      maybeWriteError: Option[Throwable] = none,
+      maybeTemplateResult: Option[FindTemplateResult] = none,
+      maybeInspectionError: Option[Throwable] = none,
+      spreadReads: Option[IO[AlbumCompositionRepository.SpreadResult]] = none,
+      orderReads: Option[IO[Option[NonEmptyList[SpreadId]]]] = none,
+      inspection: IO[PhotoPlacementRepository.InspectResult] =
+        PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = false).pure[IO]
   ) =
+    val located = maybeAlbum.toList.flatMap: saved =>
+      Vector[Located](Located.AlbumOpening(saved.opening)) ++ saved.chapters.flatMap: chapter =>
+        Vector[Located](Located.ChapterOpening(chapter.id, chapter.opening)) ++ chapter.spreads.map(Located.Photo(chapter.id, _))
     given ids: IdGenerator[IO] with
       private val next                  = Ref.unsafe[IO, Long](1000L)
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(buildUuid)
@@ -707,25 +786,19 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def countInteriorSpreads(value: AlbumId): IO[Int] =
         maybeAlbum.filter(_.id.value === value.value).fold(0)(_.collectSpreads.length).pure[IO]
       override def findChapterOrder(value: AlbumId, chapterId: ChapterId): IO[Option[NonEmptyList[SpreadId]]] =
+        val saved = IO:
+          maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value)).map: chapter =>
+            NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)
         maybeReadError match
           case Some(error) => IO.raiseError[Option[NonEmptyList[SpreadId]]](error)
-          case None        => refs.orders.get.map: orders =>
-              maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value)).map: chapter =>
-                orders.findLast { case (id, _) => id.value === chapterId.value }
-                  .fold(NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)) { case (_, order) => order }
+          case None        => orderReads.getOrElse(saved)
       override def findSpread(value: AlbumId, id: SpreadId): IO[AlbumCompositionRepository.SpreadResult] =
-        refs.replacements.get.map { replacements =>
-          maybeAlbum.filter(_.id.value === value.value).flatMap: album =>
-            val located = Vector[Located](Located.AlbumOpening(album.opening)) ++ album.chapters.flatMap: chapter =>
-              Vector[Located](Located.ChapterOpening(chapter.id, chapter.opening)) ++ chapter.spreads.map(Located.Photo(chapter.id, _))
-            located.find(_.spread.id.value === id.value).map: target =>
-              replacements.findLast(_.id.value === id.value).fold(target):
-                case spread: Spread.AlbumStart   => Located.AlbumOpening(spread)
-                case spread: Spread.ChapterStart => Located.ChapterOpening(chapter.id, spread)
-                case spread: Spread.PhotosOnly   => Located.Photo(chapter.id, spread)
-        }.map(_.fold[AlbumCompositionRepository.SpreadResult](AlbumCompositionRepository.SpreadResult.NotFound)(
+        val saved = located.find(
+          _.spread.id.value === id.value
+        ).fold[AlbumCompositionRepository.SpreadResult](AlbumCompositionRepository.SpreadResult.NotFound)(
           AlbumCompositionRepository.SpreadResult.Found(_)
-        ))
+        )
+        spreadReads.getOrElse(saved.pure[IO])
     val writes     = maybeWriteError.fold(IO.unit)(error => IO.raiseError[Unit](error))
     val repository = new SpreadRepository[IO]:
       override def insert(chapterId: ChapterId, spread: Spread.PhotosOnly): IO[Unit] =
@@ -733,15 +806,9 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def replace(spread: Spread): IO[Unit] =
         writes >> refs.layouts.update(_ :+ spread) >> refs.replacements.update(_ :+ spread)
       override def replacePlacements(spread: SpreadId, placements: Vector[SpreadPlacement]): IO[Unit] =
-        composition.findSpread(album.id, spread).flatMap:
-          case AlbumCompositionRepository.SpreadResult.Found(current) =>
-            writes >> refs.replacements.update(_ :+ replaceTestPlacements(current.spread, placements))
-          case _ => IO.raiseError[Unit](new AssertionError("Missing placement target"))
+        IO.cede >> refs.effects.update(_ :+ Effect.Place(spread)) >> refs.placementWrites.update(_ :+ (spread, placements)) >> writes
       override def replaceBleed(spread: SpreadId, edges: Map[PhotoSpreadSlotId, Set[SpreadEdge]]): IO[Unit] =
-        composition.findSpread(album.id, spread).flatMap:
-          case AlbumCompositionRepository.SpreadResult.Found(current) =>
-            writes >> refs.replacements.update(_ :+ replaceTestBleed(current.spread, edges))
-          case _ => IO.raiseError[Unit](new AssertionError("Missing bleed target"))
+        refs.bleedWrites.update(_ :+ (spread, edges)) >> writes
       override def reorder(chapterId: ChapterId, order: NonEmptyList[SpreadId]): IO[Unit] =
         refs.orders.update(_ :+ (chapterId, order)) >> writes
       override def remove(spread: SpreadId): IO[Unit] = refs.removals.update(_ :+ spread) >> writes
@@ -749,19 +816,8 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def findPlacedPhotos(id: ChapterId): IO[PhotoPlacementRepository.FindResult] =
         IO.raiseError[PhotoPlacementRepository.FindResult](new AssertionError("Unexpected inventory"))
       override def inspect(owner: AlbumId, maybeChapter: Option[ChapterId], photo: PhotoId): IO[PhotoPlacementRepository.InspectResult] =
-        maybeInspectionError match
-          case Some(error) => IO.raiseError[PhotoPlacementRepository.InspectResult](error)
-          case None        => refs.replacements.get.map: replacements =>
-              val all          = maybeAlbum.toList.flatMap(_.collectSpreads.toList)
-              val current      = all.map(value => replacements.findLast(_.id.value === value.id.value).getOrElse(value))
-              val photoChapter = if photo.value === buildUuid(index = 590L) then otherChapter.id else chapter.id
-              val eligible     = owner.value === album.id.value && maybeChapter.forall(_.value === photoChapter.value)
-              if photo.value === buildUuid(index = 9999L) then PhotoPlacementRepository.InspectResult.NotFound
-              else
-                PhotoPlacementRepository.InspectResult.Found(
-                  inCollection = eligible,
-                  placed = current.exists(_.placements.exists(_.photo.value === photo.value))
-                )
+        refs.effects.update(_ :+ Effect.Inspect(owner, maybeChapter, photo)) >>
+          maybeInspectionError.fold(inspection)(IO.raiseError[PhotoPlacementRepository.InspectResult])
     Mutex[IO].map: mutex =>
       given transaction: Transaction[IO, IO] with
         override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
@@ -773,3 +829,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
     catalog.find(_.id.value === id.value).fold[FindTemplateResult](FindTemplateResult.NotFound)(FindTemplateResult.Found(_))
 
   private def buildUuid(index: Long) = new UUID(0L, index)
+
+  private def responses[A](values: Vector[A]): IO[A] =
+    val remaining = Ref.unsafe[IO, Vector[A]](values)
+    val next      = remaining.modify:
+      case head +: tail => (tail, head.some)
+      case _            => (Vector.empty[A], none[A])
+    next.flatMap(_.liftTo[IO](new AssertionError("Unarranged spread repository response")))

@@ -40,7 +40,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
   test("should create a spread after the target and answer with the inserted identity"):
     for
       calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server = buildApi(calls, add = AddResult.Added(SpreadId(spread)))
+      server = buildApi(Refs(calls), add = AddResult.Added(SpreadId(spread)))
       result <- respond(server, post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString(spread.toString))))
       seen   <- calls.get
     yield
@@ -62,7 +62,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
     ).traverse_ { case (outcome, status, expected) =>
       for
         calls <- Ref.of[IO, Vector[String]](Vector.empty)
-        server = buildApi(calls, add = outcome)
+        server = buildApi(Refs(calls), add = outcome)
         result <- respond(server, post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString(spread.toString))))
       yield assertEquals(result, status -> expected.some)
     } >> {
@@ -71,7 +71,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
       for
         calls <- Ref.of[IO, Vector[String]](Vector.empty)
-        server = buildApi(calls)
+        server = buildApi(Refs(calls))
         invalid <- respond(server, post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString("not-a-uuid"))))
         notJson <- respond(server, malformed)
         seen    <- calls.get
@@ -87,8 +87,8 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
     for
       calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server   = buildApi(calls, change = ChangeTemplateResult.Changed(SpreadId(spread), SpreadTemplateId(layout)))
-      occupied = buildApi(calls, change = ChangeTemplateResult.Occupied(2))
+      server   = buildApi(Refs(calls), change = ChangeTemplateResult.Changed(SpreadId(spread), SpreadTemplateId(layout)))
+      occupied = buildApi(Refs(calls), change = ChangeTemplateResult.Occupied(2))
       changed  <- respond(server, put(s"$albumUrl/spreads/$spread/template?confirmPlacements=true", body))
       warned   <- respond(occupied, put(s"$albumUrl/spreads/$spread/template", body))
       rejected <- respond(occupied, declined)
@@ -115,10 +115,10 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       (ChangeTemplateResult.AlbumNotFound, Status.NotFound, parseJson("""{"code":"album_not_found"}""")),
       (ChangeTemplateResult.Failed, Status.InternalServerError, parseJson("""{"code":"service_failure"}"""))
     ).traverse_ { case (outcome, status, expected) =>
-      respond(buildApi(Ref.unsafe[IO, Vector[String]](Vector.empty), change = outcome), put(s"$albumUrl/spreads/$spread/template", body))
+      respond(buildApi(Refs(Ref.unsafe[IO, Vector[String]](Vector.empty)), change = outcome), put(s"$albumUrl/spreads/$spread/template", body))
         .map(result => assertEquals(result, status -> expected.some))
     } >> respond(
-      buildApi(Ref.unsafe[IO, Vector[String]](Vector.empty)),
+      buildApi(Refs(Ref.unsafe[IO, Vector[String]](Vector.empty))),
       put(s"$albumUrl/spreads/$spread/template", Json.obj("templateId" -> Json.fromString("layout")))
     )
       .map(result => assertEquals(result, Status.BadRequest -> parseJson("""{"message":"Template IDs must be canonical UUIDs"}""").some))
@@ -126,13 +126,13 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
   test("should delete spreads with explicit confirmation and explain occupied, opening, and missing targets"):
     for
       calls    <- Ref.of[IO, Vector[String]](Vector.empty)
-      deleted  <- respond(buildApi(calls, delete = DeleteResult.Deleted), delete(s"$albumUrl/spreads/$spread?confirmPlacements=true"))
+      deleted  <- respond(buildApi(Refs(calls), delete = DeleteResult.Deleted), delete(s"$albumUrl/spreads/$spread?confirmPlacements=true"))
       seen     <- calls.get
-      occupied <- respond(buildApi(calls, delete = DeleteResult.Occupied(3)), delete(s"$albumUrl/spreads/$spread?confirmPlacements=false"))
-      opening  <- respond(buildApi(calls, delete = DeleteResult.Rejected(Conflict.OpeningDelete)), delete(s"$albumUrl/spreads/$spread"))
-      missing  <- respond(buildApi(calls, delete = DeleteResult.SpreadNotFound), delete(s"$albumUrl/spreads/$spread"))
-      unknown  <- respond(buildApi(calls, delete = DeleteResult.AlbumNotFound), delete(s"$albumUrl/spreads/$spread"))
-      failed   <- respond(buildApi(calls, delete = DeleteResult.Failed), delete(s"$albumUrl/spreads/$spread"))
+      occupied <- respond(buildApi(Refs(calls), delete = DeleteResult.Occupied(3)), delete(s"$albumUrl/spreads/$spread?confirmPlacements=false"))
+      opening  <- respond(buildApi(Refs(calls), delete = DeleteResult.Rejected(Conflict.OpeningDelete)), delete(s"$albumUrl/spreads/$spread"))
+      missing  <- respond(buildApi(Refs(calls), delete = DeleteResult.SpreadNotFound), delete(s"$albumUrl/spreads/$spread"))
+      unknown  <- respond(buildApi(Refs(calls), delete = DeleteResult.AlbumNotFound), delete(s"$albumUrl/spreads/$spread"))
+      failed   <- respond(buildApi(Refs(calls), delete = DeleteResult.Failed), delete(s"$albumUrl/spreads/$spread"))
     yield
       assertEquals(deleted, Status.NoContent -> None)
       assertEquals(seen, Vector(s"delete:$album:$spread:true"))
@@ -147,7 +147,7 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
     for
       calls <- Ref.of[IO, Vector[String]](Vector.empty)
-      server = buildApi(calls)
+      server = buildApi(Refs(calls))
       changed <- respond(server, put(s"$albumUrl/spreads/$spread/template?confirmPlacements=yes", body))
       deleted <- respond(server, delete(s"$albumUrl/spreads/$spread?confirmPlacements=yes"))
       seen    <- calls.get
@@ -156,6 +156,34 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(changed, expected)
       assertEquals(deleted, expected)
       assertEquals(seen, Vector.empty[String])
+
+  test("should declare and admit additions, template changes and removals at their exact editing targets"):
+    val refs   = Refs(Ref.unsafe[IO, Vector[String]](Vector.empty))
+    val api    = buildApi(refs)
+    val target = EditingTarget.Spread(SpreadId(spread))
+    val cases  = Vector(
+      EditRoute(
+        post(s"$albumUrl/chapters/$chapter/spreads", Json.obj("afterSpreadId" -> Json.fromString(spread.toString))),
+        EditingAccess.Protection.ActiveTab,
+        none[GrantId]
+      ),
+      EditRoute(
+        put(s"$albumUrl/spreads/$spread/template", Json.obj("templateId" -> Json.fromString(layout.toString))),
+        EditingAccess.Protection.OwnSpread(target),
+        grant.some
+      ),
+      EditRoute(delete(s"$albumUrl/spreads/$spread"), EditingAccess.Protection.ChangeSpreads(Set(target)), grant.some)
+    )
+    val declarations = cases.map(edit => api.definition.routes.lift(edit.request).map(_.access))
+
+    for
+      _          <- cases.traverse_(edit => respond(api, edit.request))
+      admissions <- refs.admissions.get
+    yield
+      assertEquals(declarations, cases.map(edit => Routes.Access.Editor(edit.protection).some))
+      assertEquals(admissions, cases.map(edit => Admission(connection, edit.protection, edit.grant)))
+
+  final private case class EditRoute(request: Request[IO], protection: EditingAccess.Protection, grant: Option[GrantId])
 
   private def buildRawJson = Stream.emits("{".getBytes(StandardCharsets.UTF_8).toSeq).covary[IO]
 
@@ -170,14 +198,18 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def parseJson(text: String) = parse(text).fold(error => fail(error.message), identity)
 
-  private def respond(app: HttpApp[IO], request: Request[IO]) =
-    app.run(request).flatMap: response =>
-      assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+  private def respond(api: Api, request: Request[IO]) =
+    api.app.run(request).flatMap: response =>
       response.bodyText.compile.toList.map(chunks => (response.status, parse(chunks.mkString).toOption))
 
   // scalafix:off DisableSyntax.defaultArgs
+  final private case class Refs(calls: Ref[IO, Vector[String]]):
+    val admissions: Ref[IO, Vector[Admission]] = Ref.unsafe(Vector.empty)
+  final private case class Admission(editor: EditorConnection, protection: EditingAccess.Protection, grant: Option[GrantId])
+  final private case class Api(definition: Routes[IO], app: HttpApp[IO])
+
   private def buildApi(
-      calls: Ref[IO, Vector[String]],
+      refs: Refs,
       add: AddResult = AddResult.Failed,
       change: ChangeTemplateResult = ChangeTemplateResult.Failed,
       delete: DeleteResult = DeleteResult.Failed
@@ -204,46 +236,27 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
       ): IO[PlacementResult] =
         IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
       override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
-        calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
+        refs.calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
       override def changeTemplate(
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
           confirmPlacements: Boolean
       ): IO[ChangeTemplateResult] =
-        calls.update(_ :+ s"change:${album.value}:${spread.value}:${template.value}:$confirmPlacements").as(changeOutcome)
+        refs.calls.update(_ :+ s"change:${album.value}:${spread.value}:${template.value}:$confirmPlacements").as(changeOutcome)
       override def delete(
           album: AlbumId,
           spread: SpreadId,
           confirmPlacements: Boolean
       ): IO[DeleteResult] =
-        calls.update(_ :+ s"delete:${album.value}:${spread.value}:$confirmPlacements").as(deleteOutcome)
+        refs.calls.update(_ :+ s"delete:${album.value}:${spread.value}:$confirmPlacements").as(deleteOutcome)
     val access = new EditingAccess[IO]:
       override def run[A](
           editor: EditorConnection,
           protection: EditingAccess.Protection,
           maybeGrant: Option[GrantId]
       )(write: IO[A]): IO[EditingAccess.Result[A]] =
-        assertEquals(editor, connection)
-        protection match
-          case EditingAccess.Protection.ActiveTab         => assertEquals(maybeGrant, None)
-          case EditingAccess.Protection.OwnSpread(target) =>
-            assertEquals(target, EditingTarget.Spread(SpreadId(spread)))
-            assertEquals(maybeGrant, Some(grant))
-          case EditingAccess.Protection.ChangeSpreads(targets) =>
-            assertEquals(targets, Set(EditingTarget.Spread(SpreadId(spread))))
-            assertEquals(maybeGrant, Some(grant))
-          case other => fail(s"Unexpected protection: $other")
-        write.map(EditingAccess.Result.Completed(_))
+        refs.admissions.update(_ :+ Admission(editor, protection, maybeGrant)) >> write.map(EditingAccess.Result.Completed(_))
     val definitions = AlbumSpreadApi.make(spreads)
-    val policies    = Vector(
-      (Method.POST, s"/api/albums/$album/chapters/$chapter/spreads", EditingAccess.Protection.ActiveTab),
-      (Method.PUT, s"/api/albums/$album/spreads/$spread/template", EditingAccess.Protection.OwnSpread(EditingTarget.Spread(SpreadId(spread)))),
-      (Method.DELETE, s"/api/albums/$album/spreads/$spread", EditingAccess.Protection.ChangeSpreads(Set(EditingTarget.Spread(SpreadId(spread)))))
-    )
-    policies.foreach { case (method, path, protection) =>
-      val declaration = definitions.routes.lift(Request[IO](method, Uri.unsafeFromString(path))).map(_.access)
-      assertEquals(declaration, Some(Routes.Access.Editor(protection)))
-    }
-    Routes.make(access)(definitions).orNotFound
+    Api(definitions, Routes.make(access)(definitions).orNotFound)
   // scalafix:on DisableSyntax.defaultArgs

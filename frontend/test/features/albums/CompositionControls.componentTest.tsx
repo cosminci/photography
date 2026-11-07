@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CompositionControls } from "../../../src/features/albums/workspace/CompositionControls";
 import { createPlacementSession } from "../../../src/features/albums/workspace/PlacementSession";
 import type { CoverSnapshot, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
+import { buildPlacementSession } from "./PlacementSessionStub";
 
 const spread: SpreadSnapshot = {
   kind: "spread",
@@ -23,6 +24,26 @@ const cover: CoverSnapshot = {
 };
 
 describe("saved composition controls", () => {
+  it("should explain unavailable outer photo slots independently of saved bleed and permit read-only cover presentation", () => {
+    const refs = buildPlacementSession();
+    refs.setSnapshot({ ...spread, layout: { ...spread.layout, bleed: { state: "disabled", available: false } } });
+    render(() => (
+      <>
+        <p id="shared">Read failed</p>
+        <CompositionControls session={refs.session} unavailable={undefined} reader={false} feedbackId="shared" />
+      </>
+    ));
+
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" })).toHaveAccessibleDescription("This spread has no eligible outer photo slots.");
+    refs.setError("Read failed");
+    refs.setUnavailable("Read failed");
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" }).getAttribute("aria-describedby")).toContain("shared");
+    refs.setUnavailable("Ownership unavailable");
+    expect(screen.getByRole("checkbox", { name: "Spread bleed" }).getAttribute("aria-describedby")).not.toContain("shared");
+    refs.setSnapshot(undefined);
+    expect(screen.queryByRole("checkbox", { name: "Spread bleed" })).not.toBeInTheDocument();
+  });
   it.each(["another control", "Reader"] as const)("should not steal focus after the user moves to %s during acknowledgement", async (destination) => {
     const [reader, setReader] = createRoot(() => {
       return createSignal(false);

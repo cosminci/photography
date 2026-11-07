@@ -99,6 +99,25 @@ describe("same-origin album HTTP client", () => {
   });
 
   it.each([
+    { reason: "unknown spread kind", resource: "spread", body: { ...savedSpreadWire, kind: "unknown" } },
+    {
+      reason: "unknown chapter kind",
+      resource: "chapters",
+      body: {
+        chapters: [
+          {
+            id: "chapter",
+            kind: "unknown",
+            name: "Kyoto",
+            countries: ["jp"],
+            start: "2026-04-02",
+            end: "2026-04-14",
+            sourceFolder: "/photos/Kyoto",
+            description: "",
+          },
+        ],
+      },
+    },
     { reason: "mismatched spread identity", resource: "spread", body: { ...savedSpreadWire, id: "foreign" } },
     { reason: "duplicate placement identity", resource: "spread", body: { ...savedSpreadWire, placements: [savedPlacement, savedPlacement] } },
     {
@@ -155,6 +174,7 @@ describe("same-origin album HTTP client", () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(body)));
     const client = makeHttpAlbumClient(fetcher);
     const reads = {
+      chapters: () => client.chapters("album", new AbortController().signal),
       spread: () => client.readPlacements("album", { kind: "spread", id: "spread" }),
       cover: () => client.readPlacements("album", { kind: "cover" }),
       catalog: () => client.gearCatalog(),
@@ -163,6 +183,14 @@ describe("same-origin album HTTP client", () => {
     };
 
     await expect(reads[resource]()).rejects.toThrow();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ scheduling: "completed" }, {}])("should retain acknowledged uncertainty for a malformed import receipt %j", async (body) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(body), { status: 202 }));
+
+    await expect(makeHttpAlbumClient(fetcher).refreshPhotos("chapter")).rejects.toBeInstanceOf(AcknowledgedWriteError);
+
     expect(fetcher).toHaveBeenCalledOnce();
   });
 

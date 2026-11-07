@@ -321,6 +321,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
             val generator        = buildGenerator
 
             val interrupt = buildTransactor(path).use: xa =>
+              val observedStorage = Ref.unsafe[IO, Vector[StoredThumbnail]](Vector.empty)
               val storageBoundary = new PhotoStorage[IO]:
                 override def discoverOriginals(source: PhotoSource): IO[PhotoStorage.DiscoveryResult] =
                   val originals = if retiring then Vector.empty[OriginalPhotoLocation] else Vector(photo.original)
@@ -332,7 +333,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
                   IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
                 override def storeThumbnail(target: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
                   repository.listUnfinishedWrites.transact(xa).flatMap: pending =>
-                    IO(assertEquals(pending, expectedEvidence)) >> storage.storeThumbnail(target, value)
+                    observedStorage.update(_ :+ StoredThumbnail(target, value, pending)) >> storage.storeThumbnail(target, value)
                 override def removeThumbnail(target: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
                   if finalization === Finalization.CleanupFailed then ThumbnailStorage.RemoveResult.Failed(error).pure[IO]
                   else storage.removeThumbnail(target)
@@ -366,8 +367,10 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
                 )
                 pending <- repository.listUnfinishedWrites.transact(xa)
                 before  <- Files.exists(root.resolve(s"${location.value}.jpg")).blocking[IO]
+                stored  <- observedStorage.get
               yield
                 assert(result.issues.contains(PhotoManager.Issue.Persistence))
+                assertEquals(stored, if retiring then Vector.empty[StoredThumbnail] else Vector(StoredThumbnail(fresh, image, expectedEvidence)))
                 assertEquals(before, !committed || finalization === Finalization.Unreadable || finalization === Finalization.CleanupFailed)
                 pending match
                   case listed: ListUnfinishedWritesResult.Listed => assertEquals(listed.intents.size, expectedPending)
@@ -475,6 +478,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
   private enum Finalization:
     case Unreadable, CleanupFailed, CompletionFailed, Complete
   private given Eq[Finalization] = Eq.fromUniversalEquals
+  final private case class StoredThumbnail(location: ThumbnailLocation, thumbnail: EncodedThumbnail, evidence: ListUnfinishedWritesResult)
 
   private def buildGenerator =
     new PhotoThumbnailGenerator[IO]:

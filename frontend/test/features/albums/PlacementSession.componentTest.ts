@@ -21,6 +21,27 @@ const initial: SpreadSnapshot = {
 const context: SpreadContext = { kind: "spread", id: "spread" };
 
 describe("placement save lifecycle", () => {
+  it("should retain an unsaved preview after authority changes and discard it only by acquiring independent saved photos", async () => {
+    const [authority, setAuthority] = createSignal(1);
+    const read = vi.fn().mockResolvedValue(initial);
+    const edit = vi.fn();
+    const session = createRoot(() =>
+      createPlacementSession({ readPlacements: read, editPlacements: edit }, vi.fn(), { available: () => true, authority }),
+    );
+    session.selectSpread("album", initial);
+    session.preview("p", { x: 2, y: 0, zoom: 1, mirrored: false });
+
+    setAuthority(2);
+    expect(session.retained()).toBe(true);
+    expect(session.error()).toContain("Editing ownership changed");
+    await session.discardRetained();
+
+    expect(session.placements()).toEqual(initial.placements);
+    expect(session.retained()).toBe(false);
+    expect(session.navigationReason()).toBeUndefined();
+    expect(read).toHaveBeenCalledExactlyOnceWith("album", context);
+    expect(edit).not.toHaveBeenCalled();
+  });
   it("should keep a cancelled preview cleared when a queued adjustment is confirmed by recovery", async () => {
     const original = initial.placements[0]?.transform;
     if (original === undefined) throw new Error("Missing framing.");
@@ -122,24 +143,28 @@ describe("placement save lifecycle", () => {
     const changes = [1, 2, 3].map((x) => ({ x, y: 0, zoom: 2, mirrored: false }));
     let finish!: (value: PlacementSnapshot) => void;
     const pending = new Promise<PlacementSnapshot>((resolve) => (finish = resolve));
-    const edit = vi
-      .fn()
-      .mockReturnValueOnce(pending)
-      .mockImplementation((_album: string, _context: unknown, command: { transform: (typeof changes)[number] }) =>
-        Promise.resolve({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: command.transform })) }),
-      );
+    const [firstSaved, secondSaved, thirdSaved] = changes.map((transform) => ({
+      ...initial,
+      placements: initial.placements.map((row) => ({ ...row, transform })),
+    }));
+    if (firstSaved === undefined || secondSaved === undefined || thirdSaved === undefined) throw new Error("Missing adjustment acknowledgement");
+    const edit = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce(secondSaved).mockResolvedValueOnce(thirdSaved);
     const refresh = vi.fn().mockRejectedValue(new Error("Collection unavailable"));
     const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn(), editPlacements: edit }, refresh, undefined, completed));
     session.selectSpread("album", initial);
 
     for (const change of changes) session.complete("p", change);
-    finish({ ...initial, placements: initial.placements.map((row) => ({ ...row, transform: { x: 1, y: 0, zoom: 2, mirrored: false } })) });
+    finish(firstSaved);
     await vi.waitFor(() => {
       expect(session.saving()).toBe(false);
     });
 
     expect(completed).toHaveBeenCalledTimes(3);
     expect(edit).toHaveBeenCalledTimes(3);
+    for (const [index, transform] of changes.entries()) {
+      expect(edit).toHaveBeenNthCalledWith(index + 1, "album", context, { operation: "adjust", placementId: "p", transform });
+    }
+    expect(session.snapshot()).toEqual(thirdSaved);
     expect(session.error()).toMatch(/collection could not be refreshed/);
   });
 

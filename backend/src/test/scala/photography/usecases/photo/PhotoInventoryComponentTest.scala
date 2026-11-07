@@ -1,7 +1,7 @@
 package photography.usecases.photo
 
-import cats.data.{NonEmptyList, StateT}
-import cats.effect.IO
+import cats.data.{NonEmptyList, Kleisli}
+import cats.effect.{IO, Ref}
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -15,7 +15,7 @@ import java.time.LocalDateTime
 import java.util.UUID
 
 final class PhotoInventoryComponentTest extends CatsEffectSuite:
-  private type Db[A] = StateT[IO, Int, A]
+  private type Db[A] = Kleisli[IO, Unit, A]
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
   private val chapter      = ChapterId(new UUID(0L, 1L))
   private val metadata     = PhotoMetadata(hash = "hash", maybeCapturedLocal = None, PhotoDimensions(width = 10, height = 10))
@@ -31,23 +31,27 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
     val inventory = PhotoInventory.Inventory(photos = Vector(dated, upper, alpha, photo), placed = Set(photo.id))
     val listed    = PhotoRepository.ListResult.Listed(photos = Vector(photo, alpha, dated, upper))
     val placed    = PhotoPlacementRepository.FindResult.Found(photos = Set(photo.id))
-    val manager   = buildInventory(listed, placed)
+    val refs      = Refs()
+    val manager   = buildInventory(refs, listed, placed)
 
-    manager.listChapter(chapter).map: actual =>
+    for
+      actual <- manager.listChapter(chapter)
+      calls  <- refs.calls.get
+    yield
       assertEquals(actual, PhotoInventory.ListResult.Listed(inventory))
-      assertEquals(inventory.total, 4)
-      assertEquals(inventory.countUnplaced, 3)
+      assertEquals(calls, Vector(Call.Begin, Call.Source(chapter), Call.Photos(chapter), Call.Placements(chapter), Call.End))
 
   test("should report either inventory boundary failure"):
     Vector(
       (PhotoRepository.ListResult.Failed, PhotoPlacementRepository.FindResult.Found(Set.empty[PhotoId])),
       (PhotoRepository.ListResult.Listed(Vector.empty[Photo]), PhotoPlacementRepository.FindResult.Failed)
     ).traverse_ { case (photos, placed) =>
-      buildInventory(photos, placed).listChapter(chapter).map(actual => assertEquals(actual, PhotoInventory.ListResult.Failed))
+      buildInventory(Refs(), photos, placed).listChapter(chapter).map(actual => assertEquals(actual, PhotoInventory.ListResult.Failed))
     }
 
   test("should report a failed transaction as inventory failure"):
     val manager = buildInventory(
+      Refs(),
       PhotoRepository.ListResult.Listed(Vector(photo)),
       PhotoPlacementRepository.FindResult.Found(Set.empty[PhotoId]),
       maybeTransactionError = new RuntimeException("transaction failed").some
@@ -63,17 +67,38 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
         PhotoInventory.ListResult.Listed(PhotoInventory.Inventory(photos = Vector.empty[Photo], placed = Set.empty[PhotoId]))
       )
     ).traverse_ { case (source, expected) =>
+      val refs    = Refs()
       val manager = buildInventory(
+        refs,
         PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo]),
         PhotoPlacementRepository.FindResult.Found(photos = Set.empty[PhotoId]),
         source = source
       )
 
-      manager.listChapter(chapter).map(actual => assertEquals(actual, expected))
+      val queries = source match
+        case _: ChapterRepository.SourceResult.Found => Vector(Call.Photos(chapter), Call.Placements(chapter))
+        case _                                       => Vector.empty[Call]
+
+      for
+        actual <- manager.listChapter(chapter)
+        calls  <- refs.calls.get
+      yield
+        assertEquals(actual, expected)
+        assertEquals(calls, Vector(Call.Begin, Call.Source(chapter)) ++ queries :+ Call.End)
     }
+
+  private enum Call:
+    case Begin, End
+    case Source(chapter: ChapterId)
+    case Photos(chapter: ChapterId)
+    case Placements(chapter: ChapterId)
+
+  final private case class Refs():
+    val calls: Ref[IO, Vector[Call]] = Ref.unsafe(Vector.empty)
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildInventory(
+      refs: Refs,
       listed: PhotoRepository.ListResult,
       placed: PhotoPlacementRepository.FindResult,
       maybeTransactionError: Option[Throwable] = None,
@@ -81,46 +106,45 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
   ) =
     given Transaction[Db, IO] with
       override def run[A](program: Db[A]): IO[A] =
-        val expectedSteps = source match
-          case _: ChapterRepository.SourceResult.Found => 3
-          case _                                       => 1
-        maybeTransactionError.fold(
-          program.run(0).flatMap { case (steps, result) => IO(assertEquals(steps, expectedSteps)).as(result) }
+        refs.calls.update(_ :+ Call.Begin) >> maybeTransactionError.fold(
+          program.run(()).flatTap(_ => refs.calls.update(_ :+ Call.End))
         )(IO.raiseError[A])
-      override def resolve[A](program: Db[A]): IO[A] = program.runA(0)
+      override def resolve[A](program: Db[A]): IO[A] = program.run(())
     val photos = new PhotoRepository[Db]:
       override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read")))
+        unexpected
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): Db[PhotoRepository.SaveCaptionResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation")))
+        unexpected
       override def listChapter(id: ChapterId): Db[PhotoRepository.ListResult] =
-        StateT.modify[IO, Int](_ + 1).as(listed)
+        Kleisli.liftF[IO, Unit, PhotoRepository.ListResult](refs.calls.update(_ :+ Call.Photos(id)).as(listed))
       override def save(value: Photo): Db[PhotoRepository.WriteResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.WriteResult](new RuntimeException("unexpected write")))
+        unexpected
       override def remove(value: PhotoId): Db[PhotoRepository.WriteResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.WriteResult](new RuntimeException("unexpected removal")))
+        unexpected
       override def recordWrite(intent: PhotoWriteIntent): Db[PhotoRepository.RecordWriteResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.RecordWriteResult](new AssertionError("Unexpected evidence creation")))
+        unexpected
       override def completeWrite(id: PhotoWriteIntentId): Db[PhotoRepository.CompleteWriteResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.CompleteWriteResult](new AssertionError("Unexpected evidence completion")))
+        unexpected
       override def listUnfinishedWrites: Db[PhotoRepository.ListUnfinishedWritesResult] =
-        StateT.liftF(IO.raiseError[PhotoRepository.ListUnfinishedWritesResult](new AssertionError("Unexpected evidence listing")))
+        unexpected
     val placements = new PhotoPlacementRepository[Db]:
       override def findPlacedPhotos(id: ChapterId): Db[PhotoPlacementRepository.FindResult] =
-        StateT.modify[IO, Int](_ + 1).as(placed)
+        Kleisli.liftF[IO, Unit, PhotoPlacementRepository.FindResult](refs.calls.update(_ :+ Call.Placements(id)).as(placed))
       override def inspect(album: AlbumId, maybeChapter: Option[ChapterId], photo: PhotoId): Db[PhotoPlacementRepository.InspectResult] =
-        StateT.liftF(IO.raiseError[PhotoPlacementRepository.InspectResult](new AssertionError("Unexpected photo inspection")))
+        unexpected
     val chapters = new ChapterRepository.Metadata[Db]:
       override def saveDescription(
           album: AlbumId,
           chapter: ChapterId,
           text: String
       ): Db[ChapterRepository.SaveDescriptionResult] =
-        StateT.liftF(IO.raiseError[ChapterRepository.SaveDescriptionResult](new AssertionError("Unexpected description mutation")))
-      override def findSource(id: ChapterId): Db[ChapterRepository.SourceResult] = StateT.modify[IO, Int](_ + 1).as(source)
-      override def create(album: AlbumId, chapter: ChapterRepository.NewChapter, order: NonEmptyList[ChapterId]) =
-        StateT.liftF(IO.raiseError[ChapterRepository.CreateResult](new AssertionError("Unexpected chapter creation")))
-      override def update(command: ChapterRepository.Update) =
-        StateT.liftF(IO.raiseError[ChapterRepository.UpdateResult](new AssertionError("Unexpected chapter update")))
+        unexpected
+      override def findSource(id: ChapterId): Db[ChapterRepository.SourceResult] =
+        Kleisli.liftF[IO, Unit, ChapterRepository.SourceResult](refs.calls.update(_ :+ Call.Source(id)).as(source))
+      override def create(album: AlbumId, chapter: ChapterRepository.NewChapter, order: NonEmptyList[ChapterId]): Db[ChapterRepository.CreateResult] =
+        unexpected
+      override def update(command: ChapterRepository.Update): Db[ChapterRepository.UpdateResult] = unexpected
     PhotoInventory.make[IO, Db](photos, placements, chapters)
   // scalafix:on DisableSyntax.defaultArgs
+
+  private def unexpected[A]: Db[A] = Kleisli.liftF[IO, Unit, A](IO.raiseError[A](new AssertionError("Unexpected operation")))

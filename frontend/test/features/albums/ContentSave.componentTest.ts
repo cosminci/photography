@@ -6,15 +6,13 @@ import { createContentSave } from "../../../src/features/albums/workspace/Conten
 describe("content save lifecycle", () => {
   it("should preserve the authoritative reviewed baseline for a new completed edit without replacing its retained draft", async () => {
     let authority = 1;
-    let saved = "A";
+    const save = vi.fn().mockResolvedValue("C");
+    const read = vi.fn().mockResolvedValue("B");
     const completed = vi.fn();
     const session = createRoot(() =>
       createContentSave<string>({
-        save: (value) => {
-          saved = value;
-          return Promise.resolve(value);
-        },
-        read: () => Promise.resolve(saved),
+        save,
+        read,
         equal: (left, right) => left === right,
         rebase: (current) => current,
         maybeAuthority: () => authority,
@@ -25,16 +23,62 @@ describe("content save lifecycle", () => {
     session.begin("A");
     session.change("C");
     authority = 2;
-    saved = "B";
 
     await session.commit(true);
     expect(session.draft()).toEqual({ original: "A", value: "C" });
     await session.commit(true);
 
-    expect(saved).toBe("C");
+    expect(save).toHaveBeenCalledExactlyOnceWith("C");
     expect(completed).toHaveBeenCalledExactlyOnceWith("B", "C");
   });
 
+  it("should require explicit review after access changes before acquiring or writing saved content", async () => {
+    let authority = 1;
+    const save = vi.fn().mockResolvedValue("Acknowledged");
+    const read = vi.fn().mockResolvedValue("Saved");
+    const session = createRoot(() =>
+      createContentSave<string>({
+        save,
+        read,
+        equal: (left, right) => left === right,
+        maybeAuthority: () => authority,
+        onSaved: vi.fn(),
+      }),
+    );
+    session.begin("Original");
+    session.change("Draft");
+    authority = 2;
+
+    await session.commit();
+
+    expect(session.error()).toBe("Editing ownership changed. Read saved content and explicitly review the draft before saving.");
+    expect(save).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("should publish independently acknowledged content under unchanged authority without unnecessary readback", async () => {
+    const save = vi.fn().mockResolvedValue("Acknowledged");
+    const read = vi.fn().mockResolvedValue("Saved");
+    const completed = vi.fn();
+    const session = createRoot(() =>
+      createContentSave<string>({
+        save,
+        read,
+        equal: (left, right) => left === right,
+        maybeAuthority: () => 1,
+        onSaved: vi.fn(),
+        onCompleted: completed,
+      }),
+    );
+    session.begin("Original");
+    session.change("Draft");
+
+    await session.commit();
+
+    expect(save).toHaveBeenCalledExactlyOnceWith("Draft");
+    expect(read).not.toHaveBeenCalled();
+    expect(completed).toHaveBeenCalledExactlyOnceWith("Original", "Acknowledged");
+  });
   it("should publish one completed edit after acknowledgement even when local publication requires recovery", async () => {
     const completed = vi.fn();
     const onSaved = vi.fn().mockImplementationOnce(() => {
