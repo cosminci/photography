@@ -14,7 +14,7 @@ The launcher builds frontend assets and starts the backend plus development serv
 
 For isolated work, set `PHOTOGRAPHY_SQLITE_PATH`, `PHOTOGRAPHY_PHOTO_ROOT` and `PHOTOGRAPHY_THUMBNAIL_ROOT` to disposable development locations. The launcher overrides the database default only; explicitly choose a writable thumbnail directory. `PHOTOGRAPHY_PORT` and `PHOTOGRAPHY_FRONTEND_PORT` allow separate verification ports.
 
-Stop with Ctrl+C. If a forked process survives, identify the listener and terminate that exact owned PID; preserve unrelated services and retained data.
+Stop with Ctrl+C. The launcher stops its owned process groups, including descendants whose parent has already exited; preserve unrelated services and retained data.
 
 ## Frontend configuration
 

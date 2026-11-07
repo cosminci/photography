@@ -99,11 +99,6 @@ object SqliteAlbumRepository:
         case FieldSaveResult.Failed(reason)   => RenameResult.Failed(reason)
         case FieldSaveResult.Uncertain(cause) => RenameResult.Failed(cause)
 
-    override def delete(id: AlbumId): F[DeleteResult] =
-      val query = sql"DELETE FROM album WHERE id = ${id.value}".update.run.map: deleted =>
-        if deleted === 0 then DeleteResult.NotFound else DeleteResult.Deleted
-      execute(query, DeleteResult.Failed(_))
-
     override def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult] =
       val update = sql"UPDATE album SET synopsis = $text WHERE id = ${album.value}"
       saveField(album, update).map:

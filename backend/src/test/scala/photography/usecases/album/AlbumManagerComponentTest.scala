@@ -139,21 +139,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       assertEquals(results, cases.map(_.expected))
       assertEquals(changed, album.title.some)
 
-  test("should delete an existing Album by id, report not found, and report failure when persistence fails"):
-    val refs        = Refs()
-    val unavailable = buildManager(Refs(), deleteResult = AlbumRepository.DeleteResult.Failed(Failure.DatabaseFailure))
-
-    for
-      deleted   <- buildManager(refs, deleteResult = AlbumRepository.DeleteResult.Deleted).flatMap(_.delete(AlbumId(buildUuid(index = 1))))
-      deletedId <- refs.maybeDeletedId.get
-      missing   <- buildManager(Refs()).flatMap(_.delete(AlbumId(buildUuid(index = 1))))
-      failed    <- unavailable.flatMap(_.delete(AlbumId(buildUuid(index = 1))))
-    yield
-      assertEquals(deleted, DeleteAlbumResult.Deleted)
-      assertEquals(deletedId, AlbumId(buildUuid(index = 1)).some)
-      assertEquals(missing, DeleteAlbumResult.NotFound)
-      assertEquals(failed, DeleteAlbumResult.Failed)
-
   test("should save synopsis and authors once and preserve every repository outcome"):
     val album         = buildMetadata(index = 1)
     val text          = "Șir 日本語\n🙂"
@@ -211,7 +196,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     val maybeCreated: Ref[IO, Option[(Album, Cover)]]          = Ref.unsafe(None)
     val maybeLastReadId: Ref[IO, Option[AlbumId]]              = Ref.unsafe(None)
     val maybeRenamedTitle: Ref[IO, Option[AlbumTitle]]         = Ref.unsafe(None)
-    val maybeDeletedId: Ref[IO, Option[AlbumId]]               = Ref.unsafe(None)
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
@@ -221,7 +205,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       createResult: AlbumRepository.CreateResult = AlbumRepository.CreateResult.Created,
       getResult: AlbumRepository.PlanningResult = AlbumRepository.PlanningResult.NotFound,
       renameResult: AlbumRepository.RenameResult = AlbumRepository.RenameResult.NotFound,
-      deleteResult: AlbumRepository.DeleteResult = AlbumRepository.DeleteResult.NotFound,
       synopsisResult: AlbumRepository.SaveSynopsisResult = AlbumRepository.SaveSynopsisResult.NotFound,
       authorsResult: AlbumRepository.SaveAuthorsResult = AlbumRepository.SaveAuthorsResult.NotFound,
       listResult: ListAlbumStartTemplatesResult =
@@ -239,7 +222,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       createResult,
       getResult,
       renameResult,
-      deleteResult,
       synopsisResult,
       authorsResult
     )
@@ -261,7 +243,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       createResult: AlbumRepository.CreateResult,
       getResult: AlbumRepository.PlanningResult,
       renameResult: AlbumRepository.RenameResult,
-      deleteResult: AlbumRepository.DeleteResult,
       synopsisResult: AlbumRepository.SaveSynopsisResult,
       authorsResult: AlbumRepository.SaveAuthorsResult
   ) =
@@ -282,8 +263,6 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def rename(id: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult] =
         refs.maybeRenamedTitle.set(title.some).as(renameResult)
 
-      override def delete(id: AlbumId): IO[AlbumRepository.DeleteResult] =
-        refs.maybeDeletedId.set(id.some).as(deleteResult)
   // scalafix:on DisableSyntax.defaultArgs
 
   private def buildListing(results: List[AlbumRepository.ListResult]) =

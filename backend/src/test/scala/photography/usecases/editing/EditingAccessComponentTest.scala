@@ -7,7 +7,6 @@ import cats.syntax.all.*
 import fs2.Stream
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
-import photography.capabilities.IdGenerator
 import photography.domain.album.{AlbumId, ChapterId, PhotoId}
 import photography.domain.editing.*
 import photography.domain.layout.SpreadId
@@ -22,16 +21,15 @@ import java.util.UUID
 import scala.concurrent.duration.*
 
 final class EditingAccessComponentTest extends CatsEffectSuite:
-  private given IdGenerator[IO] = IdGenerator.make[IO]
-  private val album             = AlbumId(new UUID(0L, 1L))
-  private val opening           = SpreadId(new UUID(0L, 3L))
-  private val target            = EditingTarget.Spread(opening)
-  private val connection        = EditorConnection(SessionId(new UUID(0L, 7L)), TabId(new UUID(0L, 8L)), ConnectionGeneration(new UUID(0L, 9L)))
-  private val grant             = GrantId(new UUID(0L, 10L))
-  private val chapter           = ChapterId(new UUID(0L, 11L))
-  private val photo             = PhotoId(new UUID(0L, 12L))
-  private val found             = OpeningResult.Found(opening)
-  private val unusedMembership  = new AlbumCompositionRepository.MembershipRead[IO]:
+  private val album            = AlbumId(new UUID(0L, 1L))
+  private val opening          = SpreadId(new UUID(0L, 3L))
+  private val target           = EditingTarget.Spread(opening)
+  private val connection       = EditorConnection(SessionId(new UUID(0L, 7L)), TabId(new UUID(0L, 8L)), ConnectionGeneration(new UUID(0L, 9L)))
+  private val grant            = GrantId(new UUID(0L, 10L))
+  private val chapter          = ChapterId(new UUID(0L, 11L))
+  private val photo            = PhotoId(new UUID(0L, 12L))
+  private val found            = OpeningResult.Found(opening)
+  private val unusedMembership = new AlbumCompositionRepository.MembershipRead[IO]:
     override def composition(album: AlbumId): IO[CompositionResult] =
       new AssertionError("Unexpected whole-album membership acquisition").raiseError[IO, CompositionResult]
     override def opening(album: AlbumId, maybeChapter: Option[ChapterId]): IO[OpeningResult] =
@@ -44,20 +42,20 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
     test(s"should resolve current caption target $maybeTarget and recheck authority before writing"):
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
+        val refs        = Refs()
         for
-          calls      <- Ref.of[IO, Vector[Call]](Vector.empty)
           connected  <- Ref.of[IO, ConnectionAuthorizationResult](ConnectionAuthorizationResult.Authorized)
           authorized <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
           current    <- Ref.of[IO, TargetResult](TargetResult.Found(maybeTarget))
-          sessions = new AuthorizationStub(calls, connected.get, authorized.get)
+          sessions = new AuthorizationStub(refs.calls, connected.get, authorized.get)
           targets  = new PhotoPlacementRepository.TargetRead[IO]:
             override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
-              calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> current.get
+              refs.calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> current.get
           access = EditingAccess.make(sessions, unusedMembership, targets)
-          save   = access.run(connection, Protection.OwnPhotoSpread(chapter, photo), grant.some)(calls.update(_ :+ Call.Written))
+          save   = access.run(connection, Protection.OwnPhotoSpread(chapter, photo), grant.some)(refs.calls.update(_ :+ Call.Written))
           saved    <- save
           _        <- current.set(TargetResult.Found(maybeTarget = None))
-          unplaced <- access.run(connection, Protection.OwnPhotoSpread(chapter, photo), maybeGrant = None)(calls.update(_ :+ Call.Written))
+          unplaced <- access.run(connection, Protection.OwnPhotoSpread(chapter, photo), maybeGrant = None)(refs.calls.update(_ :+ Call.Written))
           _        <- current.set(TargetResult.Found(maybeTarget))
           _        <- authorized.set(AuthorizationResult.Rejected(Failure.StaleGrant))
           rejected <- save
@@ -67,7 +65,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           failed   <- save
           _        <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
           obsolete <- save
-          observed <- calls.get
+          observed <- refs.calls.get
         yield
           val authorization = maybeTarget.fold[Call](Call.Affected(connection, Set.empty, grant.some))(Call.Target(connection, _, grant))
           val resolved      = Vector(Call.Connection(connection), Call.PhotoTarget(chapter, photo))
@@ -90,16 +88,16 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         val protection      = maybeChapter.fold[Protection](Protection.OwnAlbumOpening(album))(Protection.OwnChapterOpening(album, _))
         val replacedOpening = SpreadId(new UUID(0L, 4L))
         val relationship    = Vector(Call.Connection(connection), Call.Opening(album, maybeChapter))
+        val refs            = Refs()
 
         for
-          calls      <- Ref.of[IO, Vector[Call]](Vector.empty)
           connected  <- Ref.of[IO, ConnectionAuthorizationResult](ConnectionAuthorizationResult.Authorized)
           authorized <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
           current    <- Ref.of[IO, OpeningResult](found)
-          sessions   = new AuthorizationStub(calls, connected.get, authorized.get)
-          membership = buildMembership(calls, current.get)
+          sessions   = new AuthorizationStub(refs.calls, connected.get, authorized.get)
+          membership = buildMembership(refs.calls, current.get)
           access     = EditingAccess.make(sessions, membership, unusedTargets)
-          save       = access.run(connection, protection, grant.some)(calls.update(_ :+ Call.Written))
+          save       = access.run(connection, protection, grant.some)(refs.calls.update(_ :+ Call.Written))
           saved       <- save
           _           <- current.set(OpeningResult.Found(replacedOpening))
           _           <- authorized.set(AuthorizationResult.Rejected(Failure.StaleGrant))
@@ -112,7 +110,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           failed      <- save
           _           <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
           obsolete    <- save
-          observed    <- calls.get
+          observed    <- refs.calls.get
         yield
           val initial  = relationship ++ Vector(Call.Target(connection, target, grant), Call.Written)
           val changed  = relationship :+ Call.Target(connection, EditingTarget.Spread(replacedOpening), grant)
@@ -132,33 +130,33 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         test(s"should preserve $failure for $protection after a paused relationship read and keep coordination usable"):
           Mutex[IO].flatMap: mutex =>
             given Mutex[IO] = mutex
+            val refs        = Refs()
             for
-              calls         <- Ref.of[IO, Vector[Call]](Vector.empty)
               authorization <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
               entered       <- Deferred[IO, Unit]
               finish        <- Deferred[IO, Unit]
-              written       <- Ref.of[IO, Int](0)
-              sessions   = new AuthorizationStub(calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
-              membership = buildMembership(calls, entered.complete(()).void >> finish.get.as(found))
+              sessions   = new AuthorizationStub(refs.calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
+              membership = buildMembership(refs.calls, entered.complete(()).void >> finish.get.as(found))
               targets    = new PhotoPlacementRepository.TargetRead[IO]:
                 override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
-                  calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> entered.complete(()).void >> finish.get.as(TargetResult.Found(target.some))
+                  refs.calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> entered.complete(()).void >>
+                    finish.get.as(TargetResult.Found(target.some))
               access       = EditingAccess.make(sessions, membership, targets)
               relationship = protection match
                 case Protection.OwnAlbumOpening(_)       => Call.Opening(album, maybeChapter = None)
                 case Protection.OwnChapterOpening(_, id) => Call.Opening(album, maybeChapter = id.some)
                 case _                                   => Call.PhotoTarget(chapter, photo)
-              writing  <- access.run(connection, protection, grant.some)(written.update(_ + 1)).start
+              writing  <- access.run(connection, protection, grant.some)(refs.written.update(_ + 1)).start
               _        <- entered.get
-              paused   <- calls.get
+              paused   <- refs.calls.get
               _        <- authorization.set(AuthorizationResult.Rejected(failure))
               _        <- finish.complete(())
               rejected <- writing.joinWithNever
-              before   <- written.get
+              before   <- refs.written.get
               _        <- authorization.set(AuthorizationResult.Authorized)
-              saved    <- access.run(connection, protection, grant.some)(written.update(_ + 1))
-              after    <- written.get
-              observed <- calls.get
+              saved    <- access.run(connection, protection, grant.some)(refs.written.update(_ + 1))
+              after    <- refs.written.get
+              observed <- refs.calls.get
             yield
               val expected = Vector.fill(2)(Vector(Call.Connection(connection), relationship, Call.Target(connection, target, grant))).flatten
               assertEquals(paused, Vector(Call.Connection(connection), relationship))
@@ -170,34 +168,31 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
       }
   }
 
-  test("should finish live admission atomically across expiry and cancellation while waiting acquisition sees its result"):
+  test("should finish admitted writes across authority loss and cancellation while waiting coordination sees their result"):
     TestControl.executeEmbed:
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
+        val refs        = Refs()
         for
-          sessions   <- EditorSessionManager.make[IO](lease = 30L)
-          owner      <- bind(sessions, owner = 1L)
-          lock       <- sessions.select(owner, TargetRevision.initial, target).map(requireLock)
-          _          <- IO.sleep(20.seconds)
-          competitor <- bind(sessions, owner = 2L)
-          entered    <- Deferred[IO, Unit]
-          finish     <- Deferred[IO, Unit]
-          canceled   <- Deferred[IO, Unit]
-          acquired   <- Deferred[IO, (SelectResult, Int)]
-          written    <- Ref.of[IO, Int](0)
-          access = EditingAccess.make(sessions, unusedMembership, unusedTargets)
-          write  = access.run(owner, Protection.OwnSpread(target), lock.grant.some)(entered.complete(()).void >> finish.get >> written.update(_ + 1))
-          writing   <- write.start
-          _         <- entered.get
-          waiter    <- write.start
-          _         <- IO.sleep(1.second)
-          _         <- waiter.cancel
-          waiting   <- waiter.join
-          queued    <- write.start
-          canceling <- (writing.cancel >> canceled.complete(())).start
-          _         <- IO.sleep(10.seconds)
-          acquiring <- sessions.select(competitor, TargetRevision.initial, target)
-            .flatMap(result => written.get.flatMap(count => acquired.complete((result, count)).void)).start
+          authorization <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
+          entered       <- Deferred[IO, Unit]
+          finish        <- Deferred[IO, Unit]
+          canceled      <- Deferred[IO, Unit]
+          acquired      <- Deferred[IO, Int]
+          sessions = new AuthorizationStub(refs.calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
+          access   = EditingAccess.make(sessions, unusedMembership, unusedTargets)
+          write    =
+            access.run(connection, Protection.OwnSpread(target), grant.some)(entered.complete(()).void >> finish.get >> refs.written.update(_ + 1))
+          writing       <- write.start
+          _             <- entered.get
+          waiter        <- write.start
+          _             <- IO.sleep(1.second)
+          _             <- waiter.cancel
+          waiting       <- waiter.join
+          queued        <- write.start
+          canceling     <- (writing.cancel >> canceled.complete(())).start
+          _             <- authorization.set(AuthorizationResult.Rejected(Failure.StaleSession))
+          acquiring     <- mutex.lock.surround(refs.written.get.flatMap(count => acquired.complete(count).void)).start
           _             <- IO.sleep(1.second)
           maybeCanceled <- canceled.tryGet
           maybeAcquired <- acquired.tryGet
@@ -207,65 +202,56 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           rejected      <- queued.joinWithNever
           _             <- acquiring.joinWithNever
           observed      <- acquired.get
+          calls         <- refs.calls.get
         yield
           assertEquals(maybeCanceled, none[Unit])
-          assertEquals(maybeAcquired, none[(SelectResult, Int)])
+          assertEquals(maybeAcquired, none[Int])
           assertEquals(saved, Result.Completed(()))
           assertEquals(rejected, Result.Rejected[Unit](Failure.StaleSession))
           waiting match
             case Outcome.Canceled() => ()
             case other              => fail(s"Expected canceled waiter, obtained $other")
-          observed match
-            case (SelectResult.Owned(lock, revision), count) =>
-              assertEquals(lock, EditingLock(target, competitor.session, lock.grant, 62.seconds))
-              assertEquals(revision, TargetRevision.initial.next)
-              assertEquals(count, 1)
-            case other => fail(s"Expected acquisition after persistence, obtained $other")
+          assertEquals(observed, 1)
+          assertEquals(calls, Vector.fill(2)(Call.Target(connection, target, grant)))
 
-  test("should keep relationship acquisition, admission and persistence in one interval before competing acquisition"):
+  test("should keep relationship acquisition, admission and persistence in one interval before waiting coordination"):
     TestControl.executeEmbed:
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
+        val refs        = Refs()
         for
-          sessions <- EditorSessionManager.make[IO](lease = 30L)
-          owner    <- bind(sessions, owner = 1L)
-          other    <- bind(sessions, owner = 2L)
-          lock     <- sessions.select(owner, TargetRevision.initial, target).map(requireLock)
-          calls    <- Ref.of[IO, Vector[Call]](Vector.empty)
           entered  <- Deferred[IO, Unit]
           finish   <- Deferred[IO, Unit]
-          acquired <- Deferred[IO, (SelectResult, Int)]
-          written  <- Ref.of[IO, Int](0)
-          membership = buildMembership(calls, entered.complete(()).void >> finish.get.as(found))
+          acquired <- Deferred[IO, Int]
+          sessions   = new AuthorizationStub(refs.calls, ConnectionAuthorizationResult.Authorized.pure[IO], AuthorizationResult.Authorized.pure[IO])
+          membership = buildMembership(refs.calls, entered.complete(()).void >> finish.get.as(found))
           access     = EditingAccess.make(sessions, membership, unusedTargets)
-          writing   <- access.run(owner, Protection.OwnAlbumOpening(album), lock.grant.some)(written.update(_ + 1)).start
+          writing   <- access.run(connection, Protection.OwnAlbumOpening(album), grant.some)(refs.written.update(_ + 1)).start
           _         <- entered.get
-          acquiring <- sessions.select(other, TargetRevision.initial, target)
-            .flatMap(result => written.get.flatMap(count => acquired.complete((result, count)).void)).start
-          _        <- IO.sleep(1.second)
-          before   <- acquired.tryGet
-          _        <- finish.complete(())
-          saved    <- writing.joinWithNever
-          _        <- acquiring.joinWithNever
-          observed <- acquired.get
-          reads    <- calls.get
+          acquiring <- mutex.lock.surround(refs.written.get.flatMap(count => acquired.complete(count).void)).start
+          _         <- IO.sleep(1.second)
+          before    <- acquired.tryGet
+          _         <- finish.complete(())
+          saved     <- writing.joinWithNever
+          _         <- acquiring.joinWithNever
+          observed  <- acquired.get
+          reads     <- refs.calls.get
         yield
-          assertEquals(before, none[(SelectResult, Int)])
-          assertEquals(reads, Vector(Call.Opening(album, maybeChapter = None)))
+          assertEquals(before, none[Int])
+          assertEquals(reads, Vector(Call.Connection(connection), Call.Opening(album, maybeChapter = None), Call.Target(connection, target, grant)))
           assertEquals(saved, Result.Completed(()))
-          assertEquals(observed, (SelectResult.Blocked(EditorId(new UUID(0L, 1L)), "Owner", 30.seconds, TargetRevision.initial.next), 1))
+          assertEquals(observed, 1)
 
   Vector(target, EditingTarget.Cover(album)).foreach { destination =>
     test(s"should forward direct and shared $destination proof and preserve the authority's decisions without replay"):
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
+        val refs        = Refs()
         for
-          calls         <- Ref.of[IO, Vector[Call]](Vector.empty)
           authorization <- Ref.of[IO, AuthorizationResult](AuthorizationResult.Authorized)
-          written       <- Ref.of[IO, Int](0)
-          sessions = new AuthorizationStub(calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
+          sessions = new AuthorizationStub(refs.calls, ConnectionAuthorizationResult.Authorized.pure[IO], authorization.get)
           access   = EditingAccess.make(sessions, unusedMembership, unusedTargets)
-          mutation = written.update(_ + 1)
+          mutation = refs.written.update(_ + 1)
           missing  <- access.run(connection, Protection.OwnSpread(destination), maybeGrant = None)(mutation)
           saved    <- access.run(connection, Protection.OwnSpread(destination), grant.some)(mutation)
           shared   <- access.run(connection, Protection.ChangeSpreads(Set(destination)), grant.some)(mutation)
@@ -274,8 +260,8 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           rejected <- access.run(connection, Protection.OwnSpread(destination), grant.some)(mutation)
           _        <- authorization.set(AuthorizationResult.Blocked(destination, EditorId(new UUID(0L, 6L)), "Other"))
           blocked  <- access.run(connection, Protection.ChangeSpreads(Set(destination)), maybeGrant = None)(mutation)
-          count    <- written.get
-          observed <- calls.get
+          count    <- refs.written.get
+          observed <- refs.calls.get
         yield
           val expected = Vector(
             Call.Target(connection, destination, grant),
@@ -297,20 +283,19 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
   test("should allow independent shared writes and release coordination after application failure"):
     Mutex[IO].flatMap: mutex =>
       given Mutex[IO] = mutex
+      val refs        = Refs()
       for
-        calls     <- Ref.of[IO, Vector[Call]](Vector.empty)
         connected <- Ref.of[IO, ConnectionAuthorizationResult](ConnectionAuthorizationResult.Authorized)
-        written   <- Ref.of[IO, Int](0)
-        sessions = new AuthorizationStub(calls, connected.get, AuthorizationResult.Authorized.pure[IO])
+        sessions = new AuthorizationStub(refs.calls, connected.get, AuthorizationResult.Authorized.pure[IO])
         access   = EditingAccess.make(sessions, unusedMembership, unusedTargets)
         cause    = new IllegalStateException("Persistence failed")
         failed      <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(cause.raiseError[IO, Unit]).attempt
-        saved       <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(written.update(_ + 1))
-        independent <- access.run(connection, Protection.ActiveTab, maybeGrant = None)(written.update(_ + 1))
+        saved       <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(refs.written.update(_ + 1))
+        independent <- access.run(connection, Protection.ActiveTab, maybeGrant = None)(refs.written.update(_ + 1))
         _           <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
-        obsolete    <- access.run(connection, Protection.ActiveTab, maybeGrant = None)(written.update(_ + 1))
-        count       <- written.get
-        observed    <- calls.get
+        obsolete    <- access.run(connection, Protection.ActiveTab, maybeGrant = None)(refs.written.update(_ + 1))
+        count       <- refs.written.get
+        observed    <- refs.calls.get
       yield
         val expected = Vector(
           Call.Affected(connection, Set(target), None),
@@ -332,6 +317,10 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
     case Opening(album: AlbumId, maybeChapter: Option[ChapterId])
     case PhotoTarget(chapter: ChapterId, photo: PhotoId)
     case Written
+
+  final private case class Refs():
+    val calls: Ref[IO, Vector[Call]] = Ref.unsafe(Vector.empty)
+    val written: Ref[IO, Int]        = Ref.unsafe(0)
 
   private def buildMembership(calls: Ref[IO, Vector[Call]], response: IO[OpeningResult]) =
     new AlbumCompositionRepository.MembershipRead[IO]:
@@ -370,18 +359,3 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
       new AssertionError("Unexpected renewal").raiseError[IO, RenewTargetResult]
     override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
       new AssertionError("Unexpected ownership read").raiseError[IO, ReadTargetResult]
-
-  private def requireLock(result: SelectResult) = result match
-    case SelectResult.Owned(lock, _) => lock
-    case other                       => fail(s"Expected ownership, obtained $other")
-
-  private def bind(sessions: EditorSessionManager[IO], owner: Long) =
-    for
-      registered <- sessions.register(EditorId(new UUID(0L, owner)), "Owner", maybeSession = None)
-      session = registered match
-        case RegisterResult.Ready(value) => value.id
-        case other                       => fail(s"Expected session, obtained $other")
-      bound <- sessions.bind(session, TabId(new UUID(0L, owner)))
-    yield bound match
-      case BindResult.Active(value) => value
-      case other                    => fail(s"Expected binding, obtained $other")

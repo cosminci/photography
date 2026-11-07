@@ -11,7 +11,6 @@ trait AlbumRepository[F[_]]:
   def rename(id: AlbumId, title: AlbumTitle): F[AlbumRepository.RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[AlbumRepository.SaveSynopsisResult]
   def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[AlbumRepository.SaveAuthorsResult]
-  def delete(id: AlbumId): F[AlbumRepository.DeleteResult]
 
 object AlbumRepository:
   trait MetadataRead[F[_]]:
@@ -69,11 +68,6 @@ object AlbumRepository:
     case Renamed(album: Metadata)
     case NotFound
     case Failed(cause: Throwable)
-
-  enum DeleteResult derives CanEqual:
-    case Deleted
-    case NotFound
-    case Failed(reason: Failure)
 
   final case class AlbumPageSlice(totalAlbums: Long, albums: Vector[Metadata])
 

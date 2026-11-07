@@ -164,7 +164,6 @@ export function makeHttpAlbumClient(fetcher: typeof fetch): AlbumClient {
       request(`/api/albums/${encodeURIComponent(id)}/chapters/${encodeURIComponent(chapterId)}/description`, "PUT", { text }, 204, () => undefined),
     saveCaption: (chapterId, photoId, text) =>
       request(`/api/chapters/${encodeURIComponent(chapterId)}/photos/${encodeURIComponent(photoId)}/caption`, "PUT", { text }, 204, () => undefined),
-    remove: (id) => request(`/api/albums/${encodeURIComponent(id)}`, "DELETE", undefined, 204, () => undefined),
     chapters: (id, signal) =>
       request(
         `/api/albums/${encodeURIComponent(id)}/chapters`,

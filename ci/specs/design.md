@@ -20,6 +20,8 @@ flowchart TD
 
 Backend, frontend and pipeline gates own independent build boundaries in pinned environments. Selection follows path ownership, not file type: frontend-owned changes select the frontend gate; standalone living-doc changes retain shared checks without selecting an application component.
 
+Changes to shared verification infrastructure or its environment select every component. The checks exercise the application builds they govern rather than validating selection policy alone.
+
 ## Verification boundary
 
 Git ancestry defines the change under review. The pre-push hook verifies the actual outgoing checkout, while pull-request CI compares the candidate with its target branch. A failed stage stops verification rather than producing a partial success.

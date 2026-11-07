@@ -8,23 +8,11 @@ import type { AlbumPage } from "../../../src/features/albums/model/Album";
 import { buildAlbumClient } from "./AlbumClientStub";
 
 vi.mock("../../../src/features/albums/dashboard/AlbumCard", () => ({
-  AlbumCard: vi.fn((props: ComponentProps<typeof AlbumCard>) => (
-    <>
-      <a href={`/albums/${props.album.id}`}>{props.album.title}</a>
-      <button
-        id={`delete-${props.album.id}`}
-        onClick={() => {
-          props.onDelete();
-        }}
-      >
-        Delete {props.album.title}
-      </button>
-    </>
-  )),
+  AlbumCard: vi.fn((props: ComponentProps<typeof AlbumCard>) => <a href={`/albums/${props.album.id}`}>{props.album.title}</a>),
 }));
 vi.mock("../../../src/features/albums/dialog/AlbumDialog", () => ({
   AlbumDialog: vi.fn((props: ComponentProps<typeof AlbumDialog>) => (
-    <div role="dialog" aria-label={props.action.kind}>
+    <div role="dialog" aria-label="create">
       <button onClick={() => void props.onSaved()}>Saved</button>
       <button
         onClick={() => {
@@ -81,13 +69,17 @@ describe("AlbumDashboard", () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 
-  it("should launch creation, reload the first page after saving and restore the Add action on close", async () => {
-    const list = vi.fn().mockResolvedValueOnce(firstPage).mockResolvedValueOnce(secondPage).mockResolvedValueOnce(firstPage);
+  it.each([1, 2])("should launch creation from page %s, reload the first page and restore the Add action on close", async (startingPage) => {
+    const list = vi.fn().mockResolvedValueOnce(firstPage);
+    if (startingPage === 2) list.mockResolvedValueOnce(secondPage);
+    list.mockResolvedValueOnce(firstPage);
     const client = buildAlbumClient({ list });
     render(() => <AlbumDashboard client={client} />);
     await screen.findByRole("link", { name: "Journey" });
-    fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    await screen.findByRole("link", { name: "Last album" });
+    if (startingPage === 2) {
+      fireEvent.click(screen.getByRole("button", { name: "Next" }));
+      await screen.findByRole("link", { name: "Last album" });
+    }
 
     fireEvent.click(screen.getByRole("button", { name: "Add album" }));
     fireEvent.click(screen.getByRole("button", { name: "Saved" }));
@@ -95,31 +87,9 @@ describe("AlbumDashboard", () => {
     await screen.findByRole("link", { name: "Journey" });
     expect(screen.getByRole("dialog", { name: "create" })).toBeVisible();
     expect(vi.mocked(AlbumDialog).mock.lastCall?.[0].client).toBe(client);
-    expect(list.mock.calls).toEqual([[1], [2], [1]]);
+    expect(list.mock.calls).toEqual(startingPage === 2 ? [[1], [2], [1]] : [[1], [1]]);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add album" })).toHaveFocus();
   });
-
-  it.each([{ retained: true }, { retained: false }])(
-    "should refresh after deletion and restore focus when the album is retained: $retained",
-    async ({ retained }) => {
-      const list = vi
-        .fn()
-        .mockResolvedValueOnce(firstPage)
-        .mockResolvedValueOnce(retained ? firstPage : empty);
-      render(() => <AlbumDashboard client={buildAlbumClient({ list })} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Delete Journey" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Saved" }));
-
-      await waitFor(() => {
-        expect(list).toHaveBeenCalledTimes(2);
-      });
-      if (!retained) await waitFor(() => expect(screen.queryByRole("link", { name: "Journey" })).not.toBeInTheDocument());
-      expect(screen.getByRole("dialog", { name: "delete" })).toBeVisible();
-      fireEvent.click(screen.getByRole("button", { name: "Close" }));
-      expect(screen.getByRole("button", { name: retained ? "Delete Journey" : "Add album" })).toHaveFocus();
-    },
-  );
 });
