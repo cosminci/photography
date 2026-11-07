@@ -133,7 +133,7 @@ Target ownership protects composition, placed-photo captions, synopsis, chapter-
 
 Description writes resolve the chapter's current opening under the same coordination as ownership admission and persistence. A view-only canvas presents photographs, captions and opening text without editing affordances; independent chapter details and Reader remain available, and existing drafts remain recoverable.
 
-Album title/deletion and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
+Album title and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
 
 Tab binding, session liveness and target grants have separate lifetimes. Stream closure releases only the exact tab connection; a still-live session and grant can resume after reload, while releasing a target keeps its session.
 

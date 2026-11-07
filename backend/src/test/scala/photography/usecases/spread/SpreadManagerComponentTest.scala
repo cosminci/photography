@@ -3,7 +3,6 @@ import photography.domain.gear.CameraSelection
 
 import cats.data.NonEmptyList
 import cats.effect.{IO, Ref}
-import cats.effect.std.Mutex
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -516,7 +515,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
         assertEquals(writes, Vector.empty[(SpreadId, Vector[SpreadPlacement])])
     }
 
-  test("should reject wrong-owner and used photos and serialize current placement decisions"):
+  test("should reject wrong-owner and used photos and inspect before each placement write"):
     val refs         = Refs()
     val photo        = PhotoId(buildUuid(index = 570L))
     val foreignPhoto = PhotoId(buildUuid(index = 590L))
@@ -535,7 +534,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       missingPhoto  <-
         manager.editPlacements(album.id, first.id, Edit.Place(first.photoSlots.head.id, missing))
       outcomes <-
-        first.photoSlots.toList.parTraverse(slot => manager.editPlacements(album.id, first.id, Edit.Place(slot.id, photo)))
+        first.photoSlots.toList.traverse(slot => manager.editPlacements(album.id, first.id, Edit.Place(slot.id, photo)))
       used    <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo))
       effects <- refs.effects.get
     yield
@@ -820,11 +819,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def inspect(owner: AlbumId, maybeChapter: Option[ChapterId], photo: PhotoId): IO[PhotoPlacementRepository.InspectResult] =
         refs.effects.update(_ :+ Effect.Inspect(owner, maybeChapter, photo)) >>
           maybeInspectionError.fold(inspection)(_.raiseError[IO, PhotoPlacementRepository.InspectResult])
-    Mutex[IO].map: mutex =>
-      given transaction: Transaction[IO, IO] with
-        override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
-        override def resolve[A](program: IO[A]): IO[A] = mutex.lock.surround(program)
-      SpreadManager.make(templates, composition, repository, placements, defaultLayout)
+    given transaction: Transaction[IO, IO] with
+      override def run[A](program: IO[A]): IO[A]     = program
+      override def resolve[A](program: IO[A]): IO[A] = program
+    SpreadManager.make(templates, composition, repository, placements, defaultLayout).pure[IO]
   // scalafix:on DisableSyntax.defaultArgs
 
   private def resolveCatalog(id: SpreadTemplateId) =

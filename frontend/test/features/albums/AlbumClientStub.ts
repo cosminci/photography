@@ -25,7 +25,6 @@ export function buildAlbumClient(overrides: Partial<AlbumClient> = {}): AlbumCli
     saveAuthors: unexpected(),
     saveDescription: unexpected(),
     saveCaption: unexpected(),
-    remove: unexpected(),
     chapters: unexpected(),
     composition: unexpected(),
     countries: unexpected(),

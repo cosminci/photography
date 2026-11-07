@@ -629,8 +629,6 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         new AssertionError("Unexpected album creation").raiseError[IO, AlbumRepository.CreateResult]
       override def rename(value: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult] =
         new AssertionError("Unexpected album rename").raiseError[IO, AlbumRepository.RenameResult]
-      override def delete(value: AlbumId): IO[AlbumRepository.DeleteResult] =
-        new AssertionError("Unexpected deletion").raiseError[IO, AlbumRepository.DeleteResult]
     val writeUpdate = update
     val repository  = new ChapterRepository.Metadata[IO]:
       override def saveDescription(

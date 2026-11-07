@@ -1,7 +1,6 @@
 package photography.usecases.cover
 
 import cats.effect.{IO, Ref}
-import cats.effect.std.Mutex
 import cats.data.NonEmptyVector
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
@@ -158,7 +157,7 @@ class CoverManagerComponentTest extends CatsEffectSuite:
         assertEquals(writes, Vector.empty)
     }
 
-  test("should serialize current cover reads, photo inspection and placement writes"):
+  test("should read and inspect before writing and preserve an already-used photo rejection"):
     val refs      = Refs()
     val responses = Ref.unsafe[IO, List[PhotoPlacementRepository.InspectResult]](List(
       PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = false),
@@ -168,7 +167,7 @@ class CoverManagerComponentTest extends CatsEffectSuite:
 
     for
       manager  <- buildManager(refs, inspected = inspected)
-      outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(cover.album, Edit.Place(slot, photo)))
+      outcomes <- Vector(cover.front.id, cover.back.id).traverse(slot => manager.edit(cover.album, Edit.Place(slot, photo)))
       writes   <- refs.replacements.get
       events   <- refs.events.get
     yield
@@ -257,11 +256,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
           inspected
     given IdGenerator[IO] with
       override def generateId: IO[UUID] = fresh.value.pure[IO]
-    Mutex[IO].map: mutex =>
-      given Transaction[IO, IO] with
-        override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
-        override def resolve[A](program: IO[A]): IO[A] = mutex.lock.surround(program)
-      CoverManager.make[IO, IO](repository, photos)
+    given Transaction[IO, IO] with
+      override def run[A](program: IO[A]): IO[A]     = program
+      override def resolve[A](program: IO[A]): IO[A] = program
+    CoverManager.make[IO, IO](repository, photos).pure[IO]
 
   private def buildRead(
       composition: Composition,

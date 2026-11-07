@@ -170,22 +170,21 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(loaded, MetadataResult.Found(buildMetadata(later)))
         assertEquals(after, before * 2L)
 
-  test("should distinguish missing albums and delete owned initial rows without deleting shared templates"):
+  test("should distinguish missing albums without changing saved albums or shared templates"):
     buildTransactor.use: xa =>
       val repository = SqliteAlbumRepository.make[IO](xa)
       val missing    = AlbumId(buildUuid(index = 999))
       val album      = buildAlbum(index = 1)
       for
         _         <- repository.create(album, buildCover(album))
+        before    <- countInitialRows.transact(xa)
         metadata  <- repository.metadata(missing)
         chapters  <- repository.chapters(missing)
         planning  <- repository.readPlanning(missing)
         renamed   <- repository.rename(missing, changedTitle)
         synopsis  <- repository.saveSynopsis(missing, text = "")
         authors   <- repository.saveAuthors(missing, Author.all)
-        absent    <- repository.delete(missing)
-        deleted   <- repository.delete(album.id)
-        removed   <- repository.metadata(album.id)
+        retained  <- repository.metadata(album.id)
         owned     <- countInitialRows.transact(xa)
         templates <- sql"SELECT count(*) FROM spread_template".query[Long].unique.transact(xa)
       yield
@@ -195,10 +194,8 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(renamed, RenameResult.NotFound)
         assertEquals(synopsis, SaveSynopsisResult.NotFound)
         assertEquals(authors, SaveAuthorsResult.NotFound)
-        assertEquals(absent, DeleteResult.NotFound)
-        assertEquals(deleted, DeleteResult.Deleted)
-        assertEquals(removed, MetadataResult.NotFound)
-        assertEquals(owned, 0L)
+        assertEquals(retained, MetadataResult.Found(buildMetadata(album)))
+        assertEquals(owned, before)
         assertEquals(templates, 99L)
 
   test("should reject noninitial albums or foreign Covers and roll back all initial rows after a late failure"):
@@ -270,7 +267,6 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         chapters <- repository.chapters(album.id)
         planning <- repository.readPlanning(album.id)
         renamed  <- repository.rename(album.id, changedTitle)
-        deleted  <- repository.delete(album.id)
       yield
         assertEquals(listed, ListResult.Failed(Failure.DatabaseFailure))
         assertEquals(created, CreateResult.Failed(Failure.DatabaseFailure))
@@ -278,7 +274,6 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(chapters, ChaptersResult.Failed(Failure.DatabaseFailure))
         assertEquals(planning, PlanningResult.Failed(Failure.DatabaseFailure))
         assert(fieldFailure(renamed).getMessage.nonEmpty)
-        assertEquals(deleted, DeleteResult.Failed(Failure.DatabaseFailure))
 
   test("should preserve Unicode synopsis text and all nonempty author combinations, including synopsis clearing"):
     buildTransactor.use: xa =>

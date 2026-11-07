@@ -1,9 +1,11 @@
 import signal
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import CalledProcessError, TimeoutExpired
+from subprocess import CalledProcessError
 from unittest import mock
 
 import local
@@ -112,21 +114,52 @@ class LocalRunnerComponentTest(unittest.TestCase):
         process.poll.return_value = None
         process.wait.return_value = 0
 
-        with mock.patch.object(local.os, "killpg") as kill_process_group:
+        with mock.patch.object(local.os, "killpg", side_effect=[None, ProcessLookupError]) as kill_process_group:
             local.stop_process_tree(process)
 
-        kill_process_group.assert_called_once_with(42, signal.SIGTERM)
+        self.assertEqual(kill_process_group.call_args_list, [mock.call(42, signal.SIGTERM), mock.call(42, 0)])
 
         stuck_process = mock.Mock()
         stuck_process.pid = 43
         stuck_process.poll.return_value = None
-        stuck_process.wait.side_effect = [TimeoutExpired("sbt", 10), 0]
-        with mock.patch.object(local.os, "killpg") as kill_process_group:
+        with (
+            mock.patch.object(local.os, "killpg") as kill_process_group,
+            mock.patch.object(local.time, "monotonic", side_effect=[0, 11]),
+        ):
             local.stop_process_tree(stuck_process)
 
-        expected_signals = [mock.call(43, signal.SIGTERM), mock.call(43, signal.SIGKILL)]
+        expected_signals = [mock.call(43, signal.SIGTERM), mock.call(43, 0), mock.call(43, signal.SIGKILL)]
 
         self.assertEqual(kill_process_group.call_args_list, expected_signals)
+
+    def test_should_stop_surviving_descendants_even_after_the_group_leader_exits(self):
+        child = "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(os.getpid(), flush=True); time.sleep(60)"
+        for leader_exited in (False, True):
+            with self.subTest(leader_exited=leader_exited):
+                leader = (
+                    f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); "
+                    + ("sys.exit(0)" if leader_exited else "time.sleep(60)")
+                )
+                process = subprocess.Popen([sys.executable, "-c", leader], start_new_session=True, stdout=subprocess.PIPE)
+                try:
+                    self.assertIsNotNone(process.stdout)
+                    child_pid = int(process.stdout.readline())
+                    self.assertNotEqual(child_pid, process.pid)
+                    if leader_exited:
+                        process.wait(timeout=5)
+
+                    with mock.patch.object(local, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.2):
+                        local.stop_process_tree(process)
+
+                    output, _ = process.communicate(timeout=5)
+                    self.assertEqual(output, b"")
+                    self.assertIsNotNone(process.returncode)
+                finally:
+                    try:
+                        local.os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate(timeout=5)
 
     def test_should_launcher_pass_overrides_to_the_child_and_stop_it(self):
         for database_override in (None, "/isolated/album-year.sqlite"):

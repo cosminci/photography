@@ -40,7 +40,6 @@ export interface AlbumClient extends PlacementClient, GearClient, BookExportClie
   readonly saveAuthors: (id: string, authors: readonly Author[]) => Promise<Album>;
   readonly saveDescription: (id: string, chapterId: string, text: string) => Promise<void>;
   readonly saveCaption: (chapterId: string, photoId: string, text: string) => Promise<void>;
-  readonly remove: (id: string) => Promise<void>;
   readonly chapters: (id: string, signal: AbortSignal) => Promise<readonly Chapter[]>;
   readonly composition: (id: string, signal: AbortSignal) => Promise<readonly SpreadMembership[]>;
   readonly countries: (signal: AbortSignal) => Promise<readonly Country[]>;

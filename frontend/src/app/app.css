@@ -237,14 +237,6 @@ p {
   z-index: 2;
   background: rgb(255 255 255 / 95%);
 }
-.album-card-actions {
-  position: absolute;
-  z-index: 1;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  gap: 5px;
-}
 button.icon-button {
   display: grid;
   place-items: center;
@@ -262,14 +254,6 @@ button.icon-button {
 .icon-button:focus-visible {
   border-color: #256d85;
   background: #e2f1f3;
-}
-button.delete-action {
-  color: #a03a42;
-}
-button.delete-action:hover,
-button.delete-action:focus-visible {
-  border-color: #a03a42;
-  background: #fae9e5;
 }
 .icon-button svg {
   width: 0.9rem;

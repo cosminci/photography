@@ -760,17 +760,15 @@ describe("same-origin album HTTP client", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(page)))
       .mockResolvedValueOnce(new Response(JSON.stringify(album), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, synopsis: "", authors: ["Cosmin", "Mara", "Iacob"] })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, title: "Asian capitals" })))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...album, title: "Asian capitals" })));
     const client = makeHttpAlbumClient(fetcher);
-    const expectedUrls = ["/api/albums?page=1", "/api/albums", `/api/albums/${album.id}`, `/api/albums/${album.id}`, `/api/albums/${album.id}`];
+    const expectedUrls = ["/api/albums?page=1", "/api/albums", `/api/albums/${album.id}`, `/api/albums/${album.id}`];
     const expectedCreation = { method: "POST", body: JSON.stringify({ year: album.year }), headers: { "Content-Type": "application/json" } };
 
     const listed = await client.list(1);
     const created = await client.create(album.year);
     const opened = await client.open(album.id);
     const renamed = await client.rename(album.id, "Asian capitals");
-    await client.remove(album.id);
 
     expect(listed).toEqual(page);
     expect(created).toEqual(album);
@@ -780,7 +778,6 @@ describe("same-origin album HTTP client", () => {
     expect(fetcher.mock.calls[1]?.[1]).toMatchObject(expectedCreation);
     expect(fetcher.mock.calls[2]?.[1]).toMatchObject({ method: "GET" });
     expect(fetcher.mock.calls[3]?.[1]).toMatchObject({ method: "PATCH", body: JSON.stringify({ title: "Asian capitals" }) });
-    expect(fetcher.mock.calls[4]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
   it.each([
@@ -808,10 +805,14 @@ describe("same-origin album HTTP client", () => {
     await expect(client.list(1)).rejects.toBeInstanceOf(Error);
   });
 
-  it("should reject a deletion response that violates the no-content contract", async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}"));
+  it.each([
+    { response: "an unexpected status", status: 200 },
+    { response: "unreadable JSON", status: 201 },
+  ])("should retain acknowledged creation when its successful response has $response", async ({ status }) => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("unreadable", { status }));
     const client = makeHttpAlbumClient(fetcher);
 
-    await expect(client.remove("album")).rejects.toThrow("The write was acknowledged, but its saved response could not be read.");
+    await expect(client.create(2026)).rejects.toBeInstanceOf(AcknowledgedWriteError);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 });

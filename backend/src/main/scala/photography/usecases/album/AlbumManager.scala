@@ -22,7 +22,6 @@ trait AlbumManager[F[_]]:
   def rename(id: AlbumId, title: AlbumTitle): F[RenameResult]
   def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult]
   def saveAuthors(album: AlbumId, authors: AlbumAuthors): F[SaveAuthorsResult]
-  def delete(id: AlbumId): F[DeleteAlbumResult]
 
 type AlbumPageSize = Int :| Positive
 
@@ -77,12 +76,6 @@ object AlbumManager:
         case AlbumRepository.RenameResult.Failed(cause)  =>
           Logger[F].error(cause)(s"Album rename failed for ${id.value}").as(RenameResult.Failed)
 
-    override def delete(id: AlbumId): F[DeleteAlbumResult] =
-      repository.delete(id).map:
-        case AlbumRepository.DeleteResult.Deleted   => DeleteAlbumResult.Deleted
-        case AlbumRepository.DeleteResult.NotFound  => DeleteAlbumResult.NotFound
-        case AlbumRepository.DeleteResult.Failed(_) => DeleteAlbumResult.Failed
-
     override def saveSynopsis(album: AlbumId, text: String): F[SaveSynopsisResult] =
       repository.saveSynopsis(album, text = text).flatMap:
         case AlbumRepository.SaveSynopsisResult.Saved(updated) => SaveSynopsisResult.Saved(updated).pure[F]
@@ -132,11 +125,6 @@ object AlbumManager:
   enum RenameResult derives CanEqual:
     case Renamed(album: AlbumRepository.Metadata)
     case NotFound, Failed
-
-  enum DeleteAlbumResult derives CanEqual:
-    case Deleted
-    case NotFound
-    case Failed
 
   enum SaveSynopsisResult derives CanEqual:
     case Saved(album: AlbumRepository.Metadata)

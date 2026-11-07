@@ -144,20 +144,27 @@ def wait_for_readiness(
 
 
 def stop_process_tree(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+    process.poll()
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
         process.wait()
+        return
+    deadline = time.monotonic() + PROCESS_SHUTDOWN_TIMEOUT_SECONDS
+    while True:
+        process.poll()
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() >= deadline:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            break
+        time.sleep(0.1)
+    process.wait()
 
 
 def parse_port(environment: Mapping[str, str]) -> int:

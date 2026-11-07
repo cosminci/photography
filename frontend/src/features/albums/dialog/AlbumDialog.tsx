@@ -1,67 +1,104 @@
-import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { AlbumClient, AlbumSummary } from "../model/Album";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { AlbumRequestError, type AlbumClient, type AlbumSummary } from "../model/Album";
 import { describeFailure, validateYear } from "../model/Presentation";
-
-export type AlbumAction = { kind: "create" } | { kind: "delete"; album: AlbumSummary };
+import { createContentSave } from "../workspace/ContentSave";
 
 export function AlbumDialog(props: {
-  client: AlbumClient;
-  action: AlbumAction;
+  client: Pick<AlbumClient, "create" | "list">;
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: () => void | Promise<void>;
   returnFocus: () => void;
 }) {
   const [year, setYear] = createSignal(String(new Date().getFullYear()));
   const [error, setError] = createSignal<string>();
-  const [pending, setPending] = createSignal(false);
+  const [confirmed, setConfirmed] = createSignal(false);
+  const [publishing, setPublishing] = createSignal(false);
   const [closing, setClosing] = createSignal(false);
-  const deleting = createMemo(() => props.action.kind === "delete");
-  const heading = createMemo(() => (props.action.kind === "delete" ? `Delete ${props.action.album.title}?` : "Create an album"));
-  const unavailable = createMemo(() => (pending() ? "Saving album. Please wait." : closing() ? "Closing album dialog." : undefined));
+  const save = createContentSave<number, AlbumSummary | undefined>({
+    save: (requestedYear) => props.client.create(requestedYear),
+    read: async (requestedYear) => {
+      let totalPages = 1;
+      for (let page = 1; page <= totalPages; page++) {
+        const catalog = await props.client.list(page);
+        const saved = catalog.albums.find((album) => album.year === requestedYear);
+        if (saved !== undefined) return saved;
+        totalPages = catalog.totalPages;
+      }
+      if (save.recovery() === "acknowledged") throw new AlbumRequestError(404, "The saved album could not be found.");
+      return undefined;
+    },
+    equal: (saved, requestedYear) => saved?.year === requestedYear,
+    onSaved: () => setConfirmed(true),
+  });
+  const unavailable = createMemo(
+    () => save.unavailable() ?? (publishing() ? "Refreshing albums. Please wait." : closing() ? "Closing album dialog." : undefined),
+  );
   let dialog: HTMLDialogElement;
   let input: HTMLInputElement;
-  let cancel: HTMLButtonElement;
+  let feedback: HTMLDivElement;
+  const [active, setActive] = createSignal(true);
 
   onMount(() => {
     dialog.showModal();
-    if (deleting()) cancel.focus();
-    else input.focus();
+    input.focus();
+  });
+  createEffect(() => {
+    if ((error() ?? save.error()) !== undefined && !save.pending() && !publishing()) feedback.focus();
   });
   onCleanup(() => {
+    setActive(false);
     dialog.close();
     props.returnFocus();
   });
 
   async function close() {
     setClosing(true);
-    // Let Solid apply the closing animation before awaiting it.
     await Promise.resolve();
-    // Native animation cancellation (including reduced motion) must still finish closing.
     await Promise.allSettled(dialog.getAnimations().map((animation) => animation.finished));
-    props.onClose();
+    if (active()) props.onClose();
+  }
+
+  async function finish() {
+    if (!active() || !confirmed()) return;
+    setPublishing(true);
+    setError(undefined);
+    try {
+      await props.onSaved();
+      if (active()) await close();
+    } catch (failure) {
+      if (active()) {
+        setClosing(false);
+        setError(describeFailure(failure));
+      }
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function reconcile() {
+    await save.reconcile();
+    await finish();
   }
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    // Native disabled controls cannot submit while saving or closing.
     /* v8 ignore next */
     if (unavailable() !== undefined) return;
-    const validation = deleting() ? undefined : validateYear(year());
+    if (confirmed()) {
+      await finish();
+      return;
+    }
+    const validation = validateYear(year());
     if (validation !== undefined) {
       setError(validation);
       return;
     }
-    setPending(true);
-    try {
-      const action = props.action;
-      if (action.kind === "create") await props.client.create(Number(year()));
-      else await props.client.remove(action.album.id);
-      await props.onSaved();
-      await close();
-    } catch (failure) {
-      setError(describeFailure(failure));
-      setPending(false);
-    }
+    const selectedYear = Number(year());
+    setError(undefined);
+    if (save.draft() === undefined) save.begin(selectedYear);
+    else save.change(selectedYear);
+    await save.commit();
+    await finish();
   }
 
   return (
@@ -69,36 +106,29 @@ export function AlbumDialog(props: {
       ref={(element) => {
         dialog = element;
       }}
-      aria-label={heading()}
-      role={deleting() ? "alertdialog" : "dialog"}
+      aria-label="Create an album"
+      role="dialog"
       class="album-dialog"
-      classList={{ "confirmation-dialog": deleting(), "is-closing": closing() }}
+      classList={{ "is-closing": closing() }}
       onCancel={(event) => {
         event.preventDefault();
         if (unavailable() === undefined) void close();
       }}
     >
-      <Show when={deleting()}>
-        <span class="confirmation-warning" aria-hidden="true">
-          !
-        </span>
-      </Show>
       <header class="dialog-heading">
-        <h2>{heading()}</h2>
-        <Show when={!deleting()}>
-          <button
-            type="button"
-            class="panel-close"
-            aria-label="Close"
-            disabled={unavailable() !== undefined}
-            aria-describedby="album-dialog-feedback"
-            onClick={() => {
-              void close();
-            }}
-          >
-            ×
-          </button>
-        </Show>
+        <h2>Create an album</h2>
+        <button
+          type="button"
+          class="panel-close"
+          aria-label="Close"
+          disabled={unavailable() !== undefined}
+          aria-describedby="album-dialog-feedback"
+          onClick={() => {
+            void close();
+          }}
+        >
+          ×
+        </button>
       </header>
       <form
         aria-label="Album details"
@@ -106,46 +136,51 @@ export function AlbumDialog(props: {
           void submit(event);
         }}
       >
-        <Show
-          when={deleting()}
-          fallback={
-            <label>
-              Album year
-              <input
-                ref={(element) => {
-                  input = element;
-                }}
-                value={year()}
-                inputmode="numeric"
-                disabled={unavailable() !== undefined}
-                onInput={(event) => {
-                  setYear(event.currentTarget.value);
-                  setError(undefined);
-                }}
-                aria-describedby="album-dialog-feedback"
-              />
-            </label>
-          }
+        <label>
+          Album year
+          <input
+            ref={(element) => {
+              input = element;
+            }}
+            value={year()}
+            inputmode="numeric"
+            disabled={unavailable() !== undefined || confirmed()}
+            onInput={(event) => {
+              setYear(event.currentTarget.value);
+              setError(undefined);
+            }}
+            aria-describedby="album-dialog-feedback"
+          />
+        </label>
+        <div
+          id="album-dialog-feedback"
+          ref={(element) => {
+            feedback = element;
+          }}
+          tabindex="-1"
         >
-          <p>This permanently deletes the album. Deleting cannot be undone.</p>
-        </Show>
-        <div id="album-dialog-feedback">
-          <Show when={error()}>
-            {(message) => (
-              <p role="alert" aria-hidden={pending()}>
-                {message()}
-              </p>
-            )}
-          </Show>
+          <Show when={error() ?? save.error()}>{(message) => <p role="alert">{message()}</p>}</Show>
           <div class="dialog-status">
             <Show when={unavailable()}>{(reason) => <p role="status">{reason()}</p>}</Show>
+            <Show when={confirmed() && unavailable() === undefined}>
+              <p role="status">Album saved. Refresh albums to continue.</p>
+            </Show>
           </div>
+          <Show when={save.recovery() !== undefined}>
+            <button
+              type="button"
+              disabled={save.pending()}
+              aria-describedby="album-dialog-feedback"
+              onClick={() => {
+                void reconcile();
+              }}
+            >
+              Read saved album
+            </button>
+          </Show>
         </div>
         <div class="dialog-actions">
           <button
-            ref={(element) => {
-              cancel = element;
-            }}
             type="button"
             class="secondary"
             disabled={unavailable() !== undefined}
@@ -156,8 +191,8 @@ export function AlbumDialog(props: {
           >
             Cancel
           </button>
-          <button type="submit" classList={{ danger: deleting() }} disabled={unavailable() !== undefined} aria-describedby="album-dialog-feedback">
-            {deleting() ? "Delete permanently" : "Create"}
+          <button type="submit" disabled={unavailable() !== undefined} aria-describedby="album-dialog-feedback">
+            {confirmed() ? "Refresh albums" : "Create"}
           </button>
         </div>
       </form>

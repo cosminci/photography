@@ -20,21 +20,27 @@ describe("findComponentsForPath", () => {
   });
 
   it("should map pipeline paths to the pipeline component", () => {
-    const paths = [
-      "scripts/local.py",
-      "scripts/verify",
-      ".dagger/src/index.ts",
-      "dagger.json",
-      ".github/workflows/build.yml",
-      ".github/workflows/verify-main.yml",
-      ".githooks/pre-push",
-      ".agents/skills/sdd/scripts/check_markdown_wrapping.py",
-      ".mise.toml",
-    ];
+    const paths = ["scripts/local.py", ".agents/skills/sdd/scripts/check_markdown_wrapping.py"];
 
     for (const path of paths) {
       expect(Selection.findComponentsForPath(path), path).toEqual(["pipeline"]);
     }
+  });
+
+  it.each([
+    ".dagger/src/hooks/backend.ts",
+    ".dagger/src/hooks/frontend.ts",
+    ".dagger/src/buildEnv.ts",
+    ".dagger/src/index.ts",
+    ".dagger/package-lock.json",
+    "dagger.json",
+    ".mise.toml",
+    "scripts/verify",
+    ".github/workflows/build.yml",
+    ".github/workflows/verify-main.yml",
+    ".githooks/pre-push",
+  ])("should run every component when shared verification changes at %s", (path) => {
+    expect(Selection.selectAffected([path])).toEqual({ kind: "all" });
   });
 
   it("should ignore documentation and unrelated paths", () => {

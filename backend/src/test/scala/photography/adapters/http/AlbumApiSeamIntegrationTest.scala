@@ -292,26 +292,25 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       assert(responses.forall(hasValidationFeedback))
       assertEquals(calls, Vector.empty)
 
-  test("should delete with an empty 204 response"):
+  test("should expose no album deletion operation"):
     val refs   = Refs()
     val server = buildAlbumApi(refs)
 
     for
-      deleted <- send(server, Method.DELETE, path = albumPath, body = "")
+      deleted <- server.app.run(Request[IO](Method.DELETE, Uri.unsafeFromString(albumPath)))
       calls   <- refs.calls.get
     yield
-      assertEquals(deleted, ApiResponse(Status.NoContent, maybeContentType = None, maybeBody = None))
-      assertEquals(calls, Vector(s"delete:${id.value}"))
+      assertEquals(deleted.status, Status.NotFound)
+      assertEquals(calls, Vector.empty[String])
 
   test("should give malformed and unknown album IDs the same missing-resource response"):
     val refs   = Refs()
     val server = buildAlbumApi(
       refs,
-      renameResult = RenameResult.NotFound,
-      deleteAlbumResult = DeleteAlbumResult.NotFound
+      renameResult = RenameResult.NotFound
     )
     val paths        = Vector(albumPath, "/api/albums/not-a-uuid", "/api/albums/1-1-1-1-1")
-    val requests     = Vector(Method.PATCH, Method.DELETE).flatMap(method => paths.map(method -> _))
+    val requests     = paths.map(Method.PATCH -> _)
     val expectedBody = parse("""{"code":"album_not_found"}""").fold(error => fail(error.message), identity)
     val expected     = Vector.fill(requests.size)(ApiResponse(Status.NotFound, jsonMediaType, expectedBody.some))
     val responses    = requests.traverse { case (method, path) =>
@@ -323,21 +322,19 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       calls  <- refs.calls.get
     yield
       assertEquals(actual, expected)
-      assertEquals(calls, Vector(s"rename:${id.value}:Journey of the Shepherds 2026", s"delete:${id.value}"))
+      assertEquals(calls, Vector(s"rename:${id.value}:Journey of the Shepherds 2026"))
 
   test("should translate every application's service failure to the same JSON error"):
     val server = buildAlbumApi(
       Refs(),
       listAlbumsResult = ListAlbumsResult.Failed,
       createAlbumResult = CreateAlbumResult.Failed,
-      renameResult = RenameResult.Failed,
-      deleteAlbumResult = DeleteAlbumResult.Failed
+      renameResult = RenameResult.Failed
     )
     val operations = Vector(
-      Method.GET    -> "/api/albums",
-      Method.POST   -> "/api/albums",
-      Method.PATCH  -> albumPath,
-      Method.DELETE -> albumPath
+      Method.GET   -> "/api/albums",
+      Method.POST  -> "/api/albums",
+      Method.PATCH -> albumPath
     )
     val expectedBody = parse("""{"code":"service_failure"}""").fold(error => fail(error.message), identity)
     val expected     = Vector.fill(operations.size)(ApiResponse(Status.InternalServerError, jsonMediaType, expectedBody.some))
@@ -401,7 +398,6 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         ListAlbumsResult.Listed(AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)),
       createAlbumResult: CreateAlbumResult = CreateAlbumResult.Created(album),
       renameResult: RenameResult = RenameResult.Renamed(albumMetadata),
-      deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted,
       metadataResult: AlbumRepository.MetadataResult = AlbumRepository.MetadataResult.Found(albumMetadata),
       synopsisResult: IO[SaveSynopsisResult] = new AssertionError("Unexpected synopsis mutation").raiseError[IO, SaveSynopsisResult],
       authorsResult: IO[SaveAuthorsResult] = new AssertionError("Unexpected author mutation").raiseError[IO, SaveAuthorsResult]
@@ -416,7 +412,6 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         refs.calls.update(_ :+ s"create:$year").as(createAlbumResult)
       override def rename(albumId: AlbumId, title: AlbumTitle): IO[RenameResult] =
         refs.calls.update(_ :+ s"rename:${albumId.value}:$title").as(renameResult)
-      override def delete(albumId: AlbumId): IO[DeleteAlbumResult] = refs.calls.update(_ :+ s"delete:${albumId.value}").as(deleteAlbumResult)
     val metadata = new AlbumRepository.MetadataRead[IO]:
       override def metadata(album: AlbumId): IO[AlbumRepository.MetadataResult] =
         refs.calls.update(_ :+ s"metadata:${album.value}").as(metadataResult)

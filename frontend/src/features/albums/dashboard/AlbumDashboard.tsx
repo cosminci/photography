@@ -1,7 +1,7 @@
 import { For, Index, Show, createMemo, createResource, createSignal } from "solid-js";
 import type { AlbumClient, AlbumPage } from "../model/Album";
 import { getPaginationFeedback } from "../model/Presentation";
-import { AlbumDialog, type AlbumAction } from "../dialog/AlbumDialog";
+import { AlbumDialog } from "../dialog/AlbumDialog";
 import { AlbumCard } from "./AlbumCard";
 
 export function AlbumDashboard(props: { client: AlbumClient }) {
@@ -13,13 +13,11 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
       return { ...result, direction: result.page === value?.page ? undefined : selection.direction };
     },
   );
-  const [action, setAction] = createSignal<AlbumAction>();
+  const [adding, setAdding] = createSignal(false);
   let addButton: HTMLButtonElement;
 
-  async function handleSavedAlbum() {
-    const created = action()?.kind === "create";
-    if (created) setRequest({ page: 1, direction: undefined });
-    else await refetch();
+  function handleSavedAlbum() {
+    setRequest({ page: 1, direction: undefined });
   }
 
   function changePage(page: number, direction: "forward" | "backward") {
@@ -36,7 +34,7 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
           }}
           type="button"
           onClick={() => {
-            setAction({ kind: "create" });
+            setAdding(true);
           }}
         >
           <span aria-hidden="true">+ </span>Add album
@@ -79,15 +77,7 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
                   <For each={page().albums.map((album) => album.id)}>
                     {(id) => (
                       <Show when={page().albums.find((album) => album.id === id)}>
-                        {(album) => (
-                          <AlbumCard
-                            album={album()}
-                            client={props.client}
-                            onDelete={() => {
-                              setAction({ kind: "delete", album: album() });
-                            }}
-                          />
-                        )}
+                        {(album) => <AlbumCard album={album()} client={props.client} />}
                       </Show>
                     )}
                   </For>
@@ -134,22 +124,17 @@ export function AlbumDashboard(props: { client: AlbumClient }) {
           }}
         </Show>
       </Show>
-      <Show when={action()} keyed>
-        {(target) => (
-          <AlbumDialog
-            client={props.client}
-            action={target}
-            onClose={() => {
-              setAction(undefined);
-            }}
-            onSaved={handleSavedAlbum}
-            returnFocus={() => {
-              const trigger = target.kind === "create" ? addButton : document.getElementById(`${target.kind}-${target.album.id}`);
-              if (trigger instanceof HTMLElement) trigger.focus();
-              else addButton.focus();
-            }}
-          />
-        )}
+      <Show when={adding()}>
+        <AlbumDialog
+          client={props.client}
+          onClose={() => {
+            setAdding(false);
+          }}
+          onSaved={handleSavedAlbum}
+          returnFocus={() => {
+            addButton.focus();
+          }}
+        />
       </Show>
     </>
   );

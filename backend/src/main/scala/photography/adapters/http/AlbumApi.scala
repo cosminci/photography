@@ -36,8 +36,7 @@ object AlbumApi:
       case GET -> Root / "api" / "albums" / CanonicalId(id)            => Route.public(read(AlbumId(id)))
       case GET -> Root / "api" / "albums" / _                          => Route.public(respondAlbumNotFound)
       case request @ PATCH -> Root / "api" / "albums" / AlbumIdVar(id) => Route.public(rename(id, request))
-      case DELETE -> Root / "api" / "albums" / AlbumIdVar(id)          => Route.public(delete(id))
-      case (PATCH | DELETE) -> Root / "api" / "albums" / _             => Route.public(respondAlbumNotFound)
+      case PATCH -> Root / "api" / "albums" / _                        => Route.public(respondAlbumNotFound)
     }
 
     private def read(id: AlbumId) =
@@ -114,12 +113,6 @@ object AlbumApi:
         case RenameResult.NotFound       => respondAlbumNotFound
         case RenameResult.Failed         => respondServiceFailure
       }.recoverWith { case _: MessageBodyFailure => BadRequest(invalidTitle) }
-
-    private def delete(id: AlbumId) =
-      albums.delete(id).flatMap:
-        case DeleteAlbumResult.Deleted  => NoContent()
-        case DeleteAlbumResult.NotFound => respondAlbumNotFound
-        case DeleteAlbumResult.Failed   => respondServiceFailure
 
     private def respondAlbumNotFound  = NotFound(Map("code" -> "album_not_found"))
     private def respondServiceFailure = InternalServerError(Map("code" -> "service_failure"))
