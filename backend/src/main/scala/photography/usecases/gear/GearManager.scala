@@ -46,18 +46,10 @@ object GearManager:
             case GearRepository.CatalogReadResult.Found(catalog) =>
               if !catalog.cameras.exists(_.id.value === camera.id.value) then CameraUpdateResult.NotFound.pure[F]
               else
-                val updated = catalog.copy(cameras = catalog.cameras.map(current => if current.id.value === camera.id.value then camera else current))
                 readSavedSelections.flatMap:
                   case ChapterRepository.SelectionsReadResult.Failed       => CameraUpdateResult.Failed.pure[F]
                   case ChapterRepository.SelectionsReadResult.Found(saved) =>
-                    val selected = saved.flatMap(_.selection).filter(_.camera.value === camera.id.value)
-                    if preservesSelections(updated, selections = selected) then
-                      repository.updateCamera(camera).map:
-                        case GearRepository.CameraUpdateResult.Updated   => CameraUpdateResult.Updated
-                        case GearRepository.CameraUpdateResult.NotFound  => CameraUpdateResult.NotFound
-                        case GearRepository.CameraUpdateResult.Conflict  => CameraUpdateResult.Conflict
-                        case GearRepository.CameraUpdateResult.Failed    => CameraUpdateResult.Failed
-                        case GearRepository.CameraUpdateResult.Uncertain => CameraUpdateResult.Uncertain
+                    if preservesCameraSelections(catalog, camera, saved) then saveCamera(camera)
                     else CameraUpdateResult.InvalidatesSelection.pure[F]
 
     override def deleteCamera(id: CameraId): F[CameraDeleteResult] =
@@ -87,21 +79,10 @@ object GearManager:
             case GearRepository.CatalogReadResult.Found(catalog) =>
               if !catalog.lenses.exists(_.id.value === lens.id.value) then LensUpdateResult.NotFound.pure[F]
               else
-                val updated = catalog.copy(lenses = catalog.lenses.map(current => if current.id.value === lens.id.value then lens else current))
                 readSavedSelections.flatMap:
                   case ChapterRepository.SelectionsReadResult.Failed       => LensUpdateResult.Failed.pure[F]
                   case ChapterRepository.SelectionsReadResult.Found(saved) =>
-                    val selected = saved.flatMap(_.selection).filter: entry =>
-                      entry.use match
-                        case CameraUse.FixedLens               => false
-                        case CameraUse.Interchangeable(lenses) => lenses.exists(_.value === lens.id.value)
-                    if preservesSelections(updated, selections = selected) then
-                      repository.updateLens(lens).map:
-                        case GearRepository.LensUpdateResult.Updated   => LensUpdateResult.Updated
-                        case GearRepository.LensUpdateResult.NotFound  => LensUpdateResult.NotFound
-                        case GearRepository.LensUpdateResult.Conflict  => LensUpdateResult.Conflict
-                        case GearRepository.LensUpdateResult.Failed    => LensUpdateResult.Failed
-                        case GearRepository.LensUpdateResult.Uncertain => LensUpdateResult.Uncertain
+                    if preservesLensSelections(catalog, lens, saved) then saveLens(lens)
                     else LensUpdateResult.InvalidatesSelection.pure[F]
 
     override def deleteLens(id: LensId): F[LensDeleteResult] =
@@ -118,6 +99,35 @@ object GearManager:
       repository.readCatalog.map:
         case GearRepository.CatalogReadResult.Found(current) => CatalogResult.Found(current)
         case GearRepository.CatalogReadResult.Failed         => CatalogResult.Failed
+
+    private def preservesCameraSelections(catalog: GearCatalog, camera: Camera, saved: Vector[ChapterGearSelection]) =
+      val updated  = catalog.copy(cameras = catalog.cameras.map(current => if current.id.value === camera.id.value then camera else current))
+      val selected = saved.flatMap(_.selection).filter(_.camera.value === camera.id.value)
+      preservesSelections(updated, selections = selected)
+
+    private def preservesLensSelections(catalog: GearCatalog, lens: Lens, saved: Vector[ChapterGearSelection]) =
+      val updated  = catalog.copy(lenses = catalog.lenses.map(current => if current.id.value === lens.id.value then lens else current))
+      val selected = saved.flatMap(_.selection).filter: entry =>
+        entry.use match
+          case CameraUse.FixedLens               => false
+          case CameraUse.Interchangeable(lenses) => lenses.exists(_.value === lens.id.value)
+      preservesSelections(updated, selections = selected)
+
+    private def saveCamera(camera: Camera) =
+      repository.updateCamera(camera).map:
+        case GearRepository.CameraUpdateResult.Updated   => CameraUpdateResult.Updated
+        case GearRepository.CameraUpdateResult.NotFound  => CameraUpdateResult.NotFound
+        case GearRepository.CameraUpdateResult.Conflict  => CameraUpdateResult.Conflict
+        case GearRepository.CameraUpdateResult.Failed    => CameraUpdateResult.Failed
+        case GearRepository.CameraUpdateResult.Uncertain => CameraUpdateResult.Uncertain
+
+    private def saveLens(lens: Lens) =
+      repository.updateLens(lens).map:
+        case GearRepository.LensUpdateResult.Updated   => LensUpdateResult.Updated
+        case GearRepository.LensUpdateResult.NotFound  => LensUpdateResult.NotFound
+        case GearRepository.LensUpdateResult.Conflict  => LensUpdateResult.Conflict
+        case GearRepository.LensUpdateResult.Failed    => LensUpdateResult.Failed
+        case GearRepository.LensUpdateResult.Uncertain => LensUpdateResult.Uncertain
 
     private def preservesSelections(catalog: GearCatalog, selections: Vector[CameraSelection]) =
       selections.forall(entry => catalog.validateSelection(Vector(entry)).isRight)

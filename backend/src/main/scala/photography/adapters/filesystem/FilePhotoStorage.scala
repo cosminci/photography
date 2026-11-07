@@ -120,7 +120,7 @@ object FilePhotoStorage:
       release.handleErrorWith: error =>
         exit match
           case Resource.ExitCase.Errored(primary) => Async[F].delay(if (primary: Object) =!= (error: Object) then primary.addSuppressed(error))
-          case _                                  => Async[F].raiseError(error)
+          case _                                  => error.raiseError[F, Unit]
 
     private def readDimensions(metadata: Metadata, width: Int, height: Int) =
       val maybeOrientation = Option(metadata.getFirstDirectoryOfType(classOf[ExifIFD0Directory]))

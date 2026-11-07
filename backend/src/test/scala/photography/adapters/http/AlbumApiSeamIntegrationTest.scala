@@ -403,8 +403,8 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       renameResult: RenameResult = RenameResult.Renamed(albumMetadata),
       deleteAlbumResult: DeleteAlbumResult = DeleteAlbumResult.Deleted,
       metadataResult: AlbumRepository.MetadataResult = AlbumRepository.MetadataResult.Found(albumMetadata),
-      synopsisResult: IO[SaveSynopsisResult] = IO.raiseError[SaveSynopsisResult](new AssertionError("Unexpected synopsis mutation")),
-      authorsResult: IO[SaveAuthorsResult] = IO.raiseError[SaveAuthorsResult](new AssertionError("Unexpected author mutation"))
+      synopsisResult: IO[SaveSynopsisResult] = new AssertionError("Unexpected synopsis mutation").raiseError[IO, SaveSynopsisResult],
+      authorsResult: IO[SaveAuthorsResult] = new AssertionError("Unexpected author mutation").raiseError[IO, SaveAuthorsResult]
   ) =
     val albums = new AlbumManager[IO]:
       override def saveSynopsis(id: AlbumId, text: String): IO[AlbumManager.SaveSynopsisResult] =

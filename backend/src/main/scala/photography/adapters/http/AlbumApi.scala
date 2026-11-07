@@ -52,13 +52,7 @@ object AlbumApi:
       Route(
         Routes.Access.Editor(Protection.OwnAlbumOpening(album)),
         decode,
-        (text: String) =>
-          albums.saveSynopsis(album, text = text).flatMap {
-            case SaveSynopsisResult.Saved(updated) => Ok(updated)
-            case SaveSynopsisResult.NotFound       => respondAlbumNotFound
-            case SaveSynopsisResult.Failed         => respondServiceFailure
-            case SaveSynopsisResult.Uncertain      => respondUncertain
-          }
+        (text: String) => albums.saveSynopsis(album, text = text).flatMap(respondSynopsisSave)
       )
 
     private def saveAuthors(album: AlbumId, request: Request[F]) =
@@ -67,14 +61,20 @@ object AlbumApi:
       Route(
         Routes.Access.Editor(Protection.ActiveTab),
         decode,
-        (authors: AlbumAuthors) =>
-          albums.saveAuthors(album, authors).flatMap {
-            case SaveAuthorsResult.Saved(updated) => Ok(updated)
-            case SaveAuthorsResult.NotFound       => respondAlbumNotFound
-            case SaveAuthorsResult.Failed         => respondServiceFailure
-            case SaveAuthorsResult.Uncertain      => respondUncertain
-          }
+        (authors: AlbumAuthors) => albums.saveAuthors(album, authors).flatMap(respondAuthorsSave)
       )
+
+    private def respondSynopsisSave(result: SaveSynopsisResult) = result match
+      case SaveSynopsisResult.Saved(updated) => Ok(updated)
+      case SaveSynopsisResult.NotFound       => respondAlbumNotFound
+      case SaveSynopsisResult.Failed         => respondServiceFailure
+      case SaveSynopsisResult.Uncertain      => respondUncertain
+
+    private def respondAuthorsSave(result: SaveAuthorsResult) = result match
+      case SaveAuthorsResult.Saved(updated) => Ok(updated)
+      case SaveAuthorsResult.NotFound       => respondAlbumNotFound
+      case SaveAuthorsResult.Failed         => respondServiceFailure
+      case SaveAuthorsResult.Uncertain      => respondUncertain
 
     private val authorsDecoder = Decoder.decodeVector[Author].emap { authors =>
       Either.cond(authors.distinct.size === authors.size, authors.toSet, "Select each author only once")

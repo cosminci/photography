@@ -171,7 +171,7 @@ object EditorSessionManager:
       }
 
     override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): F[AuthorizationResult] =
-      authorizeAffected(connection, Set(target), Some(grant)).flatMap {
+      authorizeAffected(connection, Set(target), grant.some).flatMap {
         case AuthorizationResult.Authorized =>
           state.get.map { current =>
             val ownsTarget = current.locks.exists(lock => lock.grant.value === grant.value && Set(target).contains(lock.target))
@@ -230,7 +230,7 @@ object EditorSessionManager:
           case Left(failure)  => SelectResult.Rejected(failure).pure[F]
           case Right(session) =>
             val lock = EditingLock(target, session.id, grant, now + lease.seconds)
-            changeTarget(session, Some(lock)).as(SelectResult.Owned(lock, session.targetRevision.next))
+            changeTarget(session, lock.some).as(SelectResult.Owned(lock, session.targetRevision.next))
       yield result
 
     private def changeTarget(session: EditorSession, maybeLock: Option[EditingLock]) =
@@ -254,18 +254,13 @@ object EditorSessionManager:
       current.locks.find(lock => lock.session.value === session.id.value && lock.grant.value === grant.value).toRight(Failure.StaleGrant)
 
     private def create(owner: EditorId, alias: EditorAlias, now: FiniteDuration) =
-      for
-        id <- IdGenerator[F].generateId
-        session = EditorSession(SessionId(id), owner, alias, now, now + lease.seconds, maybeConnection = None, TargetRevision.initial)
-        _ <- save(session)
-      yield RegisterResult.Ready(session)
+      IdGenerator[F].generateId.map: id =>
+        EditorSession(SessionId(id), owner, alias, now, now + lease.seconds, maybeConnection = None, TargetRevision.initial)
+      .flatTap(save).map(RegisterResult.Ready(_))
 
     private def connect(session: EditorSession, tab: TabId) =
-      for
-        generation <- IdGenerator[F].generateId
-        connection = EditorConnection(session.id, tab, ConnectionGeneration(generation))
-        _ <- save(session.copy(maybeConnection = Some(connection)))
-      yield BindResult.Active(connection)
+      IdGenerator[F].generateId.map(generation => EditorConnection(session.id, tab, ConnectionGeneration(generation)))
+        .flatTap(connection => save(session.copy(maybeConnection = connection.some))).map(BindResult.Active(_))
 
     private def renew(session: EditorSession, now: FiniteDuration) =
       val renewed = session.copy(lastHeartbeat = now, expiresAt = now + lease.seconds)

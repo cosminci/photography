@@ -56,68 +56,85 @@ object BookExport:
 
     private def readBook(id: AlbumId) =
       for
-        metadata <- albums.metadata(id).map {
-          case AlbumRepository.MetadataResult.Found(saved) => saved.asRight[Result]
-          case AlbumRepository.MetadataResult.NotFound     => (Result.NotFound: Result).asLeft[AlbumRepository.Metadata]
-          case AlbumRepository.MetadataResult.Failed(_)    => (Result.Failed: Result).asLeft[AlbumRepository.Metadata]
-        }.eitherT
-        album <- assembleAlbum(metadata).map(_.asRight[Result]).eitherT
-        cover <- covers.read(id).map {
-          case CoverManager.ReadResult.Found(value)                                   => value.asRight[Result]
-          case CoverManager.ReadResult.CoverNotFound | CoverManager.ReadResult.Failed =>
-            (Result.Failed: Result).asLeft[CoverManager.Composition]
-        }.eitherT
-        inventory <- album.chapters.traverse(chapter =>
-          Transaction[Db, F].run(photos.listChapter(chapter.id)).map {
-            case PhotoRepository.ListResult.Listed(values) => values.asRight[Result]
-            case PhotoRepository.ListResult.Failed         => (Result.Failed: Result).asLeft[Vector[Photo]]
-          }.eitherT
-        )
-        catalog <- gear.readCatalog.map {
-          case GearRepository.CatalogReadResult.Found(value) => value.asRight[Result]
-          case GearRepository.CatalogReadResult.Failed       => (Result.Failed: Result).asLeft[GearCatalog]
-        }.eitherT
+        metadata  <- readMetadata(id).eitherT
+        album     <- assembleAlbum(metadata).map(_.asRight[Result]).eitherT
+        cover     <- readCover(id).eitherT
+        inventory <- album.chapters.traverse(chapter => readPhotos(chapter.id).eitherT)
+        catalog   <- readCatalog.eitherT
       yield
         val references = (album.collectSpreads.toList.flatMap(_.placements.map(_.photo)) ++ cover.placements.map(_.photo)).toSet
         SavedBook(album, cover, inventory.flatten.filter(photo => references.contains(photo.id)), catalog)
 
+    private def readMetadata(id: AlbumId) =
+      albums.metadata(id).map:
+        case AlbumRepository.MetadataResult.Found(saved) => saved.asRight[Result]
+        case AlbumRepository.MetadataResult.NotFound     => Result.NotFound.asLeft[AlbumRepository.Metadata]
+        case AlbumRepository.MetadataResult.Failed(_)    => Result.Failed.asLeft[AlbumRepository.Metadata]
+
+    private def readCover(id: AlbumId) =
+      covers.read(id).map:
+        case CoverManager.ReadResult.Found(value)                                   => value.asRight[Result]
+        case CoverManager.ReadResult.CoverNotFound | CoverManager.ReadResult.Failed => Result.Failed.asLeft[CoverManager.Composition]
+
+    private def readPhotos(chapter: ChapterId) =
+      Transaction[Db, F].run(photos.listChapter(chapter)).map:
+        case PhotoRepository.ListResult.Listed(values) => values.asRight[Result]
+        case PhotoRepository.ListResult.Failed         => Result.Failed.asLeft[Vector[Photo]]
+
+    private def readCatalog =
+      gear.readCatalog.map:
+        case GearRepository.CatalogReadResult.Found(value) => value.asRight[Result]
+        case GearRepository.CatalogReadResult.Failed       => Result.Failed.asLeft[GearCatalog]
+
     private def assembleAlbum(metadata: AlbumRepository.Metadata) =
       for
-        saved <- albums.chapters(metadata.id).flatMap:
-          case AlbumRepository.ChaptersResult.Found(values) => values.pure[F]
-          case _                                            => unavailable[Vector[AlbumRepository.ChapterMetadata]]("Album chapters unavailable")
-        members <- Transaction[Db, F].run(composition.composition(metadata.id)).flatMap:
-          case CompositionResult.Found(values) => values.toList.traverse { member =>
-              Transaction[Db, F].run(composition.findSpread(metadata.id, member.id)).flatMap:
-                case SpreadResult.Found(value) => value.pure[F]
-                case SpreadResult.NotFound     => unavailable[Located]("Missing saved spread")
-            }
-          case _ => unavailable[List[Located]]("Album composition unavailable")
-        opening <- members match
-          case Located.AlbumOpening(value) :: rest if !rest.exists {
-                case _: Located.AlbumOpening => true
-                case _                       => false
-              } => value.pure[F]
-          case _ => unavailable[Spread.AlbumStart]("Album must begin with its only opening")
-        loaded <- saved.traverse(chapter => assembleChapter(metadata.id, chapter, members))
+        saved   <- readChapters(metadata.id)
+        members <- readComposition(metadata.id)
+        opening <- findAlbumOpening(members).liftTo[F]
+        loaded  <- saved.traverse(chapter => assembleChapter(metadata.id, chapter, members))
       yield Album(metadata.id, metadata.year, metadata.title, metadata.synopsis, metadata.authors, metadata.createdAt, opening, loaded)
+
+    private def readChapters(album: AlbumId) =
+      albums.chapters(album).flatMap:
+        case AlbumRepository.ChaptersResult.Found(values) => values.pure[F]
+        case _                                            => unavailable[Vector[AlbumRepository.ChapterMetadata]]("Album chapters unavailable")
+
+    private def readComposition(album: AlbumId) =
+      Transaction[Db, F].run(composition.composition(album)).flatMap:
+        case CompositionResult.Found(values) => values.toList.traverse(member => readSpread(album, member.id))
+        case _                               => unavailable[List[Located]]("Album composition unavailable")
+
+    private def readSpread(album: AlbumId, spread: SpreadId) =
+      Transaction[Db, F].run(composition.findSpread(album, spread)).flatMap:
+        case SpreadResult.Found(value) => value.pure[F]
+        case SpreadResult.NotFound     => unavailable[Located]("Missing saved spread")
+
+    private def findAlbumOpening(members: List[Located]) = members match
+      case Located.AlbumOpening(value) :: rest if !rest.exists {
+            case _: Located.AlbumOpening => true
+            case _                       => false
+          } => value.asRight[Throwable]
+      case _ => new IllegalStateException("Album must begin with its only opening").asLeft[Spread.AlbumStart]
 
     private def assembleChapter(album: AlbumId, metadata: AlbumRepository.ChapterMetadata, members: List[Located]) =
       val owned = members.collect:
         case Located.ChapterOpening(owner, value) if owner.value === metadata.id.value => value
         case Located.Photo(owner, value) if owner.value === metadata.id.value          => value
       for
-        spreads <- owned match
-          case (opening: Spread.ChapterStart) :: rest =>
-            val photos = rest.collect { case photo: Spread.PhotosOnly => photo }.toVector
-            Either.cond(photos.size === rest.size, (opening, photos), new IllegalStateException("Invalid chapter composition")).liftTo[F]
-          case _ => unavailable[(Spread.ChapterStart, Vector[Spread.PhotosOnly])]("Chapter must begin with its opening")
-        gear <- Transaction[Db, F].run(chapters.readGear(album, metadata.id)).flatMap:
-          case ChapterRepository.GearReadResult.Found(value) => value.pure[F]
-          case _                                             => unavailable[GearSelection]("Chapter gear unavailable")
-      yield
-        val (opening, photos) = spreads
-        Chapter(metadata.id, metadata.destination, metadata.period, metadata.description, gear, metadata.sourceFolder, opening, photos)
+        (opening, photos) <- findChapterSpreads(owned).liftTo[F]
+        gear              <- readChapterGear(album, metadata.id)
+      yield Chapter(metadata.id, metadata.destination, metadata.period, metadata.description, gear, metadata.sourceFolder, opening, photos)
+
+    private def findChapterSpreads(members: List[Spread]) = members match
+      case (opening: Spread.ChapterStart) :: rest =>
+        val photos = rest.collect { case photo: Spread.PhotosOnly => photo }.toVector
+        Either.cond(photos.size === rest.size, (opening, photos), new IllegalStateException("Invalid chapter composition"))
+      case _ => new IllegalStateException("Chapter must begin with its opening").asLeft[(Spread.ChapterStart, Vector[Spread.PhotosOnly])]
+
+    private def readChapterGear(album: AlbumId, chapter: ChapterId) =
+      Transaction[Db, F].run(chapters.readGear(album, chapter)).flatMap:
+        case ChapterRepository.GearReadResult.Found(value) => value.pure[F]
+        case _                                             => unavailable[GearSelection]("Chapter gear unavailable")
 
     private def unavailable[A](message: String): F[A] =
       new IllegalStateException(message).raiseError[F, A]
@@ -125,21 +142,16 @@ object BookExport:
     private def validate(book: SavedBook) =
       val readiness  = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
       val projection = readiness.flatMap(issues => BookExportJson.encode(book, warnings = issues).tupleLeft(issues))
-      for
-        (issues, json) <- projection.leftMap(new IllegalStateException(_)).liftTo[F]
-        result         <-
-          if issues.exists(_.severity === Severity.Blocking) then (Result.Blocked(issues): Result).pure[F]
-          else validateArtifact(json, book.album.year)
-      yield result
+      projection.leftMap(new IllegalStateException(_)).liftTo[F].flatMap: (issues, json) =>
+        if issues.exists(_.severity === Severity.Blocking) then Result.Blocked(issues).pure[F]
+        else validateArtifact(json, book.album.year)
 
     private def validateArtifact(json: Json, year: Int) =
-      for
-        errors <-
-          Async[F].blocking(schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(validationConfig)).asScala.toList)
-        validated <- errors.toNel.toLeft(json).leftMap(errors =>
+      Async[F].blocking:
+        val errors = schema.validate(json.noSpaces, InputFormat.JSON, context => context.setExecutionConfig(validationConfig)).asScala.toList
+        errors.toNel.toLeft(json).leftMap: errors =>
           new IllegalStateException(s"Book export schema validation failed: ${errors.toList.mkString("; ")}")
-        ).liftTo[F]
-      yield Result.Ready(validated, filename = s"album-$year-indesign.json"): Result
+      .flatMap(_.liftTo[F]).map(json => Result.Ready(json, filename = s"album-$year-indesign.json"))
 
     private def checkContent(book: SavedBook) =
       val synopsis = Option.when(book.album.synopsis.isBlank)(

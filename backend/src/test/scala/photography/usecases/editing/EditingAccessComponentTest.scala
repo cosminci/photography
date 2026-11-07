@@ -33,14 +33,14 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
   private val found             = OpeningResult.Found(opening)
   private val unusedMembership  = new AlbumCompositionRepository.MembershipRead[IO]:
     override def composition(album: AlbumId): IO[CompositionResult] =
-      IO.raiseError[CompositionResult](new AssertionError("Unexpected whole-album membership acquisition"))
+      new AssertionError("Unexpected whole-album membership acquisition").raiseError[IO, CompositionResult]
     override def opening(album: AlbumId, maybeChapter: Option[ChapterId]): IO[OpeningResult] =
-      IO.raiseError[OpeningResult](new AssertionError("Unexpected opening acquisition"))
+      new AssertionError("Unexpected opening acquisition").raiseError[IO, OpeningResult]
   private val unusedTargets = new PhotoPlacementRepository.TargetRead[IO]:
     override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
-      IO.raiseError[TargetResult](new AssertionError("Unexpected photo target acquisition"))
+      new AssertionError("Unexpected photo target acquisition").raiseError[IO, TargetResult]
 
-  Vector(Some(target), Some(EditingTarget.Cover(album)), none[EditingTarget]).foreach { maybeTarget =>
+  Vector(target.some, EditingTarget.Cover(album).some, none[EditingTarget]).foreach { maybeTarget =>
     test(s"should resolve current caption target $maybeTarget and recheck authority before writing"):
       Mutex[IO].flatMap: mutex =>
         given Mutex[IO] = mutex
@@ -54,7 +54,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
             override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
               calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> current.get
           access = EditingAccess.make(sessions, unusedMembership, targets)
-          save   = access.run(connection, Protection.OwnPhotoSpread(chapter, photo), Some(grant))(calls.update(_ :+ Call.Written))
+          save   = access.run(connection, Protection.OwnPhotoSpread(chapter, photo), grant.some)(calls.update(_ :+ Call.Written))
           saved    <- save
           _        <- current.set(TargetResult.Found(maybeTarget = None))
           unplaced <- access.run(connection, Protection.OwnPhotoSpread(chapter, photo), maybeGrant = None)(calls.update(_ :+ Call.Written))
@@ -69,7 +69,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           obsolete <- save
           observed <- calls.get
         yield
-          val authorization = maybeTarget.fold[Call](Call.Affected(connection, Set.empty, Some(grant)))(Call.Target(connection, _, grant))
+          val authorization = maybeTarget.fold[Call](Call.Affected(connection, Set.empty, grant.some))(Call.Target(connection, _, grant))
           val resolved      = Vector(Call.Connection(connection), Call.PhotoTarget(chapter, photo))
           val expected      =
             resolved ++ Vector(authorization, Call.Written) ++ resolved ++ Vector(Call.Affected(connection, Set.empty, None), Call.Written) ++
@@ -142,13 +142,13 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
               membership = buildMembership(calls, entered.complete(()).void >> finish.get.as(found))
               targets    = new PhotoPlacementRepository.TargetRead[IO]:
                 override def findTarget(chapter: ChapterId, photo: PhotoId): IO[TargetResult] =
-                  calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> entered.complete(()).void >> finish.get.as(TargetResult.Found(Some(target)))
+                  calls.update(_ :+ Call.PhotoTarget(chapter, photo)) >> entered.complete(()).void >> finish.get.as(TargetResult.Found(target.some))
               access       = EditingAccess.make(sessions, membership, targets)
               relationship = protection match
                 case Protection.OwnAlbumOpening(_)       => Call.Opening(album, maybeChapter = None)
                 case Protection.OwnChapterOpening(_, id) => Call.Opening(album, maybeChapter = id.some)
                 case _                                   => Call.PhotoTarget(chapter, photo)
-              writing  <- access.run(connection, protection, Some(grant))(written.update(_ + 1)).start
+              writing  <- access.run(connection, protection, grant.some)(written.update(_ + 1)).start
               _        <- entered.get
               paused   <- calls.get
               _        <- authorization.set(AuthorizationResult.Rejected(failure))
@@ -156,7 +156,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
               rejected <- writing.joinWithNever
               before   <- written.get
               _        <- authorization.set(AuthorizationResult.Authorized)
-              saved    <- access.run(connection, protection, Some(grant))(written.update(_ + 1))
+              saved    <- access.run(connection, protection, grant.some)(written.update(_ + 1))
               after    <- written.get
               observed <- calls.get
             yield
@@ -186,7 +186,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           acquired   <- Deferred[IO, (SelectResult, Int)]
           written    <- Ref.of[IO, Int](0)
           access = EditingAccess.make(sessions, unusedMembership, unusedTargets)
-          write  = access.run(owner, Protection.OwnSpread(target), Some(lock.grant))(entered.complete(()).void >> finish.get >> written.update(_ + 1))
+          write  = access.run(owner, Protection.OwnSpread(target), lock.grant.some)(entered.complete(()).void >> finish.get >> written.update(_ + 1))
           writing   <- write.start
           _         <- entered.get
           waiter    <- write.start
@@ -238,7 +238,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           written  <- Ref.of[IO, Int](0)
           membership = buildMembership(calls, entered.complete(()).void >> finish.get.as(found))
           access     = EditingAccess.make(sessions, membership, unusedTargets)
-          writing   <- access.run(owner, Protection.OwnAlbumOpening(album), Some(lock.grant))(written.update(_ + 1)).start
+          writing   <- access.run(owner, Protection.OwnAlbumOpening(album), lock.grant.some)(written.update(_ + 1)).start
           _         <- entered.get
           acquiring <- sessions.select(other, TargetRevision.initial, target)
             .flatMap(result => written.get.flatMap(count => acquired.complete((result, count)).void)).start
@@ -267,11 +267,11 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           access   = EditingAccess.make(sessions, unusedMembership, unusedTargets)
           mutation = written.update(_ + 1)
           missing  <- access.run(connection, Protection.OwnSpread(destination), maybeGrant = None)(mutation)
-          saved    <- access.run(connection, Protection.OwnSpread(destination), Some(grant))(mutation)
-          shared   <- access.run(connection, Protection.ChangeSpreads(Set(destination)), Some(grant))(mutation)
+          saved    <- access.run(connection, Protection.OwnSpread(destination), grant.some)(mutation)
+          shared   <- access.run(connection, Protection.ChangeSpreads(Set(destination)), grant.some)(mutation)
           unlocked <- access.run(connection, Protection.ChangeSpreads(Set(destination)), maybeGrant = None)(mutation)
           _        <- authorization.set(AuthorizationResult.Rejected(Failure.StaleGrant))
-          rejected <- access.run(connection, Protection.OwnSpread(destination), Some(grant))(mutation)
+          rejected <- access.run(connection, Protection.OwnSpread(destination), grant.some)(mutation)
           _        <- authorization.set(AuthorizationResult.Blocked(destination, EditorId(new UUID(0L, 6L)), "Other"))
           blocked  <- access.run(connection, Protection.ChangeSpreads(Set(destination)), maybeGrant = None)(mutation)
           count    <- written.get
@@ -279,7 +279,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         yield
           val expected = Vector(
             Call.Target(connection, destination, grant),
-            Call.Affected(connection, Set(destination), Some(grant)),
+            Call.Affected(connection, Set(destination), grant.some),
             Call.Affected(connection, Set(destination), None),
             Call.Target(connection, destination, grant),
             Call.Affected(connection, Set(destination), None)
@@ -304,7 +304,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         sessions = new AuthorizationStub(calls, connected.get, AuthorizationResult.Authorized.pure[IO])
         access   = EditingAccess.make(sessions, unusedMembership, unusedTargets)
         cause    = new IllegalStateException("Persistence failed")
-        failed      <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(IO.raiseError[Unit](cause)).attempt
+        failed      <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(cause.raiseError[IO, Unit]).attempt
         saved       <- access.run(connection, Protection.ChangeSpreads(Set(target)), maybeGrant = None)(written.update(_ + 1))
         independent <- access.run(connection, Protection.ActiveTab, maybeGrant = None)(written.update(_ + 1))
         _           <- connected.set(ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
@@ -336,7 +336,7 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
   private def buildMembership(calls: Ref[IO, Vector[Call]], response: IO[OpeningResult]) =
     new AlbumCompositionRepository.MembershipRead[IO]:
       override def composition(album: AlbumId): IO[CompositionResult] =
-        IO.raiseError[CompositionResult](new AssertionError("Unexpected whole-album membership acquisition"))
+        new AssertionError("Unexpected whole-album membership acquisition").raiseError[IO, CompositionResult]
       override def opening(album: AlbumId, maybeChapter: Option[ChapterId]): IO[OpeningResult] =
         calls.update(_ :+ Call.Opening(album, maybeChapter)) >> response
 
@@ -349,27 +349,27 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
     override def authorizeAffected(connection: EditorConnection, targets: Set[EditingTarget], maybeGrant: Option[GrantId]): IO[AuthorizationResult] =
       calls.update(_ :+ Call.Affected(connection, targets, maybeGrant)) >> authorized
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
-      IO.raiseError[RegisterResult](new AssertionError("Unexpected registration"))
+      new AssertionError("Unexpected registration").raiseError[IO, RegisterResult]
     override def bind(session: SessionId, tab: TabId): IO[BindResult] =
-      IO.raiseError[BindResult](new AssertionError("Unexpected binding"))
+      new AssertionError("Unexpected binding").raiseError[IO, BindResult]
     override def unbind(connection: EditorConnection): IO[UnbindResult] =
-      IO.raiseError[UnbindResult](new AssertionError("Unexpected release"))
+      new AssertionError("Unexpected release").raiseError[IO, UnbindResult]
     override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] =
-      IO.raiseError[HeartbeatResult](new AssertionError("Unexpected heartbeat"))
+      new AssertionError("Unexpected heartbeat").raiseError[IO, HeartbeatResult]
     override def read(connection: EditorConnection): IO[ReadResult] =
-      IO.raiseError[ReadResult](new AssertionError("Unexpected session read"))
+      new AssertionError("Unexpected session read").raiseError[IO, ReadResult]
     override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
-      IO.raiseError[RenameResult](new AssertionError("Unexpected alias change"))
+      new AssertionError("Unexpected alias change").raiseError[IO, RenameResult]
     override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
       Stream.raiseError[IO](new AssertionError("Unexpected ownership subscription"))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
-      IO.raiseError[SelectResult](new AssertionError("Unexpected acquisition"))
+      new AssertionError("Unexpected acquisition").raiseError[IO, SelectResult]
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
-      IO.raiseError[ReleaseResult](new AssertionError("Unexpected target release"))
+      new AssertionError("Unexpected target release").raiseError[IO, ReleaseResult]
     override def renewTarget(connection: EditorConnection, grant: GrantId): IO[RenewTargetResult] =
-      IO.raiseError[RenewTargetResult](new AssertionError("Unexpected renewal"))
+      new AssertionError("Unexpected renewal").raiseError[IO, RenewTargetResult]
     override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
-      IO.raiseError[ReadTargetResult](new AssertionError("Unexpected ownership read"))
+      new AssertionError("Unexpected ownership read").raiseError[IO, ReadTargetResult]
 
   private def requireLock(result: SelectResult) = result match
     case SelectResult.Owned(lock, _) => lock

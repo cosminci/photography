@@ -38,7 +38,7 @@ final class AlbumPhotoEventsComponentTest extends CatsEffectSuite:
   }
 
   test("should expose unexpected metadata acquisition failure before allocating a subscription"):
-    AlbumPhotoEvents.make(buildAlbums(IO.raiseError[MetadataResult](new IllegalStateException("lookup")))).flatMap(_.subscribe(album))
+    AlbumPhotoEvents.make(buildAlbums(new IllegalStateException("lookup").raiseError[IO, MetadataResult])).flatMap(_.subscribe(album))
       .map(result => assertEquals(result, SubscribeResult.Failed[IO]()))
 
   test("should register before acknowledgement, coalesce chapter changes, isolate albums and release canceled subscribers"):

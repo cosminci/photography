@@ -44,7 +44,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           service = buildService(
             refs,
             SelectResult.Owned(lock, revision),
-            ReadTargetResult.Current(revision, Some(lock)),
+            ReadTargetResult.Current(revision, lock.some),
             RenewTargetResult.Renewed(lock),
             ReleaseResult.Released(revision.next)
           )
@@ -74,7 +74,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
               Vector((connection, revision, grant))
             )
           )
-          assertEquals(selected.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+          assertEquals(selected.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
       }
   }
 
@@ -138,7 +138,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
             )
           )
         )
-      yield assertEquals(responses, Vector.fill(4)((Status.Conflict, Json.obj("code" -> Json.fromString(code)), Some("no-store"))))
+      yield assertEquals(responses, Vector.fill(4)((Status.Conflict, Json.obj("code" -> Json.fromString(code)), "no-store".some)))
   }
 
   test("should reject invalid target representations and noncanonical or missing credentials before calling authority"):
@@ -208,7 +208,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         service = buildService(
           refs,
           SelectResult.Owned(lock, revision.next),
-          ReadTargetResult.Current(revision, Some(lock)),
+          ReadTargetResult.Current(revision, lock.some),
           RenewTargetResult.Renewed(lock),
           ReleaseResult.Released(revision.next)
         )
@@ -264,7 +264,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       released: ReleaseResult
   ) = new EditorSessionManager[IO]:
     override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
-      IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
+      new AssertionError("Unexpected connection admission").raiseError[IO, ConnectionAuthorizationResult]
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
       refs.update(calls => calls.copy(selections = calls.selections :+ (connection, revision, target))).as(selected)
     override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
@@ -274,23 +274,23 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
       refs.update(calls => calls.copy(releases = calls.releases :+ (connection, revision, grant))).as(released)
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
-      IO.raiseError[RegisterResult](new AssertionError("Unexpected registration"))
+      new AssertionError("Unexpected registration").raiseError[IO, RegisterResult]
     override def bind(session: SessionId, tab: TabId): IO[BindResult] =
-      IO.raiseError[BindResult](new AssertionError("Unexpected binding"))
+      new AssertionError("Unexpected binding").raiseError[IO, BindResult]
     override def unbind(connection: EditorConnection): IO[UnbindResult] =
-      IO.raiseError[UnbindResult](new AssertionError("Unexpected unbind"))
+      new AssertionError("Unexpected unbind").raiseError[IO, UnbindResult]
     override def read(connection: EditorConnection): IO[ReadResult] =
-      IO.raiseError[ReadResult](new AssertionError("Unexpected session read"))
+      new AssertionError("Unexpected session read").raiseError[IO, ReadResult]
     override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
-      IO.raiseError[RenameResult](new AssertionError("Unexpected alias change"))
+      new AssertionError("Unexpected alias change").raiseError[IO, RenameResult]
     override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
       Stream.raiseError[IO](new AssertionError("Unexpected ownership subscription"))
     override def heartbeat(connection: EditorConnection): IO[HeartbeatResult] =
-      IO.raiseError[HeartbeatResult](new AssertionError("Unexpected heartbeat"))
+      new AssertionError("Unexpected heartbeat").raiseError[IO, HeartbeatResult]
     override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): IO[AuthorizationResult] =
-      IO.raiseError[AuthorizationResult](new AssertionError("Unexpected authorization"))
+      new AssertionError("Unexpected authorization").raiseError[IO, AuthorizationResult]
     override def authorizeAffected(
         connection: EditorConnection,
         targets: Set[EditingTarget],
         maybeGrant: Option[GrantId]
-    ): IO[AuthorizationResult] = IO.raiseError[AuthorizationResult](new AssertionError("Unexpected authorization"))
+    ): IO[AuthorizationResult] = new AssertionError("Unexpected authorization").raiseError[IO, AuthorizationResult]

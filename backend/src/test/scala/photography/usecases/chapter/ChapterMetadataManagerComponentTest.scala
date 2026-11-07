@@ -170,13 +170,13 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
           case "unknown" =>
             val unexpected = chapter.copy(sourceFolder = "/photos/elsewhere")
             AlbumRepository.PlanningResult.Found(current.copy(chapters = Vector(unexpected))).pure[IO]
-          case _ => IO.raiseError[AlbumRepository.PlanningResult](error)
+          case _ => error.raiseError[IO, AlbumRepository.PlanningResult]
         val responses = Ref.unsafe[IO, List[IO[AlbumRepository.PlanningResult]]](
           List(AlbumRepository.PlanningResult.Found(current).pure[IO], response)
         )
         val read = responses.getAndUpdate(_.drop(1))
           .flatMap(_.headOption.liftTo[IO](new AssertionError("Unexpected planning read"))).flatten
-        val update                = IO.raiseError[Unit](error)
+        val update                = error.raiseError[IO, Unit]
         val sourceChanged         = (source: String) =!= chapter.sourceFolder
         val scheduling            = if sourceChanged then Scheduling.Queued else Scheduling.NotRequested
         val expected              = if resolution === "committed" then UpdateResult.Updated(scheduling) else UpdateResult.Failed
@@ -202,7 +202,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
   test("should stop before mutation when photo listing fails and report failed chapter creation explicitly"):
     Vector(
       PhotoRepository.ListResult.Failed.pure[IO],
-      IO.raiseError[PhotoRepository.ListResult](new IllegalStateException("Read failed"))
+      new IllegalStateException("Read failed").raiseError[IO, PhotoRepository.ListResult]
     ).traverse_ { listed =>
       val refs                       = Refs()
       val error                      = new IllegalStateException("Write failed")
@@ -212,7 +212,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       val changedSource: PhotoSource = "/photos/changed"
 
       for
-        manager <- buildManager(refs, current = album.copy(chapters = Vector(chapter)), listed = listed, save = IO.raiseError[Unit](error))
+        manager <- buildManager(refs, current = album.copy(chapters = Vector(chapter)), listed = listed, save = error.raiseError[IO, Unit])
         created <- manager.create(albumId, name = "Kyoto", countries = countryIds, visit, sourceFolder = "/photos/new")
         updated <- manager.update(albumId, chapter.id, name, countries = countryIds, visit, changedSource)
         writes  <- refs.updates.get
@@ -418,9 +418,9 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
     val period     = Period.Dates(chapter.period)
     val failures   = Vector(
       (IO.unit, Scheduling.Failed.pure[IO], IO.unit),
-      (IO.unit, IO.raiseError[Scheduling](error), IO.unit),
-      (IO.raiseError[Unit](error), Scheduling.Queued.pure[IO], IO.unit),
-      (IO.unit, Scheduling.Queued.pure[IO], IO.raiseError[Unit](error))
+      (IO.unit, error.raiseError[IO, Scheduling], IO.unit),
+      (error.raiseError[IO, Unit], Scheduling.Queued.pure[IO], IO.unit),
+      (IO.unit, Scheduling.Queued.pure[IO], error.raiseError[IO, Unit])
     )
 
     failures.traverse_ { case (preparation, scheduling, retirement) =>
@@ -459,7 +459,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
     Vector(
       (source = ChapterRepository.SourceResult.ChapterNotFound.pure[IO], expected = RefreshResult.ChapterNotFound),
       (source = ChapterRepository.SourceResult.Failed.pure[IO], expected = RefreshResult.Failed),
-      (source = IO.raiseError[ChapterRepository.SourceResult](new IllegalStateException("Source lookup failed")), expected = RefreshResult.Failed)
+      (source = new IllegalStateException("Source lookup failed").raiseError[IO, ChapterRepository.SourceResult], expected = RefreshResult.Failed)
     ).traverse_ { case (source, expected) =>
       val refs = Refs()
 
@@ -510,7 +510,7 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
 
   test("should report uncertain description acknowledgement without retrying the mutation"):
     val refs                = Refs()
-    val lostAcknowledgement = IO.raiseError[ChapterRepository.SaveDescriptionResult](new IllegalStateException("Lost acknowledgement"))
+    val lostAcknowledgement = new IllegalStateException("Lost acknowledgement").raiseError[IO, ChapterRepository.SaveDescriptionResult]
 
     for
       manager <- buildManager(refs, descriptionWrite = lostAcknowledgement)
@@ -617,20 +617,20 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(buildUuid)
     val albums = new AlbumRepository[IO]:
       override def saveSynopsis(value: AlbumId, text: String): IO[AlbumRepository.SaveSynopsisResult] =
-        IO.raiseError[AlbumRepository.SaveSynopsisResult](new AssertionError("Unexpected synopsis save"))
+        new AssertionError("Unexpected synopsis save").raiseError[IO, AlbumRepository.SaveSynopsisResult]
       override def saveAuthors(value: AlbumId, authors: AlbumAuthors): IO[AlbumRepository.SaveAuthorsResult] =
-        IO.raiseError[AlbumRepository.SaveAuthorsResult](new AssertionError("Unexpected authors save"))
+        new AssertionError("Unexpected authors save").raiseError[IO, AlbumRepository.SaveAuthorsResult]
       override def readPlanning(value: AlbumId): IO[AlbumRepository.PlanningResult] =
         refs.planningReads.update(_ :+ value) >> refs.planningEvents.update(_ :+ "acquire") >>
           maybeRead.getOrElse(AlbumRepository.PlanningResult.Found(current).pure[IO])
       override def list(offset: Int, limit: Int): IO[AlbumRepository.ListResult] =
-        IO.raiseError[AlbumRepository.ListResult](new AssertionError("Unexpected list"))
+        new AssertionError("Unexpected list").raiseError[IO, AlbumRepository.ListResult]
       override def create(value: Album, cover: Cover): IO[AlbumRepository.CreateResult] =
-        IO.raiseError[AlbumRepository.CreateResult](new AssertionError("Unexpected album creation"))
+        new AssertionError("Unexpected album creation").raiseError[IO, AlbumRepository.CreateResult]
       override def rename(value: AlbumId, title: AlbumTitle): IO[AlbumRepository.RenameResult] =
-        IO.raiseError[AlbumRepository.RenameResult](new AssertionError("Unexpected album rename"))
+        new AssertionError("Unexpected album rename").raiseError[IO, AlbumRepository.RenameResult]
       override def delete(value: AlbumId): IO[AlbumRepository.DeleteResult] =
-        IO.raiseError[AlbumRepository.DeleteResult](new AssertionError("Unexpected deletion"))
+        new AssertionError("Unexpected deletion").raiseError[IO, AlbumRepository.DeleteResult]
     val writeUpdate = update
     val repository  = new ChapterRepository.Metadata[IO]:
       override def saveDescription(
@@ -667,25 +667,25 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
           ExecutionOutcome(Status.Idle, retirementIssues = Vector.empty[PhotoWriteRecovery.Issue]).pure[IO]
       val photoRepository = new PhotoRepository[IO]:
         override def find(photo: PhotoId): IO[PhotoRepository.FindResult] =
-          IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))
+          new AssertionError("Unexpected photo read").raiseError[IO, PhotoRepository.FindResult]
         override def saveCaption(
             chapter: ChapterId,
             id: PhotoId,
             text: String
         ): IO[PhotoRepository.SaveCaptionResult] =
-          IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption save"))
+          new AssertionError("Unexpected caption save").raiseError[IO, PhotoRepository.SaveCaptionResult]
         override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] =
           refs.photoReads.update(_ :+ id) >> listed
         override def save(photo: Photo): IO[PhotoRepository.WriteResult] =
-          IO.raiseError[PhotoRepository.WriteResult](new AssertionError("Unexpected photo save"))
+          new AssertionError("Unexpected photo save").raiseError[IO, PhotoRepository.WriteResult]
         override def remove(id: PhotoId): IO[PhotoRepository.WriteResult] =
           refs.retirementWrites.update(_ :+ RetirementCall.Remove(id)) >> removal
         override def recordWrite(intent: PhotoWriteIntent): IO[PhotoRepository.RecordWriteResult] =
           refs.retirementWrites.update(_ :+ RetirementCall.Record(intent)) >> recording
         override def completeWrite(id: PhotoWriteIntentId): IO[PhotoRepository.CompleteWriteResult] =
-          IO.raiseError[PhotoRepository.CompleteWriteResult](new AssertionError("Unexpected completion"))
+          new AssertionError("Unexpected completion").raiseError[IO, PhotoRepository.CompleteWriteResult]
         override def listUnfinishedWrites: IO[PhotoRepository.ListUnfinishedWritesResult] =
-          IO.raiseError[PhotoRepository.ListUnfinishedWritesResult](new AssertionError("Unexpected global listing"))
+          new AssertionError("Unexpected global listing").raiseError[IO, PhotoRepository.ListUnfinishedWritesResult]
       ChapterMetadataManager.make(albums, repository, planning.getOrElse(buildPlanning(refs)), imports, photoRepository)
 
   private def buildPlanning(
@@ -704,14 +704,13 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
         refs.planningCreations.update(_ :+ CreationCall(saved, name, countries, period, folder)) >> refs.planningEvents.update(_ :+ "plan") >>
           creation
       override def planUpdate(
-          year: AlbumYear,
-          chapters: Vector[ChapterMetadata],
+          saved: PlanningSnapshot,
           id: ChapterId,
           name: DestinationName,
           period: Period,
           folder: PhotoSource
       ): ChapterPlanning.UpdateResult =
-        val _ = refs.planningUpdates.updateAndGet(_ :+ UpdateCall(year, chapters, id, name, period, folder))
+        val _ = refs.planningUpdates.updateAndGet(_ :+ UpdateCall(saved.year, saved.chapters, id, name, period, folder))
         update
   // scalafix:on DisableSyntax.defaultArgs
 

@@ -1,5 +1,7 @@
 package photography.adapters.http
 
+import cats.syntax.all.*
+
 import cats.effect.IO
 import org.http4s.HttpRoutes
 import photography.domain.editing.{EditorConnection, GrantId}
@@ -13,5 +15,5 @@ object PublicRoutes:
           protection: EditingAccess.Protection,
           maybeGrant: Option[GrantId]
       )(write: IO[A]): IO[EditingAccess.Result[A]] =
-        IO.raiseError[EditingAccess.Result[A]](new AssertionError("Unexpected editor-protected route"))
+        new AssertionError("Unexpected editor-protected route").raiseError[IO, EditingAccess.Result[A]]
     Routes.make(forbidden)(definitions)

@@ -73,7 +73,7 @@ final class AlbumCompositionApiSeamIntegrationTest extends CatsEffectSuite:
       override def composition(id: AlbumId): IO[CompositionResult] =
         calls.update(_ :+ id) >> result
       override def opening(id: AlbumId, maybeChapter: Option[ChapterId]): IO[AlbumCompositionRepository.OpeningResult] =
-        IO.raiseError[AlbumCompositionRepository.OpeningResult](new AssertionError("Unexpected targeted opening read"))
+        new AssertionError("Unexpected targeted opening read").raiseError[IO, AlbumCompositionRepository.OpeningResult]
 
   private def read(repository: AlbumCompositionRepository.MembershipRead[IO], path: String) =
     PublicRoutes(AlbumCompositionApi.make(repository)).orNotFound.run(Request[IO](Method.GET, Uri.unsafeFromString(path)))

@@ -138,4 +138,4 @@ object ImageIoPhotoThumbnailGenerator:
       release.handleErrorWith: error =>
         exit match
           case Resource.ExitCase.Errored(primary) => Async[F].delay(if (primary: Object) =!= (error: Object) then primary.addSuppressed(error))
-          case _                                  => Async[F].raiseError(error)
+          case _                                  => error.raiseError[F, Unit]

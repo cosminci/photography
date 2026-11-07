@@ -61,7 +61,7 @@ object SqliteSpreadTemplateRepository:
 
     private def loadTemplate(id: UUID) =
       sql"SELECT kind, name FROM spread_template WHERE id = $id".query[(String, SpreadTemplateName)].option.flatMap:
-        case None                        => Option.empty[SpreadTemplate].pure[ConnectionIO]
+        case None                        => none[SpreadTemplate].pure[ConnectionIO]
         case Some(("photos_only", name)) =>
           loadPhotoSlots(id).map(photos => (SpreadTemplate.PhotosOnly(SpreadTemplateId(id), name, photoSlots = photos): SpreadTemplate).some)
         case Some(("album_start", name)) =>

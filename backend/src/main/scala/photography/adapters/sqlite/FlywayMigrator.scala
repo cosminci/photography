@@ -1,5 +1,7 @@
 package photography.adapters.sqlite
 
+import cats.syntax.all.*
+
 import cats.effect.{Async, Resource}
 import fly4s.Fly4s
 import fly4s.data.{Fly4sConfig, Location}
@@ -13,4 +15,4 @@ object FlywayMigrator:
     val jdbcUrl = s"jdbc:sqlite:${configuredPath.toAbsolutePath.normalize()}"
     val config  = Fly4sConfig(table = "flyway", locations = List(Location("db")), connectRetries = 3)
     ExecutionContexts.fixedThreadPool[F](size = 1).flatMap: blockingExecutionContext =>
-      Fly4s.make[F](jdbcUrl, user = Option.empty[String], password = Option.empty[Array[Char]], config).evalOn(blockingExecutionContext)
+      Fly4s.make[F](jdbcUrl, user = none[String], password = none[Array[Char]], config).evalOn(blockingExecutionContext)

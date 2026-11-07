@@ -310,88 +310,92 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
   private given Eq[WriteAction] = Eq.fromUniversalEquals
 
   private def buildObservedReader(refs: Refs, action: ReadAction, maybeReleaseFailure: Option[CompletionException]) =
-    Resource.make(IO.blocking:
-      val registry  = IIORegistry.getDefaultInstance
-      val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
-      val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
-        .getOrElse(fail("JDK JPEG provider missing"))
-      val provider = new ImageReaderSpi(
-        "photography",
-        "1",
-        Array("jpeg"),
-        Array("jpg"),
-        Array("image/jpeg"),
-        classOf[ObservedReader].getName,
-        Array(classOf[ImageInputStream]),
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String]
-      ):
-        override def getDescription(locale: Locale): String = "Isolated thumbnail fixture reader"
-        override def canDecodeInput(input: Object): Boolean =
-          input match
-            case stream: ImageInputStream =>
-              stream.mark()
-              try stream.readInt() === 0xffd8ffef && stream.readInt() === 0x00065448 && stream.readShort() === 0x4d42
-              finally stream.reset()
-            case _ => false
-        override def createReaderInstance(extension: Object): ImageReader =
-          if action === ReadAction.ConstructionFailure then
-            val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-          val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
-          new ObservedReader(this, delegate, refs, action, maybeReleaseFailure = maybeReleaseFailure)
-      registry.registerServiceProvider(provider)
-      delegates.foreach { delegate =>
-        val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
-      }
-      provider)(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    Resource.make {
+      IO.blocking:
+        val registry  = IIORegistry.getDefaultInstance
+        val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
+        val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
+          .getOrElse(fail("JDK JPEG provider missing"))
+        val provider = new ImageReaderSpi(
+          "photography",
+          "1",
+          Array("jpeg"),
+          Array("jpg"),
+          Array("image/jpeg"),
+          classOf[ObservedReader].getName,
+          Array(classOf[ImageInputStream]),
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String]
+        ):
+          override def getDescription(locale: Locale): String = "Isolated thumbnail fixture reader"
+          override def canDecodeInput(input: Object): Boolean =
+            input match
+              case stream: ImageInputStream =>
+                stream.mark()
+                try stream.readInt() === 0xffd8ffef && stream.readInt() === 0x00065448 && stream.readShort() === 0x4d42
+                finally stream.reset()
+              case _ => false
+          override def createReaderInstance(extension: Object): ImageReader =
+            if action === ReadAction.ConstructionFailure then
+              val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+            val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
+            new ObservedReader(this, delegate, refs, action, maybeReleaseFailure = maybeReleaseFailure)
+        registry.registerServiceProvider(provider)
+        delegates.foreach { delegate =>
+          val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
+        }
+        provider
+    }(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
 
   private def buildObservedWriter(refs: Refs, action: WriteAction) =
-    Resource.make(IO.blocking:
-      val registry  = IIORegistry.getDefaultInstance
-      val delegates = registry.getServiceProviders(classOf[ImageWriterSpi], true).asScala.toVector
-      val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
-        .getOrElse(fail("JDK JPEG writer missing"))
-      val provider = new ImageWriterSpi(
-        "photography",
-        "1",
-        Array("jpeg"),
-        Array("jpg"),
-        Array("image/jpeg"),
-        classOf[ObservedWriter].getName,
-        Array(classOf[ImageOutputStream]),
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String]
-      ):
-        override def getDescription(locale: Locale): String               = "Isolated thumbnail fixture writer"
-        override def canEncodeImage(image: ImageTypeSpecifier): Boolean   = jpeg.canEncodeImage(image)
-        override def createWriterInstance(extension: Object): ImageWriter =
-          if action === WriteAction.ConstructionFailure then
-            val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-          val delegate = Option(jpeg.createWriterInstance()).getOrElse(fail("JDK JPEG writer missing"))
-          new ObservedWriter(this, delegate, refs, action)
-      registry.registerServiceProvider(provider)
-      delegates.foreach { delegate =>
-        val _ = registry.setOrdering(classOf[ImageWriterSpi], provider, delegate)
-      }
-      provider)(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    Resource.make {
+      IO.blocking:
+        val registry  = IIORegistry.getDefaultInstance
+        val delegates = registry.getServiceProviders(classOf[ImageWriterSpi], true).asScala.toVector
+        val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
+          .getOrElse(fail("JDK JPEG writer missing"))
+        val provider = new ImageWriterSpi(
+          "photography",
+          "1",
+          Array("jpeg"),
+          Array("jpg"),
+          Array("image/jpeg"),
+          classOf[ObservedWriter].getName,
+          Array(classOf[ImageOutputStream]),
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String]
+        ):
+          override def getDescription(locale: Locale): String               = "Isolated thumbnail fixture writer"
+          override def canEncodeImage(image: ImageTypeSpecifier): Boolean   = jpeg.canEncodeImage(image)
+          override def createWriterInstance(extension: Object): ImageWriter =
+            if action === WriteAction.ConstructionFailure then
+              val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+            val delegate = Option(jpeg.createWriterInstance()).getOrElse(fail("JDK JPEG writer missing"))
+            new ObservedWriter(this, delegate, refs, action)
+        registry.registerServiceProvider(provider)
+        delegates.foreach { delegate =>
+          val _ = registry.setOrdering(classOf[ImageWriterSpi], provider, delegate)
+        }
+        provider
+    }(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
 
   final private class ObservedWriter(provider: ImageWriterSpi, delegate: ImageWriter, refs: Refs, action: WriteAction) extends ImageWriter(provider):
     private val observed = new AtomicBoolean(false)

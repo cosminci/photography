@@ -67,10 +67,10 @@ object SqliteChapterRepository:
       val write           =
         for
           _ <- initial.liftTo[ConnectionIO]
-          _ <- validateOpening(opening.template, photos = opening.photoSlots.map(_.box), opening.textSlot.box)
+          _ <- validateOpening(opening)
           _ <- insertChapter(album, chapter)
           _ <- insertCountries(chapter.id, countries = chapter.countries)
-          _ <- insertOpening(chapter.id, opening.id, opening.template, photos = opening.photoSlots, opening.textSlot)
+          _ <- insertOpening(chapter.id, opening)
           _ <- persistOrder(album, order = order)
         yield CreateResult.Saved: CreateResult
       albumExists(album).flatMap:
@@ -88,8 +88,7 @@ object SqliteChapterRepository:
               val write =
                 for
                   _ <- updateMetadata(command)
-                  _ <- sql"DELETE FROM chapter_country WHERE chapter_id = ${command.chapter.value}".update.run
-                  _ <- insertCountries(command.chapter, countries = command.countries)
+                  _ <- replaceCountries(command.chapter, countries = command.countries)
                   _ <- persistOrder(command.album, order = command.order)
                 yield UpdateResult.Saved: UpdateResult
               countryReferencesExist(countries = command.countries).ifM(ifTrue = write, ifFalse = UpdateResult.UnknownCountries.pure[ConnectionIO])
@@ -111,7 +110,8 @@ object SqliteChapterRepository:
 
     private def loadGear(chapter: ChapterId) =
       sql"SELECT camera_id, use_kind FROM chapter_camera WHERE chapter_id = ${chapter.value} ORDER BY rowid"
-        .query[(UUID, String)].to[Vector].flatMap(_.traverse { case (camera, kind) => loadCameraUse(chapter, camera = camera, kind = kind) })
+        .query[(UUID, String)].to[Vector].flatMap: cameras =>
+          cameras.traverse { case (camera, kind) => loadCameraUse(chapter, camera = camera, kind = kind) }
 
     private def loadCameraUse(chapter: ChapterId, camera: UUID, kind: String) =
       val lenses = sql"SELECT lens_id FROM chapter_camera_lens WHERE chapter_id = ${chapter.value} AND camera_id = $camera ORDER BY rowid"
@@ -149,10 +149,10 @@ object SqliteChapterRepository:
     private def countryReferencesExist(countries: NonEmptyList[CountryId]) =
       countries.traverse(id => sql"SELECT EXISTS(SELECT 1 FROM country WHERE id = ${id.value})".query[Boolean].unique).map(_.forall(identity))
 
-    private def validateOpening(template: SpreadTemplateId, photos: Vector[SlotBox], text: SlotBox) =
+    private def validateOpening(opening: Spread.ChapterStart) =
       val select = sql"""SELECT s.kind, s.x, s.y, s.width, s.height FROM spread_template_slot s
-        JOIN spread_template t ON t.id = s.template_id WHERE t.id = ${template.value} AND t.kind = 'chapter_start'"""
-      val supplied = (photos.map(box => ("photo", box)) :+ ("text", text)).map { case (kind, box) =>
+        JOIN spread_template t ON t.id = s.template_id WHERE t.id = ${opening.template.value} AND t.kind = 'chapter_start'"""
+      val supplied = (opening.photoSlots.map(slot => ("photo", slot.box)) :+ ("text", opening.textSlot.box)).map { case (kind, box) =>
         (kind, box.x: Double, box.y: Double, box.width: Double, box.height: Double)
       }
       select.query[(String, Double, Double, Double, Double)].to[Vector].flatMap: expected =>
@@ -165,6 +165,9 @@ object SqliteChapterRepository:
           VALUES (${chapter.value}, ${country.value}, $position)"""
         persistRow(insert)
       }
+
+    private def replaceCountries(chapter: ChapterId, countries: NonEmptyList[CountryId]) =
+      sql"DELETE FROM chapter_country WHERE chapter_id = ${chapter.value}".update.run >> insertCountries(chapter, countries = countries)
 
     private def insertChapter(album: AlbumId, chapter: NewChapter) =
       val start  = chapter.period.firstDay.atStartOfDay(ZoneOffset.UTC).toInstant.toEpochMilli
@@ -196,18 +199,12 @@ object SqliteChapterRepository:
       val containsEveryChapter = stored.size === supplied.size && stored.toSet === supplied.toSet
       Either.cond(containsEveryChapter, (), new IllegalArgumentException("Order must contain every chapter exactly once"))
 
-    private def insertOpening(
-        chapter: ChapterId,
-        spread: SpreadId,
-        template: SpreadTemplateId,
-        photos: Vector[SpreadSlot.Photo],
-        text: SpreadSlot.Text
-    ) =
+    private def insertOpening(chapter: ChapterId, opening: Spread.ChapterStart) =
       val insert = sql"""INSERT INTO spread (id, template_id, kind, chapter_id, position)
-        VALUES (${spread.value}, ${template.value}, 'chapter_start', ${chapter.value}, 0)"""
+        VALUES (${opening.id.value}, ${opening.template.value}, 'chapter_start', ${chapter.value}, 0)"""
       val insertText = sql"""INSERT INTO spread_text_slot (id, spread_id, x, y, width, height)
-        VALUES (${text.id.value}, ${spread.value}, ${text.box})"""
-      persistRow(insert) >> photos.traverse_(slot => insertPhotoSlot(spread, slot)) >> persistRow(insertText)
+        VALUES (${opening.textSlot.id.value}, ${opening.id.value}, ${opening.textSlot.box})"""
+      persistRow(insert) >> opening.photoSlots.traverse_(slot => insertPhotoSlot(opening.id, slot)) >> persistRow(insertText)
 
     private def insertPhotoSlot(spread: SpreadId, slot: SpreadSlot.Photo) =
       val insert = sql"INSERT INTO spread_photo_slot (id, spread_id, x, y, width, height) VALUES (${slot.id.value}, ${spread.value}, ${slot.box})"

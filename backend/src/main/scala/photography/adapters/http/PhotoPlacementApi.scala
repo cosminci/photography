@@ -209,8 +209,8 @@ object PhotoPlacementApi:
         encodePlacement(id = value.id.value, slot = value.slot.value, value.photo, value.transform)
           .deepMerge(Json.obj("captionCorner" -> Json.fromString(encodeCorner(value.captionCorner))))
       val (kind, photos, maybeText) = spread match
-        case value: Spread.AlbumStart   => ("album_start", value.photoSlots, Some(value.textSlot))
-        case value: Spread.ChapterStart => ("chapter_start", value.photoSlots, Some(value.textSlot))
+        case value: Spread.AlbumStart   => ("album_start", value.photoSlots, value.textSlot.some)
+        case value: Spread.ChapterStart => ("chapter_start", value.photoSlots, value.textSlot.some)
         case value: Spread.PhotosOnly   => ("photos_only", value.photoSlots.toList.toVector, None)
       val state = spread.bleedState match
         case Spread.BleedState.Disabled => "disabled"

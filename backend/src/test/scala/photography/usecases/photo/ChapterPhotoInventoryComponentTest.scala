@@ -81,9 +81,9 @@ final class ChapterPhotoInventoryComponentTest extends CatsEffectSuite:
       override def status(id: ChapterId): IO[ExecutionOutcome] =
         refs.statusReads.update(_ :+ id).as(processing)
       override def prepare(album: AlbumId, chapter: ChapterId, source: PhotoSource): IO[Request] =
-        IO.raiseError[Request](new AssertionError("Unexpected preparation"))
-      override def launch(request: Request): IO[Scheduling] = IO.raiseError[Scheduling](new AssertionError("Unexpected scheduling"))
+        new AssertionError("Unexpected preparation").raiseError[IO, Request]
+      override def launch(request: Request): IO[Scheduling] = new AssertionError("Unexpected scheduling").raiseError[IO, Scheduling]
       override def retire(album: AlbumId, retirements: Vector[PhotoWriteIntent.Retirement]): IO[Unit] =
-        IO.raiseError[Unit](new AssertionError("Unexpected retirement"))
-      override def suspend(chapter: ChapterId): IO[Unit] = IO.raiseError[Unit](new AssertionError("Unexpected suspension"))
+        new AssertionError("Unexpected retirement").raiseError[IO, Unit]
+      override def suspend(chapter: ChapterId): IO[Unit] = new AssertionError("Unexpected suspension").raiseError[IO, Unit]
     ChapterPhotoInventory.make(photos, imports)

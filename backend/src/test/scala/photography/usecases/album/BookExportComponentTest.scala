@@ -273,8 +273,9 @@ final class BookExportComponentTest extends CatsEffectSuite:
           result   <- exporter.exportBook(album.id)
           reads    <- calls.get
         yield
+          val metadataReads = reads.collect { case Read.Metadata(id) => id }
           assertEquals(result, expected)
-          assertEquals(reads.collect { case Read.Metadata(id) => id }, Vector(album.id))
+          assertEquals(metadataReads, Vector(album.id))
     }
 
   test("should fail export when saved chapter metadata is unavailable"):
@@ -440,13 +441,14 @@ final class BookExportComponentTest extends CatsEffectSuite:
         second   <- exporter.exportBook(album.id)
         reads    <- calls.get
       yield
+        val metadataReads = reads.collect { case Read.Metadata(id) => id }
         first match
           case Result.Ready(json, filename) =>
             assertEquals(filename, "album-2025-indesign.json")
             assertEquals(json.hcursor.get[Vector[Json]]("sources").map(_.size), photos.size.asRight[DecodingFailure])
           case other => fail(s"Expected validated artifact, got $other")
         assertEquals(second, first)
-        assertEquals(reads.collect { case Read.Metadata(id) => id }, Vector(album.id, album.id))
+        assertEquals(metadataReads, Vector(album.id, album.id))
 
   test("should report unexpected saved-state acquisition failure explicitly"):
     Ref.of[IO, Vector[Read]](Vector.empty).flatMap: calls =>

@@ -52,7 +52,7 @@ private[album] object BookExportJson:
       case value: Spread.AlbumStart   => ("synopsis", value.textSlot.some)
       case value: Spread.ChapterStart => ("chapter_opening", value.textSlot.some)
       case _: Spread.PhotosOnly       => ("photos", none[SpreadSlot.Text])
-    spread.photos.traverse(slot =>
+    spread.photos.traverse { slot =>
       (slot.visibleBox, slot.contentBox).mapN { (visible, content) =>
         Json.obj(
           "id"           -> text(slot.id.value.toString),
@@ -60,7 +60,7 @@ private[album] object BookExportJson:
           "captionFrame" -> encodeFrame(InteriorDimensions.contentFrame(content))
         )
       }
-    ).map: slots =>
+    }.map: slots =>
       Json.obj(
         "id"         -> text(spread.id.value.toString),
         "kind"       -> text(kind),

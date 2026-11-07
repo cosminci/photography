@@ -65,4 +65,4 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
   private def buildEvents(calls: Ref[IO, Vector[AlbumId]], result: SubscribeResult[IO]) =
     new AlbumPhotoEvents[IO]:
       override def subscribe(id: AlbumId): IO[SubscribeResult[IO]]       = calls.update(_ :+ id).as(result)
-      override def invalidate(id: AlbumId, chapter: ChapterId): IO[Unit] = IO.raiseError[Unit](new AssertionError("Unexpected invalidation"))
+      override def invalidate(id: AlbumId, chapter: ChapterId): IO[Unit] = new AssertionError("Unexpected invalidation").raiseError[IO, Unit]

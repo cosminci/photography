@@ -85,19 +85,19 @@ final class SpreadTemplateApiSeamIntegrationTest extends CatsEffectSuite:
   ) =
     val templates = new SpreadTemplateRepository[IO]:
       override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult] =
-        IO.raiseError[ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
+        new AssertionError("Unexpected album templates").raiseError[IO, ListAlbumStartTemplatesResult]
       override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = chapters.pure[IO]
       override def listPhotosOnlyTemplates: IO[ListPhotosOnlyTemplatesResult]     = photos.pure[IO]
       override def findTemplate(id: SpreadTemplateId): IO[FindTemplateResult]     =
-        IO.raiseError[FindTemplateResult](new AssertionError("Unexpected template lookup"))
+        new AssertionError("Unexpected template lookup").raiseError[IO, FindTemplateResult]
     PublicRoutes(SpreadTemplateApi.make(templates)).orNotFound
 
   private def buildSpreadTemplateApi(result: ListAlbumStartTemplatesResult) =
     val templates = new SpreadTemplateRepository[IO]:
       override def listPhotosOnlyTemplates: IO[ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+        new AssertionError("Unexpected photo templates").raiseError[IO, ListPhotosOnlyTemplatesResult]
       override def findTemplate(id: SpreadTemplateId): IO[FindTemplateResult] =
-        IO.raiseError[FindTemplateResult](new AssertionError("Unexpected template lookup"))
+        new AssertionError("Unexpected template lookup").raiseError[IO, FindTemplateResult]
       override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]     = result.pure[IO]
       override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] =
         ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]

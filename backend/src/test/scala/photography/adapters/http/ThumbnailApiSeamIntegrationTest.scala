@@ -83,6 +83,6 @@ final class ThumbnailApiSeamIntegrationTest extends CatsEffectSuite:
       override def readThumbnail(id: ThumbnailLocation, requestedVersion: String :| Not[Blank]) =
         calls.update(_ :+ ThumbnailRead(id, requestedVersion)) >> response
       override def storeThumbnail(id: ThumbnailLocation, image: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
-        IO.raiseError[ThumbnailStorage.StoreResult](new AssertionError("Unexpected write"))
+        new AssertionError("Unexpected write").raiseError[IO, ThumbnailStorage.StoreResult]
       override def removeThumbnail(id: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-        IO.raiseError[ThumbnailStorage.RemoveResult](new AssertionError("Unexpected removal"))
+        new AssertionError("Unexpected removal").raiseError[IO, ThumbnailStorage.RemoveResult]
