@@ -62,7 +62,7 @@ object AlbumManager:
         case ListAlbumStartTemplatesResult.Listed(templates) =>
           val template = templates.head
           val title    = s"Journey of the Shepherds $year".refineUnsafe[Not[Empty] & Not[Blank]]
-          buildInitialComposition(year, title, template.id, photoSlots = template.photoSlots, template.textSlot).flatMap { case (album, cover) =>
+          buildInitialComposition(year, title, template).flatMap { case (album, cover) =>
             repository.create(album, cover).map:
               case AlbumRepository.CreateResult.Created                                         => CreateAlbumResult.Created(album)
               case AlbumRepository.CreateResult.Failed(AlbumRepository.Failure.YearAlreadyUsed) => CreateAlbumResult.YearAlreadyUsed
@@ -101,24 +101,19 @@ object AlbumManager:
         case AlbumRepository.SaveAuthorsResult.Uncertain(cause) =>
           Logger[F].error(cause)(s"Album authors save acknowledgement uncertain for ${album.value}").as(SaveAuthorsResult.Uncertain)
 
-    private def buildInitialComposition(
-        year: AlbumYear,
-        title: AlbumTitle,
-        template: SpreadTemplateId,
-        photoSlots: Vector[SlotBox],
-        textSlot: SlotBox
-    ) =
-      val newPhotos = photoSlots.traverse(box => IdGenerator[F].generateId.map(id => SpreadSlot.Photo(PhotoSpreadSlotId(id), box, bleed = Set.empty)))
+    private def buildInitialComposition(year: AlbumYear, title: AlbumTitle, template: SpreadTemplate.AlbumStart) =
+      val newPhotos =
+        template.photoSlots.traverse(box => IdGenerator[F].generateId.map(id => SpreadSlot.Photo(PhotoSpreadSlotId(id), box, bleed = Set.empty)))
       for
         albumId   <- IdGenerator[F].generateId.map(AlbumId(_))
         spreadId  <- IdGenerator[F].generateId.map(SpreadId(_))
         photos    <- newPhotos
-        text      <- IdGenerator[F].generateId.map(id => SpreadSlot.Text(TextSpreadSlotId(id), textSlot))
+        text      <- IdGenerator[F].generateId.map(id => SpreadSlot.Text(TextSpreadSlotId(id), template.textSlot))
         frontId   <- IdGenerator[F].generateId.map(CoverSlotId(_))
         backId    <- IdGenerator[F].generateId.map(CoverSlotId(_))
         createdAt <- Clock[F].readInstant.map(_.truncatedTo(ChronoUnit.MILLIS))
       yield
-        val start = Spread.AlbumStart(spreadId, template, photoSlots = photos, textSlot = text, placements = Vector.empty[SpreadPlacement])
+        val start = Spread.AlbumStart(spreadId, template.id, photoSlots = photos, textSlot = text, placements = Vector.empty[SpreadPlacement])
         val album =
           Album(albumId, year = year, title = title, synopsis = "", Author.all, createdAt = createdAt, start, chapters = Vector.empty[Chapter])
         val cover = Cover(albumId, SpineOwner.Front, front = CoverSlot(frontId), back = CoverSlot(backId))

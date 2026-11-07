@@ -111,7 +111,7 @@ object ChapterPhotoImport:
             state.get.flatMap: current =>
               val isCurrent = current.get(request.chapter).flatMap(_.maybeEntry).exists(entry => entry.request === request && isActive(entry.status))
               if isCurrent then transaction.run(program)
-              else Async[F].raiseError(new IllegalStateException("Photo import source was superseded"))
+              else new IllegalStateException("Photo import source was superseded").raiseError[F, A]
           execute.flatTap(_ => invalidateInventory(request.album, request.chapter))
         override def resolve[A](program: Db[A]): F[A] = transaction.resolve(program).flatTap(_ => invalidateInventory(request.album, request.chapter))
 

@@ -18,7 +18,7 @@ final class StaticSiteSeamIntegrationTest extends CatsEffectSuite:
       ("/nested/extensionless/", "index.html", MediaType.text.html.some),
       ("/assets/app.js", "assets/app.js", MediaType.application.javascript.some),
       ("/assets/app.css", "assets/app.css", MediaType.text.css.some),
-      ("/assets/LICENSE", "assets/LICENSE", Option.empty[MediaType])
+      ("/assets/LICENSE", "assets/LICENSE", none[MediaType])
     )
 
     scenarios.traverse_ { case (path, resource, mediaType) =>

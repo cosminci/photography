@@ -108,7 +108,7 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
       override def run[A](program: Db[A]): IO[A] =
         refs.calls.update(_ :+ Call.Begin) >> maybeTransactionError.fold(
           program.run(()).flatTap(_ => refs.calls.update(_ :+ Call.End))
-        )(IO.raiseError[A])
+        )(_.raiseError[IO, A])
       override def resolve[A](program: Db[A]): IO[A] = program.run(())
     val photos = new PhotoRepository[Db]:
       override def find(photo: PhotoId): Db[PhotoRepository.FindResult] =
@@ -147,4 +147,4 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
     PhotoInventory.make[IO, Db](photos, placements, chapters)
   // scalafix:on DisableSyntax.defaultArgs
 
-  private def unexpected[A]: Db[A] = Kleisli.liftF[IO, Unit, A](IO.raiseError[A](new AssertionError("Unexpected operation")))
+  private def unexpected[A]: Db[A] = Kleisli.liftF[IO, Unit, A](new AssertionError("Unexpected operation").raiseError[IO, A])

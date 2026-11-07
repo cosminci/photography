@@ -44,7 +44,7 @@ object Main extends IOApp.Simple:
         val recover    = recovery.recover.flatMap:
           case PhotoWriteRecovery.RecoveryResult.Recovered       => IO.unit
           case failure: PhotoWriteRecovery.RecoveryResult.Failed =>
-            IO.raiseError[Unit](new IllegalStateException(s"Photo write recovery failed: ${failure.issues}"))
+            new IllegalStateException(s"Photo write recovery failed: ${failure.issues}").raiseError[IO, Unit]
         val pageSize      = config.albums.pageSize
         val photoRoot     = config.albums.photoRoot
         val quality       = config.thumbnails.quality

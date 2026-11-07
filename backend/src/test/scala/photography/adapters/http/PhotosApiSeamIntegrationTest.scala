@@ -31,9 +31,9 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
     Header.Raw(CIString("X-Editor-Generation"), connection.generation.value.toString),
     Header.Raw(CIString("X-Editor-Grant"), grant.value.toString)
   )
-  private val unexpectedCaption   = IO.raiseError[SaveCaptionResult](new AssertionError("Unexpected caption write"))
-  private val unexpectedInventory = IO.raiseError[ChapterPhotoInventory.Result](new AssertionError("Unexpected inventory read"))
-  private val unexpectedPhoto     = IO.raiseError[PhotoManager.ReadResult](new AssertionError("Unexpected photo read"))
+  private val unexpectedCaption   = new AssertionError("Unexpected caption write").raiseError[IO, SaveCaptionResult]
+  private val unexpectedInventory = new AssertionError("Unexpected inventory read").raiseError[IO, ChapterPhotoInventory.Result]
+  private val unexpectedPhoto     = new AssertionError("Unexpected photo read").raiseError[IO, PhotoManager.ReadResult]
 
   test("should distinguish individual photo absence, failed acquisition and noncanonical identity without inventory work"):
     val cases = Vector(
@@ -63,7 +63,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         calls      <- refs.calls.get
         admissions <- refs.admissions.get
       yield
-        assertEquals(response, WireResponse(Status.NoContent, body = "", maybeMediaType = None, maybeCacheControl = Some("no-store")))
+        assertEquals(response, WireResponse(Status.NoContent, body = "", maybeMediaType = None, maybeCacheControl = "no-store".some))
         assertEquals(calls, Vector(CaptionCall(chapter, photo, text = text)))
         assertEquals(admissions, Vector((connection, Protection.OwnPhotoSpread(chapter, photo), grant.some)))
   }
@@ -82,7 +82,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         calls    <- refs.calls.get
       yield
         val expectedBody = Json.obj("code" -> Json.fromString(scenario.code)).noSpaces
-        assertEquals(response, WireResponse(scenario.status, expectedBody, MediaType.application.json.some, maybeCacheControl = Some("no-store")))
+        assertEquals(response, WireResponse(scenario.status, expectedBody, MediaType.application.json.some, maybeCacheControl = "no-store".some))
         assertEquals(calls, Vector(CaptionCall(chapter, photo, text = "once")))
   }
 
@@ -95,7 +95,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.BadRequest,
         body = """{"message":"Supply a text string"}""",
         MediaType.application.json.some,
-        maybeCacheControl = Some("no-store")
+        maybeCacheControl = "no-store".some
       )
       send(server, path = path, body = body).map(response => assertEquals(response, expected))
     }
@@ -104,7 +104,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.NotFound,
         body = """{"code":"photo_not_found"}""",
         MediaType.application.json.some,
-        maybeCacheControl = Some("no-store")
+        maybeCacheControl = "no-store".some
       )
       send(server, path = s"/api/chapters/${chapter.value}/photos/$id/caption", body = "{}").map(response => assertEquals(response, expected))
     }
@@ -113,7 +113,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
         Status.NotFound,
         body = """{"code":"chapter_not_found"}""",
         MediaType.application.json.some,
-        maybeCacheControl = Some("no-store")
+        maybeCacheControl = "no-store".some
       )
       send(server, path = s"/api/chapters/$id/photos/${photo.value}/caption", body = "{}").map(response => assertEquals(response, expected))
     }
@@ -316,7 +316,7 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
       override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): IO[SaveCaptionResult] =
         refs.calls.update(_ :+ CaptionCall(chapter, photo, text = text)) >> result
       override def refresh(chapter: ChapterId, source: PhotoSource): IO[PhotoManager.RefreshResult] =
-        IO.raiseError[PhotoManager.RefreshResult](new AssertionError("Unexpected photo import"))
+        new AssertionError("Unexpected photo import").raiseError[IO, PhotoManager.RefreshResult]
     val inventories = new ChapterPhotoInventory[IO]:
       override def read(chapter: ChapterId): IO[ChapterPhotoInventory.Result] = refs.reads.update(_ :+ ReadCall.Inventory(chapter)) >> inventoryResult
     val access = new EditingAccess[IO]:

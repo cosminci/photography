@@ -35,9 +35,9 @@ final class SqlitePhotoPlacementRepositorySeamIntegrationTest extends CatsEffect
     val unknownAlbum = AlbumId(new UUID(0L, 999L))
     val spreadId     = SpreadId(new UUID(0L, 9L))
     val targets      = Vector(
-      (chapter, spread, TargetResult.Found(Some(EditingTarget.Spread(spreadId)))),
-      (chapter, cover, TargetResult.Found(Some(EditingTarget.Cover(album)))),
-      (other, foreign, TargetResult.Found(Some(EditingTarget.Cover(album)))),
+      (chapter, spread, TargetResult.Found(EditingTarget.Spread(spreadId).some)),
+      (chapter, cover, TargetResult.Found(EditingTarget.Cover(album).some)),
+      (other, foreign, TargetResult.Found(EditingTarget.Cover(album).some)),
       (chapter, unused, TargetResult.Found(maybeTarget = None)),
       (chapter, foreign, TargetResult.PhotoNotFound),
       (chapter, missingPhoto, TargetResult.PhotoNotFound),
@@ -101,11 +101,13 @@ final class SqlitePhotoPlacementRepositorySeamIntegrationTest extends CatsEffect
           _                 <- sql"ALTER TABLE placement RENAME TO inaccessible".update.run.transact(xa)
           unavailable       <- targetRead.findTarget(chapter, spread)
         yield
+          val expectedInspections = inspections.map { case (_, _, _, expected) => expected }
+          val expectedTargets     = targets.map { case (_, _, expected) => expected }
           assertEquals(placed, FindResult.Found(photos = Set(spread, cover)))
           assertEquals(scoped, FindResult.Found(photos = Set(foreign)))
           assertEquals(empty, FindResult.Found(photos = Set.empty[PhotoId]))
-          assertEquals(inspected, inspections.map { case (_, _, _, expected) => expected })
-          assertEquals(located, targets.map { case (_, _, expected) => expected })
+          assertEquals(inspected, expectedInspections)
+          assertEquals(located, expectedTargets)
           assertEquals(malformed, TargetResult.Failed)
           assertEquals(unavailable, TargetResult.Failed)
           assert(inspectionFailure.isLeft)

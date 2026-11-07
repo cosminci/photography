@@ -164,7 +164,7 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
         val refs         = Refs()
         val error        = new IllegalStateException(scenario)
         val refresh      = finished.pure[IO]
-        val notification = IO.raiseError[Unit](error)
+        val notification = error.raiseError[IO, Unit]
         val manager      = (_: Transaction[Db, IO]) => buildManager(refs, refresh)
         given Mutex[IO]  = mutex
         val resource     =

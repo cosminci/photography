@@ -60,7 +60,8 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
       val planning         = buildPlanning()
       val expected         = VisitPeriod(firstDay = LocalDate.of(year, 1, 1), days = days)
       val home             = chapter.copy(destination = chapter.destination.copy(name = "Home"), period = expected)
-      val update           = planning.planUpdate(year, chapters = Vector(home), home.id, name = "Home", Period.AlbumYear, home.sourceFolder)
+      val saved            = PlanningSnapshot(year, chapters = Vector(home), spreadCount = 2)
+      val update           = planning.planUpdate(saved, home.id, name = "Home", Period.AlbumYear, home.sourceFolder)
       val expectedUpdate   = ChapterPlanning.UpdatePlan(home.sourceFolder, expected, order = NonEmptyList.one(home.id))
       val created          = newChapter.copy(name = "Home", period = expected, sourceFolder = "/photos/home")
       val expectedCreation = CreationResult.Planned(created, order = NonEmptyList.one(created.id))
@@ -85,13 +86,14 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
     val period        = Period.Dates(chapter.period)
     val expectedOrder = NonEmptyList.one(chapter.id)
     val expected      = ChapterPlanning.UpdatePlan(chapter.sourceFolder, chapter.period, order = expectedOrder)
+    val album         = PlanningSnapshot(year = 2026, chapters = chapters, spreadCount = 2)
 
-    val unchanged = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, chapter.sourceFolder)
-    val changed   = planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", period, folder = "/photos/new")
-    val missing = planning.planUpdate(year = 2026, chapters = Vector.empty[ChapterMetadata], chapter.id, name = "Kyoto", period, chapter.sourceFolder)
+    val unchanged = planning.planUpdate(album, chapter.id, name = "Kyoto", period, chapter.sourceFolder)
+    val changed   = planning.planUpdate(album, chapter.id, name = "Kyoto", period, folder = "/photos/new")
+    val missing = planning.planUpdate(album.copy(chapters = Vector.empty[ChapterMetadata]), chapter.id, name = "Kyoto", period, chapter.sourceFolder)
     val home    = chapter.copy(destination = chapter.destination.copy(name = "Home"))
     val typeChanges = Vector((chapter, "Home": DestinationName), (home, "Kyoto": DestinationName)).map { case (existing, name) =>
-      planning.planUpdate(year = 2026, chapters = Vector(existing), existing.id, name, Period.AlbumYear, folder = "/photos/new")
+      planning.planUpdate(album.copy(chapters = Vector(existing)), existing.id, name, Period.AlbumYear, folder = "/photos/new")
     }
 
     assertEquals(unchanged, UpdateResult.Planned(expected))
@@ -107,11 +109,11 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
     val home     = chapter.copy(id = ChapterId(new UUID(0L, 11L)), destination = chapter.destination.copy(name = "Home"))
     val chapters = Vector(home, later, tied, chapter, shorter)
     val expected = NonEmptyList.of(shorter.id, tied.id, chapter.id, later.id, home.id)
+    val album    = PlanningSnapshot(year = 2026, chapters = chapters, spreadCount = 6)
 
     val result =
-      planning.planUpdate(year = 2026, chapters = chapters, chapter.id, name = "Kyoto", Period.Dates(chapter.period), folder = "/photos/new")
+      planning.planUpdate(album, chapter.id, name = "Kyoto", Period.Dates(chapter.period), folder = "/photos/new")
 
-    val album = PlanningSnapshot(year = 2026, chapters = chapters, spreadCount = 6)
     planning.planCreation(album, name = "Kyoto", countries, Period.Dates(chapter.period), folder = "/photos/new").map:
       case CreationResult.Planned(created, order) =>
         assertEquals(order, NonEmptyList.of(shorter.id, tied.id, created.id, chapter.id, later.id, home.id))
@@ -135,7 +137,7 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
       val album  = PlanningSnapshot(year = 2026, chapters = Vector(existing), spreadCount = 2)
       val period = Period.Dates(proposed.period)
       val saved  = album.chapters :+ proposed.copy(period = fullYear)
-      val update = planning.planUpdate(album.year, saved, proposed.id, proposed.destination.name, period, existing.sourceFolder)
+      val update = planning.planUpdate(album.copy(chapters = saved), proposed.id, proposed.destination.name, period, existing.sourceFolder)
 
       planning.planCreation(album, proposed.destination.name, countries, period, existing.sourceFolder).map: actual =>
         assertEquals(actual, CreationResult.Rejected(conflict))
@@ -155,7 +157,7 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
     yield
       assertEquals(admitted, CreationResult.Planned(newChapter, NonEmptyList.of(newChapter.id, chapter.id)))
       assertEquals(full, CreationResult.Rejected(ChapterConflict.AtCapacity))
-      assertEquals(planning.planUpdate(fullAlbum.year, fullAlbum.chapters, chapter.id, name = "Kyoto", period, folder = "/photos/new"), expected)
+      assertEquals(planning.planUpdate(fullAlbum, chapter.id, name = "Kyoto", period, folder = "/photos/new"), expected)
 
   test("should report unavailable opening templates instead of producing a partial plan"):
     val planning = buildPlanning(available = ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure))
@@ -174,11 +176,11 @@ final class ChapterPlanningComponentTest extends CatsEffectSuite:
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(value => new UUID(0L, value))
     val templates = new SpreadTemplateRepository[IO]:
       override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+        new AssertionError("Unexpected photo templates").raiseError[IO, SpreadTemplateRepository.ListPhotosOnlyTemplatesResult]
       override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateRepository.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateRepository.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+        new AssertionError("Unexpected template lookup").raiseError[IO, SpreadTemplateRepository.FindTemplateResult]
       override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult] =
-        IO.raiseError[ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
+        new AssertionError("Unexpected album templates").raiseError[IO, ListAlbumStartTemplatesResult]
       override def listChapterStartTemplates: IO[ListChapterStartTemplatesResult] = available.pure[IO]
     ChapterPlanning.make(templates)
   // scalafix:on DisableSyntax.defaultArgs

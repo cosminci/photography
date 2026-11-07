@@ -312,42 +312,44 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
       failConstruction: Boolean = false,
       maybeSharedFailure: Option[CompletableFuture[Unit]] = None
   ) =
-    Resource.make(IO.blocking:
-      val registry  = IIORegistry.getDefaultInstance
-      val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
-      val jpeg      = delegates.find(_.getFormatNames.exists(_.equalsIgnoreCase("jpeg"))).getOrElse(fail("JDK JPEG provider missing"))
-      val provider  = new ImageReaderSpi(
-        "photography",
-        "1",
-        Array("jpeg"),
-        Array("jpg"),
-        Array("image/jpeg"),
-        classOf[PausedReader].getName,
-        Array(classOf[ImageInputStream]),
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String]
-      ):
-        override def getDescription(locale: Locale): String               = "Synchronized real JPEG reader"
-        override def canDecodeInput(input: Object): Boolean               = jpeg.canDecodeInput(input)
-        override def createReaderInstance(extension: Object): ImageReader =
-          if failConstruction then
-            val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-          val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
-          new PausedReader(this, delegate, reached, resume, failRead = failRead, failRelease = failRelease, maybeSharedFailure = maybeSharedFailure)
-      registry.registerServiceProvider(provider)
-      delegates.foreach { delegate =>
-        val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
-      }
-      provider)(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    Resource.make {
+      IO.blocking:
+        val registry  = IIORegistry.getDefaultInstance
+        val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
+        val jpeg      = delegates.find(_.getFormatNames.exists(_.equalsIgnoreCase("jpeg"))).getOrElse(fail("JDK JPEG provider missing"))
+        val provider  = new ImageReaderSpi(
+          "photography",
+          "1",
+          Array("jpeg"),
+          Array("jpg"),
+          Array("image/jpeg"),
+          classOf[PausedReader].getName,
+          Array(classOf[ImageInputStream]),
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String],
+          false,
+          "",
+          "",
+          Array.empty[String],
+          Array.empty[String]
+        ):
+          override def getDescription(locale: Locale): String               = "Synchronized real JPEG reader"
+          override def canDecodeInput(input: Object): Boolean               = jpeg.canDecodeInput(input)
+          override def createReaderInstance(extension: Object): ImageReader =
+            if failConstruction then
+              val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+            val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
+            new PausedReader(this, delegate, reached, resume, failRead = failRead, failRelease = failRelease, maybeSharedFailure = maybeSharedFailure)
+        registry.registerServiceProvider(provider)
+        delegates.foreach { delegate =>
+          val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
+        }
+        provider
+    }(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
   // scalafix:on DisableSyntax.defaultArgs
 
   final private class PausedReader(

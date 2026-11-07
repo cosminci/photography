@@ -172,15 +172,17 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       writes   <- refs.replacements.get
       events   <- refs.events.get
     yield
-      assertEquals(outcomes.count { case Result.Saved(_) => true; case _ => false }, 1)
-      assertEquals(outcomes.count { case Result.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }, 1)
+      val saved       = outcomes.count { case Result.Saved(_) => true; case _ => false }
+      val alreadyUsed = outcomes.count { case Result.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }
+      assertEquals(saved, 1)
+      assertEquals(alreadyUsed, 1)
       assertEquals(writes.map(_.placements.map(_.photo)), Vector(Vector(photo)))
       assertEquals(events, Vector("read", "inspect", "replace", "read", "inspect"))
 
   test("should distinguish missing cover and read, inspection or write failures without empty success"):
     val absent       = AlbumId(new UUID(0L, 99L))
     val refs         = Refs()
-    val readFailure  = IO.raiseError[CoverRepository.ReadResult](new IllegalStateException("read failed"))
+    val readFailure  = new IllegalStateException("read failed").raiseError[IO, CoverRepository.ReadResult]
     val writeFailure = new IllegalStateException("write failed")
 
     for
@@ -188,11 +190,11 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       absentManager <- buildManager(refs, read = CoverRepository.ReadResult.NotFound.pure[IO])
       broken        <- buildManager(refs, read = readFailure)
       uninspectable <-
-        buildManager(refs, inspected = IO.raiseError[PhotoPlacementRepository.InspectResult](new IllegalStateException("inspection failed")))
+        buildManager(refs, inspected = new IllegalStateException("inspection failed").raiseError[IO, PhotoPlacementRepository.InspectResult])
       unwritable <- buildManager(
         refs,
-        replaced = IO.raiseError[CoverRepository.ReplaceResult](writeFailure),
-        ownerWrite = IO.raiseError[CoverRepository.SetSpineOwnerResult](writeFailure)
+        replaced = writeFailure.raiseError[IO, CoverRepository.ReplaceResult],
+        ownerWrite = writeFailure.raiseError[IO, CoverRepository.SetSpineOwnerResult]
       )
       vanished <- buildManager(
         refs,
@@ -249,7 +251,7 @@ class CoverManagerComponentTest extends CatsEffectSuite:
         refs.replacements.update(_.appended((album = album, placements = placements))) >> refs.events.update(_ :+ "replace") >> replaced
     val photos = new PhotoPlacementRepository[IO]:
       override def findPlacedPhotos(chapter: ChapterId): IO[PhotoPlacementRepository.FindResult] =
-        IO.raiseError[PhotoPlacementRepository.FindResult](new AssertionError("Unexpected chapter inventory"))
+        new AssertionError("Unexpected chapter inventory").raiseError[IO, PhotoPlacementRepository.FindResult]
       override def inspect(album: AlbumId, maybeChapter: Option[ChapterId], requested: PhotoId): IO[PhotoPlacementRepository.InspectResult] =
         refs.inspections.update(_.appended((album = album, chapter = maybeChapter, photo = requested))) >> refs.events.update(_ :+ "inspect") >>
           inspected

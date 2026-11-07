@@ -52,7 +52,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       val pending    = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(intent)).pure[IO]
       val recovery   = buildRecovery(refs, pending = pending, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])
       val superseded = new Transaction[IO, IO]:
-        override def run[A](program: IO[A]): IO[A]     = IO.raiseError[A](new AssertionError("Superseded import cannot start guarded writes"))
+        override def run[A](program: IO[A]): IO[A]     = new AssertionError("Superseded import cannot start guarded writes").raiseError[IO, A]
         override def resolve[A](program: IO[A]): IO[A] = program
 
       for
@@ -72,7 +72,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
     }
 
   test("should fail startup explicitly when evidence cannot be listed"):
-    Vector(PhotoRepository.ListUnfinishedWritesResult.Failed.pure[IO], IO.raiseError[PhotoRepository.ListUnfinishedWritesResult](error))
+    Vector(PhotoRepository.ListUnfinishedWritesResult.Failed.pure[IO], error.raiseError[IO, PhotoRepository.ListUnfinishedWritesResult])
       .traverse_ { pending =>
         val refs = Refs()
 
@@ -87,7 +87,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       }
 
   test("should retain evidence and avoid deletion when current references cannot be read"):
-    Vector(PhotoRepository.ListResult.Failed.pure[IO], IO.raiseError[PhotoRepository.ListResult](error)).traverse_ { listed =>
+    Vector(PhotoRepository.ListResult.Failed.pure[IO], error.raiseError[IO, PhotoRepository.ListResult]).traverse_ { listed =>
       val refs = Refs()
 
       for
@@ -107,11 +107,11 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
         val pending  = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(publication)).pure[IO]
         val cleaning =
           if failCompletion then ThumbnailStorage.RemoveResult.Removed.pure[IO]
-          else if throwError then IO.raiseError[ThumbnailStorage.RemoveResult](error)
+          else if throwError then error.raiseError[IO, ThumbnailStorage.RemoveResult]
           else ThumbnailStorage.RemoveResult.Failed(error).pure[IO]
         val completing =
           if !failCompletion then PhotoRepository.CompleteWriteResult.Completed.pure[IO]
-          else if throwError then IO.raiseError[PhotoRepository.CompleteWriteResult](error)
+          else if throwError then error.raiseError[IO, PhotoRepository.CompleteWriteResult]
           else PhotoRepository.CompleteWriteResult.Failed.pure[IO]
         val issue = if failCompletion then Issue.Completion(writeId) else Issue.Cleanup(writeId, old)
 
@@ -196,25 +196,25 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
   )(using Transaction[IO, IO]) =
     val photos = new PhotoRepository[IO]:
       override def find(photo: PhotoId): IO[PhotoRepository.FindResult] =
-        IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))
+        new AssertionError("Unexpected photo read").raiseError[IO, PhotoRepository.FindResult]
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): IO[PhotoRepository.SaveCaptionResult] =
-        IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
+        new AssertionError("Unexpected caption mutation").raiseError[IO, PhotoRepository.SaveCaptionResult]
       override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] = refs.chapterReads.update(_ :+ id) >> listed
       override def save(value: Photo): IO[PhotoRepository.WriteResult]        =
-        IO.raiseError[PhotoRepository.WriteResult](new AssertionError("Unexpected publication"))
+        new AssertionError("Unexpected publication").raiseError[IO, PhotoRepository.WriteResult]
       override def remove(id: PhotoId): IO[PhotoRepository.WriteResult] =
-        IO.raiseError[PhotoRepository.WriteResult](new AssertionError("Unexpected photo removal"))
+        new AssertionError("Unexpected photo removal").raiseError[IO, PhotoRepository.WriteResult]
       override def recordWrite(intent: PhotoWriteIntent): IO[PhotoRepository.RecordWriteResult] =
-        IO.raiseError[PhotoRepository.RecordWriteResult](new AssertionError("Unexpected evidence creation"))
+        new AssertionError("Unexpected evidence creation").raiseError[IO, PhotoRepository.RecordWriteResult]
       override def completeWrite(id: PhotoWriteIntentId): IO[PhotoRepository.CompleteWriteResult] =
         refs.completed.update(_ :+ id) >> completing
       override def listUnfinishedWrites: IO[PhotoRepository.ListUnfinishedWritesResult] =
         pending
     val storage = new ThumbnailStorage[IO]:
       override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-        IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected read"))
+        new AssertionError("Unexpected read").raiseError[IO, ThumbnailStorage.ReadResult]
       override def storeThumbnail(location: ThumbnailLocation, image: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
-        IO.raiseError[ThumbnailStorage.StoreResult](new AssertionError("Unexpected thumbnail storage"))
+        new AssertionError("Unexpected thumbnail storage").raiseError[IO, ThumbnailStorage.StoreResult]
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
         refs.removed.update(_ :+ location) >> cleaning
     PhotoWriteRecovery.make(photos, storage)

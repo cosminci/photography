@@ -219,22 +219,22 @@ final class AlbumSpreadApiSeamIntegrationTest extends CatsEffectSuite:
     val deleteOutcome = delete
     val spreads       = new SpreadManager[IO]:
       override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
-        IO.raiseError[SpreadManager.SetBleedResult](new AssertionError("Unexpected bleed change"))
+        new AssertionError("Unexpected bleed change").raiseError[IO, SpreadManager.SetBleedResult]
       override def replaceChapterOrder(
           album: AlbumId,
           chapter: ChapterId,
           expected: NonEmptyList[SpreadId],
           order: NonEmptyList[SpreadId]
       ): IO[ReplacementResult] =
-        IO.raiseError[ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
+        new AssertionError("Unexpected chapter order replacement").raiseError[IO, ReplacementResult]
       override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
-        IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
+        new AssertionError("Unexpected placement read").raiseError[IO, PlacementReadResult]
       override def editPlacements(
           album: AlbumId,
           spread: SpreadId,
           request: Edit
       ): IO[PlacementResult] =
-        IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
+        new AssertionError("Unexpected placement edit").raiseError[IO, PlacementResult]
       override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
         refs.calls.update(_ :+ s"add:${album.value}:${chapter.value}:${after.value}").as(addOutcome)
       override def changeTemplate(

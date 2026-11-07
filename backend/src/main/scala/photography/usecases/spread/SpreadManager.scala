@@ -94,14 +94,16 @@ object SpreadManager:
         templates.findTemplate(template).flatMap[ChangeTemplateResult]:
           case FindTemplateResult.Found(layout) =>
             buildReplacement(layout).flatMap: replace =>
+              val mismatch = ChangeTemplateResult.Rejected(Conflict.ContextMismatch)
               val mutation =
                 for
                   _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
                   target <- findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
-                  fresh  <-
-                    replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = ChangeTemplateResult.Rejected(Conflict.ContextMismatch))
-                  count = target.spread.placements.size
-                  _ <- checkConfirmation(count = count, confirmed = confirmPlacements).leftMap(ChangeTemplateResult.Occupied(_)).eitherT[Db]
+                  fresh  <- replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = mismatch)
+                  _      <- checkConfirmation(
+                    target.spread.placements.size,
+                    confirmed = confirmPlacements
+                  ).leftMap(ChangeTemplateResult.Occupied(_)).eitherT[Db]
                   _ <- spreads.replace(fresh).lift[ChangeTemplateResult]
                 yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
               Transaction[Db, F].run(mutation.merge)
@@ -118,11 +120,10 @@ object SpreadManager:
           _      <- composition.hasAlbum(album).map(Either.cond(_, (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
           target <- findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
           photo  <- findPhoto(target).orFail[Db, DeleteResult](ifEmpty = DeleteResult.Rejected(Conflict.OpeningDelete))
-          count = photo.value.placements.size
-          _     <- checkConfirmation(count = count, confirmed = confirmPlacements).leftMap(DeleteResult.Occupied(_): DeleteResult).eitherT[Db]
+          _      <-
+            checkConfirmation(photo.value.placements.size, confirmed = confirmPlacements).leftMap(DeleteResult.Occupied(_): DeleteResult).eitherT[Db]
           order <- composition.findChapterOrder(album, photo.chapter).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
-          remaining = removeFromOrder(order = order, spread)
-          _ <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = remaining)).lift[DeleteResult]
+          _     <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = removeFromOrder(order = order, spread))).lift[DeleteResult]
         yield DeleteResult.Deleted: DeleteResult
       act[DeleteResult](DeleteResult.Failed):
         Transaction[Db, F].run(mutation.merge)

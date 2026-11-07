@@ -31,12 +31,13 @@ final class SqliteCountryRepositorySeamIntegrationTest extends CatsEffectSuite:
           val actual =
             countries.toList.map(country => (country.id.value.toString, country.code: String, country.name: String, country.flag.value.toString))
           val expectedRomania = ("10000000-0000-0000-0000-000000000001", "RO", "Romania", "/flags/ro.png")
+          val romania         = actual.find { case (_, code, _, _) => code === "RO" }
 
           assertEquals(actual, expected)
           assertEquals(countries.size, 249)
           assertEquals(countries.toList.map(_.id).distinct.size, 249)
           assertEquals(countries.toList.map(_.code).distinct.size, 249)
-          assertEquals(actual.find { case (_, code, _, _) => code === "RO" }, expectedRomania.some)
+          assertEquals(romania, expectedRomania.some)
           countries.toList.foreach { country =>
             assertEquals(country.flag.value.toString, s"/flags/${country.code.toLowerCase(java.util.Locale.ROOT)}.png")
             assert(Option(getClass.getResource(s"/frontend${country.flag.value}")).nonEmpty, s"Missing packaged flag for ${country.code}")

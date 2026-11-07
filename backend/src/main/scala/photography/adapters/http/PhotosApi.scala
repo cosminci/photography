@@ -61,14 +61,14 @@ object PhotosApi:
       Route(
         Routes.Access.Editor(Protection.OwnPhotoSpread(chapter, photo)),
         decode,
-        (text: String) =>
-          photos.saveCaption(chapter, photo, text = text).flatMap {
-            case SaveCaptionResult.Saved         => NoContent()
-            case SaveCaptionResult.PhotoNotFound => NotFound(body = Map("code" -> "photo_not_found"))
-            case SaveCaptionResult.Failed        => InternalServerError(body = Map("code" -> "service_failure"))
-            case SaveCaptionResult.Uncertain     => InternalServerError(body = Map("code" -> "mutation_uncertain"))
-          }
+        (text: String) => photos.saveCaption(chapter, photo, text = text).flatMap(respondCaptionSave)
       )
+
+    private def respondCaptionSave(result: SaveCaptionResult) = result match
+      case SaveCaptionResult.Saved         => NoContent()
+      case SaveCaptionResult.PhotoNotFound => NotFound(body = Map("code" -> "photo_not_found"))
+      case SaveCaptionResult.Failed        => InternalServerError(body = Map("code" -> "service_failure"))
+      case SaveCaptionResult.Uncertain     => InternalServerError(body = Map("code" -> "mutation_uncertain"))
 
     private def encodePhotos(snapshot: ChapterPhotos) =
       val inventory = snapshot.inventory

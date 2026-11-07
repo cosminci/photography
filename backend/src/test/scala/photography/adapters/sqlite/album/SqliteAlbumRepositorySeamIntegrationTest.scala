@@ -163,8 +163,10 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         loaded  <- repository.metadata(later.id)
         after   <- countInitialRows.transact(xa)
       yield
-        assertEquals(results.collect { case CreateResult.Created => () }.size, 1)
-        assertEquals(results.collect { case CreateResult.Failed(Failure.YearAlreadyUsed) => () }.size, 1)
+        val created   = results.collect { case CreateResult.Created => () }.size
+        val conflicts = results.collect { case CreateResult.Failed(Failure.YearAlreadyUsed) => () }.size
+        assertEquals(created, 1)
+        assertEquals(conflicts, 1)
         assertEquals(loaded, MetadataResult.Found(buildMetadata(later)))
         assertEquals(after, before * 2L)
 

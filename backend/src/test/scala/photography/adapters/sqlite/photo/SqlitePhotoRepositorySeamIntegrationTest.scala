@@ -160,7 +160,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
               val lost = new IllegalStateException("Lost acknowledgement").raiseError[IO, A]
               if committed then program.transact(xa) >> lost else lost
             override def resolve[A](program: ConnectionIO[A]): IO[A] =
-              IO.raiseError[A](new AssertionError("Unexpected automatic reconciliation"))
+              new AssertionError("Unexpected automatic reconciliation").raiseError[IO, A]
 
           val thumbnails = FileThumbnailStorage.make[IO](path.getParent)
           val originals  = FilePhotoStorage.make[IO]
@@ -330,7 +330,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
                   PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
               val thumbnailBoundary = new ThumbnailStorage[IO]:
                 override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-                  IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
+                  new AssertionError("Unexpected thumbnail read").raiseError[IO, ThumbnailStorage.ReadResult]
                 override def storeThumbnail(target: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
                   repository.listUnfinishedWrites.transact(xa).flatMap: pending =>
                     observedStorage.update(_ :+ StoredThumbnail(target, value, pending)) >> storage.storeThumbnail(target, value)
@@ -427,7 +427,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
             PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO]
         val interruptedStorage = new ThumbnailStorage[IO]:
           override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-            IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
+            new AssertionError("Unexpected thumbnail read").raiseError[IO, ThumbnailStorage.ReadResult]
           override def storeThumbnail(target: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
             val partial = root.resolve(s"${target.value}.tmp")
             storage.storeThumbnail(target, value) >> Files.write(partial, Array(2.toByte)).blocking[IO] >>

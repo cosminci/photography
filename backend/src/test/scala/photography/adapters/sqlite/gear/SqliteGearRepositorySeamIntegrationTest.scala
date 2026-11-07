@@ -28,12 +28,12 @@ final class SqliteGearRepositorySeamIntegrationTest extends CatsEffectSuite:
     buildSeededDatabase.use: path =>
       val expectedCameras: Vector[(String, String, Option[String], Option[String])] = Vector(
         ("Nikon P520", "fixed_lens", None, None),
-        ("Nikon Z6 III", "interchangeable_lens", Some("nikon_z"), Some("full_frame")),
+        ("Nikon Z6 III", "interchangeable_lens", "nikon_z".some, "full_frame".some),
         ("Samsung Galaxy S20 FE", "fixed_lens", None, None),
         ("Samsung Galaxy S20 Ultra", "fixed_lens", None, None),
         ("Samsung Galaxy S22", "fixed_lens", None, None),
         ("Samsung Galaxy S25", "fixed_lens", None, None),
-        ("Sony α6000", "interchangeable_lens", Some("sony_e"), Some("aps_c"))
+        ("Sony α6000", "interchangeable_lens", "sony_e".some, "aps_c".some)
       )
       val expectedLenses = Vector(
         ("Nikkor 28-400mm f/4-8", "nikon_z", "full_frame"),

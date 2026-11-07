@@ -134,7 +134,8 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       calls      <- refs.calls.get
       admissions <- refs.admissions.get
     yield
-      assertEquals(responses.map { case (status, _) => status }, Vector(Status.Ok, Status.Ok))
+      val statuses = responses.map { case (status, _) => status }
+      assertEquals(statuses, Vector(Status.Ok, Status.Ok))
       assertEquals(calls, Vector(PlacementCall.SetBleed(album, spread.id, enabled = true), PlacementCall.SetSpineOwner(album, SpineOwner.Back)))
       assertEquals(
         admissions,
@@ -709,22 +710,22 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
           expected: NonEmptyList[SpreadId],
           order: NonEmptyList[SpreadId]
       ): IO[SpreadManager.ReplacementResult] =
-        IO.raiseError[SpreadManager.ReplacementResult](new AssertionError("Unexpected chapter order replacement"))
+        new AssertionError("Unexpected chapter order replacement").raiseError[IO, SpreadManager.ReplacementResult]
       override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[SpreadManager.AddResult] =
-        IO.raiseError[SpreadManager.AddResult](new AssertionError("Unexpected structural add"))
+        new AssertionError("Unexpected structural add").raiseError[IO, SpreadManager.AddResult]
       override def changeTemplate(
           album: AlbumId,
           spread: SpreadId,
           template: SpreadTemplateId,
           confirmPlacements: Boolean
       ): IO[SpreadManager.ChangeTemplateResult] =
-        IO.raiseError[SpreadManager.ChangeTemplateResult](new AssertionError("Unexpected structural template change"))
+        new AssertionError("Unexpected structural template change").raiseError[IO, SpreadManager.ChangeTemplateResult]
       override def delete(
           album: AlbumId,
           spread: SpreadId,
           confirmPlacements: Boolean
       ): IO[SpreadManager.DeleteResult] =
-        IO.raiseError[SpreadManager.DeleteResult](new AssertionError("Unexpected structural delete"))
+        new AssertionError("Unexpected structural delete").raiseError[IO, SpreadManager.DeleteResult]
       override def readPlacements(id: AlbumId, spread: SpreadId): IO[SpreadManager.PlacementReadResult] =
         refs.calls.update(_ :+ PlacementCall.Read(id, spread)).as(spreadRead)
       override def editPlacements(

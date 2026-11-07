@@ -34,7 +34,7 @@ jobs:
       - name: Install Dagger
         run: |
           cd "$RUNNER_TEMP"
-          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=0.21.9 sh
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=0.21.11 sh
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Verify all components
