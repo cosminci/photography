@@ -6,7 +6,7 @@ import io.github.iltotore.iron.*
 import io.github.iltotore.iron.autoRefine
 import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
-import photography.ImageIOTestResources
+import photography.ImageIOTestHelpers
 import photography.domain.album.*
 import photography.ports.photo.PhotoStorage.*
 import java.awt.image.BufferedImage
@@ -17,17 +17,16 @@ import java.nio.file.{Files, Path, StandardCopyOption}
 import java.nio.file.attribute.{FileTime, PosixFilePermission}
 import java.security.MessageDigest
 import java.time.LocalDateTime
-import java.util.{HexFormat, Iterator as JavaIterator, List as JavaList, Locale}
+import java.util.{HexFormat, Iterator as JavaIterator, List as JavaList}
 import java.util.concurrent.{CompletableFuture, CompletionException, CountDownLatch}
 import javax.imageio.{ImageIO, ImageReadParam, ImageReader, ImageTypeSpecifier}
 import javax.imageio.metadata.IIOMetadata
 import javax.imageio.spi.{IIORegistry, ImageReaderSpi}
-import javax.imageio.stream.ImageInputStream
 import scala.jdk.CollectionConverters.*
 
 final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
   private lazy val undatedJpeg = buildJpeg(maybeDate = None, orientation = 1, maybeFraction = None)
-  private val imageIO          = ResourceTestLocalFixture("image-io", ImageIOTestResources.acquire)
+  private val imageIO          = ResourceTestLocalFixture("image-io", ImageIOTestHelpers.acquire)
 
   override def munitFixtures = List(imageIO)
 
@@ -312,44 +311,17 @@ final class FilePhotoStorageSeamIntegrationTest extends CatsEffectSuite:
       failConstruction: Boolean = false,
       maybeSharedFailure: Option[CompletableFuture[Unit]] = None
   ) =
-    Resource.make {
-      IO.blocking:
-        val registry  = IIORegistry.getDefaultInstance
-        val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
-        val jpeg      = delegates.find(_.getFormatNames.exists(_.equalsIgnoreCase("jpeg"))).getOrElse(fail("JDK JPEG provider missing"))
-        val provider  = new ImageReaderSpi(
-          "photography",
-          "1",
-          Array("jpeg"),
-          Array("jpg"),
-          Array("image/jpeg"),
-          classOf[PausedReader].getName,
-          Array(classOf[ImageInputStream]),
-          Array.empty[String],
-          false,
-          "",
-          "",
-          Array.empty[String],
-          Array.empty[String],
-          false,
-          "",
-          "",
-          Array.empty[String],
-          Array.empty[String]
-        ):
-          override def getDescription(locale: Locale): String               = "Synchronized real JPEG reader"
-          override def canDecodeInput(input: Object): Boolean               = jpeg.canDecodeInput(input)
-          override def createReaderInstance(extension: Object): ImageReader =
-            if failConstruction then
-              val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-            val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
-            new PausedReader(this, delegate, reached, resume, failRead = failRead, failRelease = failRelease, maybeSharedFailure = maybeSharedFailure)
-        registry.registerServiceProvider(provider)
-        delegates.foreach { delegate =>
-          val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
-        }
-        provider
-    }(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    ImageIOTestHelpers.register(classOf[ImageReaderSpi]) {
+      val registry  = IIORegistry.getDefaultInstance
+      val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
+      val jpeg      = delegates.find(_.getFormatNames.exists(_.equalsIgnoreCase("jpeg"))).getOrElse(fail("JDK JPEG provider missing"))
+      ImageIOTestHelpers.reader(classOf[PausedReader], description = "Synchronized real JPEG reader")(jpeg.canDecodeInput) { provider =>
+        if failConstruction then
+          val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+        val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
+        new PausedReader(provider, delegate, reached, resume, failRead = failRead, failRelease = failRelease, maybeSharedFailure = maybeSharedFailure)
+      }
+    }
   // scalafix:on DisableSyntax.defaultArgs
 
   final private class PausedReader(
