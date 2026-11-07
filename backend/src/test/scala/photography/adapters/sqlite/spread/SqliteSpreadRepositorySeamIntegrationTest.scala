@@ -200,12 +200,12 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
   private def loadAlbumTemplate(xa: Transactor[IO]) =
     SqliteSpreadTemplateRepository.make[IO](xa).listAlbumStartTemplates.flatMap:
       case SpreadTemplateRepository.ListAlbumStartTemplatesResult.Listed(values) => values.head.pure[IO]
-      case other => IO.raiseError[SpreadTemplate.AlbumStart](new IllegalStateException(s"Missing album templates: $other"))
+      case other => new IllegalStateException(s"Missing album templates: $other").raiseError[IO, SpreadTemplate.AlbumStart]
 
   private def loadChapterTemplate(xa: Transactor[IO]) =
     SqliteSpreadTemplateRepository.make[IO](xa).listChapterStartTemplates.flatMap:
       case SpreadTemplateRepository.ListChapterStartTemplatesResult.Listed(values) => values.head.pure[IO]
-      case other => IO.raiseError[SpreadTemplate.ChapterStart](new IllegalStateException(s"Missing chapter templates: $other"))
+      case other => new IllegalStateException(s"Missing chapter templates: $other").raiseError[IO, SpreadTemplate.ChapterStart]
 
   private def buildAlbum(template: SpreadTemplate.AlbumStart) =
     val photos = template.photoSlots.zipWithIndex.map { case (box, index) =>
@@ -241,8 +241,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
               SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(index, position.toLong)), box, bleed = Set.empty[SpreadEdge])
             }
             Spread.PhotosOnly(SpreadId(new UUID(index, 100L)), template.id, photoSlots = slots, placements = Vector.empty[SpreadPlacement]).pure[IO]
-          case None => IO.raiseError[Spread.PhotosOnly](new IllegalStateException(s"Missing photo layout $layout"))
-      case other => IO.raiseError[Spread.PhotosOnly](new IllegalStateException(s"Missing photo layouts: $other"))
+          case None => new IllegalStateException(s"Missing photo layout $layout").raiseError[IO, Spread.PhotosOnly]
+      case other => new IllegalStateException(s"Missing photo layouts: $other").raiseError[IO, Spread.PhotosOnly]
 
   private def retemplate(xa: Transactor[IO], photo: Spread.PhotosOnly) =
     SqliteSpreadTemplateRepository.make[IO](xa).listPhotosOnlyTemplates.flatMap:
@@ -252,8 +252,8 @@ final class SqliteSpreadRepositorySeamIntegrationTest extends CatsEffectSuite:
             val slot = SpreadSlot.Photo(PhotoSpreadSlotId(new UUID(5L, 900L)), template.photoSlots.head, bleed = SpreadEdge.values.toSet)
             val kept = SpreadPlacement(placementId, slot.id, photoId, identity, CaptionCorner.TopRight)
             Spread.PhotosOnly(photo.id, singleLayout, photoSlots = NonEmptyList.one(slot), placements = Vector(kept)).pure[IO]
-          case None => IO.raiseError[Spread.PhotosOnly](new IllegalStateException("Missing single layout"))
-      case other => IO.raiseError[Spread.PhotosOnly](new IllegalStateException(s"Missing photo layouts: $other"))
+          case None => new IllegalStateException("Missing single layout").raiseError[IO, Spread.PhotosOnly]
+      case other => new IllegalStateException(s"Missing photo layouts: $other").raiseError[IO, Spread.PhotosOnly]
 
   private def placePhoto(xa: Transactor[IO], slot: PhotoSpreadSlotId, index: Long) =
     val photo       = buildPhotoId(index).value

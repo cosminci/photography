@@ -25,8 +25,7 @@ trait ChapterPlanning[F[_]]:
       folder: PhotoSource
   ): F[CreationResult]
   def planUpdate(
-      year: AlbumYear,
-      chapters: Vector[ChapterMetadata],
+      album: PlanningSnapshot,
       id: ChapterId,
       name: DestinationName,
       period: Period,
@@ -53,20 +52,19 @@ object ChapterPlanning:
       )
 
     override def planUpdate(
-        year: AlbumYear,
-        chapters: Vector[ChapterMetadata],
+        album: PlanningSnapshot,
         id: ChapterId,
         name: DestinationName,
         period: Period,
         folder: PhotoSource
     ): UpdateResult =
-      chapters.find(_.id.value === id.value).fold[UpdateResult](UpdateResult.ChapterNotFound): existing =>
-        val resolved      = resolvePeriod(year, period)
-        val others        = chapters.filterNot(_.id.value === id.value)
+      album.chapters.find(_.id.value === id.value).fold[UpdateResult](UpdateResult.ChapterNotFound): existing =>
+        val resolved      = resolvePeriod(album.year, period)
+        val others        = album.chapters.filterNot(_.id.value === id.value)
         val maybeConflict =
           if existing.destination.isHome =!= ((name: String) === "Home") then ChapterConflict.TypeChange.some
-          else findMetadataConflict(year, chapters = others, name, resolved, folder)
-        val order = orderChapters(chapters = chapters, id, isHome = (name: String) === "Home", resolved)
+          else findMetadataConflict(album.year, chapters = others, name, resolved, folder)
+        val order = orderChapters(chapters = album.chapters, id, isHome = (name: String) === "Home", resolved)
         val plan  = UpdatePlan(existing.sourceFolder, resolved, order = order)
         maybeConflict.fold[UpdateResult](UpdateResult.Planned(plan))(UpdateResult.Rejected(_))
 
@@ -88,7 +86,7 @@ object ChapterPlanning:
           val template = available.head
           for
             id      <- IdGenerator[F].generateId.map(ChapterId(_))
-            opening <- buildOpening(template.id, photoSlots = template.photoSlots, template.textSlot)
+            opening <- buildOpening(template)
           yield CreationResult.Planned(
             ChapterRepository.NewChapter(id, name, countries = countries, period, description = "", source, opening),
             orderChapters(chapters, id, isHome = (name: String) === "Home", period)
@@ -120,13 +118,14 @@ object ChapterPlanning:
       val days: VisitDays = if Year.isLeap(year.toLong) then 366L else 365L
       VisitPeriod(firstDay = LocalDate.of(year, 1, 1), days = days)
 
-    private def buildOpening(template: SpreadTemplateId, photoSlots: Vector[SlotBox], textSlot: SlotBox) =
-      val newPhotos = photoSlots.traverse(box => IdGenerator[F].generateId.map(id => SpreadSlot.Photo(PhotoSpreadSlotId(id), box, bleed = Set.empty)))
+    private def buildOpening(template: SpreadTemplate.ChapterStart) =
+      val newPhotos =
+        template.photoSlots.traverse(box => IdGenerator[F].generateId.map(id => SpreadSlot.Photo(PhotoSpreadSlotId(id), box, bleed = Set.empty)))
       for
         id     <- IdGenerator[F].generateId.map(SpreadId(_))
         photos <- newPhotos
-        text   <- IdGenerator[F].generateId.map(slot => SpreadSlot.Text(TextSpreadSlotId(slot), textSlot))
-      yield Spread.ChapterStart(id, template, photoSlots = photos, textSlot = text, placements = Vector.empty[SpreadPlacement])
+        text   <- IdGenerator[F].generateId.map(slot => SpreadSlot.Text(TextSpreadSlotId(slot), template.textSlot))
+      yield Spread.ChapterStart(id, template.id, photoSlots = photos, textSlot = text, placements = Vector.empty[SpreadPlacement])
 
   enum CreationResult:
     case Planned(chapter: ChapterRepository.NewChapter, order: NonEmptyList[ChapterId])
@@ -138,6 +137,5 @@ object ChapterPlanning:
     case Rejected(reason: ChapterConflict)
     case ChapterNotFound
 
-  final case class UpdatePlan(previousSource: PhotoSource, period: VisitPeriod, order: NonEmptyList[ChapterId]):
-    def changesSource(source: PhotoSource): Boolean = (previousSource: String) =!= source
+  final case class UpdatePlan(previousSource: PhotoSource, period: VisitPeriod, order: NonEmptyList[ChapterId])
   final private case class ChapterOrder(id: ChapterId, isHome: Boolean, period: VisitPeriod)

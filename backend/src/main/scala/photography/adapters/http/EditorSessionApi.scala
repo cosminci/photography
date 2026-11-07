@@ -36,41 +36,41 @@ object EditorSessionApi:
               Ok(bind(SessionId(session), TabId(tab))).map(_.putHeaders("X-Accel-Buffering" -> "no"))
         }
       case request @ GET -> Root / "api" / "editor-session" => Route.public {
-          withConnection(request)(connection =>
+          withConnection(request) { connection =>
             sessions.read(connection).flatMap {
               case ReadResult.Current(session) => Ok(encodeSession(session))
               case ReadResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
-          )
+          }
         }
       case request @ PATCH -> Root / "api" / "editor-session" => Route.public {
-          withConnection(request)(connection =>
-            withBody(request, aliasChange)(alias =>
+          withConnection(request) { connection =>
+            withBody(request, aliasChange) { alias =>
               sessions.rename(connection, alias).flatMap {
                 case RenameResult.Renamed(session) => Ok(encodeSession(session))
                 case RenameResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
               }
-            )
-          )
+            }
+          }
         }
       case request @ DELETE -> Root / "api" / "editor-session" / "binding" => Route.public {
-          withConnection(request)(connection =>
+          withConnection(request) { connection =>
             sessions.unbind(connection).flatMap {
               case UnbindResult.Released         => Ok(Json.obj("released" -> Json.True))
               case UnbindResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
-          )
+          }
         }
       case request @ POST -> Root / "api" / "editor-session" / "heartbeat" => Route.public {
-          withConnection(request)(connection =>
+          withConnection(request) { connection =>
             sessions.heartbeat(connection).flatMap {
               case HeartbeatResult.Alive(session)   => Ok(encodeSession(session))
               case HeartbeatResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
-          )
+          }
         }
       case request @ GET -> Root / "api" / "editor-session" / "target" => Route.public {
-          withConnection(request)(connection =>
+          withConnection(request) { connection =>
             sessions.readTarget(connection).flatMap {
               case ReadTargetResult.Current(revision, maybeLock) =>
                 maybeLock.traverse(encodeGrant).flatMap(lock =>
@@ -78,10 +78,10 @@ object EditorSessionApi:
                 )
               case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
-          )
+          }
         }
       case request @ PUT -> Root / "api" / "editor-session" / "target" => Route.public {
-          withConnection(request)(connection =>
+          withConnection(request) { connection =>
             withBody(request, selection) { case (revision, target) =>
               sessions.select(connection, revision, target).flatMap {
                 case SelectResult.Owned(lock, current) =>
@@ -98,29 +98,29 @@ object EditorSessionApi:
                 case SelectResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
               }
             }
-          )
+          }
         }
       case request @ POST -> Root / "api" / "editor-session" / "target" => Route.public {
-          withConnection(request)(connection =>
-            withGrant(request)(grant =>
+          withConnection(request) { connection =>
+            withGrant(request) { grant =>
               sessions.renewTarget(connection, grant).flatMap {
                 case RenewTargetResult.Renewed(lock)    => encodeGrant(lock).flatMap(Ok(_))
                 case RenewTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
               }
-            )
-          )
+            }
+          }
         }
       case request @ DELETE -> Root / "api" / "editor-session" / "target" => Route.public {
-          withConnection(request)(connection =>
-            withGrant(request)(grant =>
-              withBody(request, releaseRevision)(revision =>
+          withConnection(request) { connection =>
+            withGrant(request) { grant =>
+              withBody(request, releaseRevision) { revision =>
                 sessions.release(connection, revision, grant).flatMap {
                   case ReleaseResult.Released(current) => Ok(encodeRevision(current))
                   case ReleaseResult.Rejected(reason)  => Conflict(code(encodeFailure(reason)))
                 }
-              )
-            )
-          )
+              }
+            }
+          }
         }
     }
 
@@ -210,7 +210,7 @@ object EditorSessionApi:
         case OwnershipChangeResult.Changed          => (event("ownership_changed", Json.obj()), false)
         case OwnershipChangeResult.Rejected(reason) => (event("session_lost", code(encodeFailure(reason))), true)
       }
-      val heartbeat = Stream.awakeEvery[F](1.second).as((ServerSentEvent(comment = Some("heartbeat")), false))
+      val heartbeat = Stream.awakeEvery[F](1.second).as((ServerSentEvent(comment = "heartbeat".some), false))
       updates.merge(heartbeat).takeThrough { case (_, lost) => !lost }.map { case (notification, _) => notification }
 
     private val aliasChange = Decoder.forProduct1("alias")((alias: String) => alias)
@@ -231,4 +231,4 @@ object EditorSessionApi:
 
     private def code(value: String) = Json.obj("code" -> Json.fromString(value))
 
-    private def event(name: String, data: Json) = ServerSentEvent(data = Some(data.noSpaces), eventType = Some(name))
+    private def event(name: String, data: Json) = ServerSentEvent(data = data.noSpaces.some, eventType = name.some)

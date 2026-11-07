@@ -76,15 +76,15 @@ object ChapterApi:
       Route(
         Routes.Access.Editor(Protection.OwnChapterOpening(album, chapter)),
         decode,
-        (text: String) =>
-          chapters.saveDescription(album, chapter, text = text).flatMap {
-            case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
-            case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
-            case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
-            case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
-            case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
-          }
+        (text: String) => chapters.saveDescription(album, chapter, text = text).flatMap(respondDescriptionSave)
       )
+
+    private def respondDescriptionSave(result: ChapterMetadataManager.SaveDescriptionResult) = result match
+      case ChapterMetadataManager.SaveDescriptionResult.Saved           => NoContent()
+      case ChapterMetadataManager.SaveDescriptionResult.AlbumNotFound   => albumNotFound
+      case ChapterMetadataManager.SaveDescriptionResult.ChapterNotFound => chapterNotFound
+      case ChapterMetadataManager.SaveDescriptionResult.Failed          => serviceFailure
+      case ChapterMetadataManager.SaveDescriptionResult.Uncertain       => InternalServerError(body = Map("code" -> "mutation_uncertain"))
 
     private def readGear(album: AlbumId, chapter: ChapterId) =
       gear.readGear(album, chapter).flatMap:

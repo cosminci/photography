@@ -7,14 +7,14 @@ import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
 import munit.CatsEffectSuite
-import photography.ImageIOTestResources
+import photography.ImageIOTestHelpers
 import photography.domain.album.*
 import photography.ports.photo.PhotoThumbnailGenerator.GenerationResult
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, EOFException, IOException}
 import java.nio.{ByteBuffer, ByteOrder}
-import java.util.{Iterator as JavaIterator, List as JavaList, Locale, Random}
+import java.util.{Iterator as JavaIterator, List as JavaList, Random}
 import java.util.concurrent.{CompletableFuture, CompletionException, CountDownLatch, Executors}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import javax.imageio.{IIOImage, ImageIO, ImageReadParam, ImageReader, ImageTypeSpecifier, ImageWriteParam, ImageWriter}
@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters.*
 
 final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffectSuite:
   private val colors  = Vector(Color.RED, Color.GREEN, Color.BLUE, Color.YELLOW)
-  private val imageIO = ResourceTestLocalFixture("image-io", ImageIOTestResources.acquire)
+  private val imageIO = ResourceTestLocalFixture("image-io", ImageIOTestHelpers.acquire)
 
   override def munitFixtures = List(imageIO)
 
@@ -310,88 +310,39 @@ final class ImageIoPhotoThumbnailGeneratorSeamIntegrationTest extends CatsEffect
   private given Eq[WriteAction] = Eq.fromUniversalEquals
 
   private def buildObservedReader(refs: Refs, action: ReadAction, maybeReleaseFailure: Option[CompletionException]) =
-    Resource.make(IO.blocking:
+    ImageIOTestHelpers.register(classOf[ImageReaderSpi]) {
       val registry  = IIORegistry.getDefaultInstance
       val delegates = registry.getServiceProviders(classOf[ImageReaderSpi], true).asScala.toVector
       val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
         .getOrElse(fail("JDK JPEG provider missing"))
-      val provider = new ImageReaderSpi(
-        "photography",
-        "1",
-        Array("jpeg"),
-        Array("jpg"),
-        Array("image/jpeg"),
-        classOf[ObservedReader].getName,
-        Array(classOf[ImageInputStream]),
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String]
-      ):
-        override def getDescription(locale: Locale): String = "Isolated thumbnail fixture reader"
-        override def canDecodeInput(input: Object): Boolean =
-          input match
-            case stream: ImageInputStream =>
-              stream.mark()
-              try stream.readInt() === 0xffd8ffef && stream.readInt() === 0x00065448 && stream.readShort() === 0x4d42
-              finally stream.reset()
-            case _ => false
-        override def createReaderInstance(extension: Object): ImageReader =
-          if action === ReadAction.ConstructionFailure then
-            val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-          val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
-          new ObservedReader(this, delegate, refs, action, maybeReleaseFailure = maybeReleaseFailure)
-      registry.registerServiceProvider(provider)
-      delegates.foreach { delegate =>
-        val _ = registry.setOrdering(classOf[ImageReaderSpi], provider, delegate)
+      ImageIOTestHelpers.reader(classOf[ObservedReader], description = "Isolated thumbnail fixture reader") { input =>
+        input match
+          case stream: ImageInputStream =>
+            stream.mark()
+            try stream.readInt() === 0xffd8ffef && stream.readInt() === 0x00065448 && stream.readShort() === 0x4d42
+            finally stream.reset()
+          case _ => false
+      } { provider =>
+        if action === ReadAction.ConstructionFailure then
+          val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+        val delegate = Option(jpeg.createReaderInstance()).getOrElse(fail("JDK JPEG reader missing"))
+        new ObservedReader(provider, delegate, refs, action, maybeReleaseFailure = maybeReleaseFailure)
       }
-      provider)(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    }
 
   private def buildObservedWriter(refs: Refs, action: WriteAction) =
-    Resource.make(IO.blocking:
+    ImageIOTestHelpers.register(classOf[ImageWriterSpi]) {
       val registry  = IIORegistry.getDefaultInstance
       val delegates = registry.getServiceProviders(classOf[ImageWriterSpi], true).asScala.toVector
       val jpeg = delegates.find(provider => provider.getVendorName =!= "photography" && provider.getFormatNames.exists(_.equalsIgnoreCase("jpeg")))
         .getOrElse(fail("JDK JPEG writer missing"))
-      val provider = new ImageWriterSpi(
-        "photography",
-        "1",
-        Array("jpeg"),
-        Array("jpg"),
-        Array("image/jpeg"),
-        classOf[ObservedWriter].getName,
-        Array(classOf[ImageOutputStream]),
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String],
-        false,
-        "",
-        "",
-        Array.empty[String],
-        Array.empty[String]
-      ):
-        override def getDescription(locale: Locale): String               = "Isolated thumbnail fixture writer"
-        override def canEncodeImage(image: ImageTypeSpecifier): Boolean   = jpeg.canEncodeImage(image)
-        override def createWriterInstance(extension: Object): ImageWriter =
-          if action === WriteAction.ConstructionFailure then
-            val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
-          val delegate = Option(jpeg.createWriterInstance()).getOrElse(fail("JDK JPEG writer missing"))
-          new ObservedWriter(this, delegate, refs, action)
-      registry.registerServiceProvider(provider)
-      delegates.foreach { delegate =>
-        val _ = registry.setOrdering(classOf[ImageWriterSpi], provider, delegate)
+      ImageIOTestHelpers.writer(classOf[ObservedWriter], description = "Isolated thumbnail fixture writer")(jpeg.canEncodeImage) { provider =>
+        if action === WriteAction.ConstructionFailure then
+          val _ = new DataInputStream(new ByteArrayInputStream(Array.emptyByteArray)).readByte()
+        val delegate = Option(jpeg.createWriterInstance()).getOrElse(fail("JDK JPEG writer missing"))
+        new ObservedWriter(provider, delegate, refs, action)
       }
-      provider)(provider => IO.blocking(IIORegistry.getDefaultInstance.deregisterServiceProvider(provider)))
+    }
 
   final private class ObservedWriter(provider: ImageWriterSpi, delegate: ImageWriter, refs: Refs, action: WriteAction) extends ImageWriter(provider):
     private val observed = new AtomicBoolean(false)

@@ -205,9 +205,9 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
   test("should retain inventory when discovery or inventory reading fails"):
     Vector(
       (PhotoStorage.DiscoveryResult.Failed(error).pure[IO], PhotoRepository.ListResult.Listed(Vector(existing)).pure[IO], Issue.Discovery),
-      (IO.raiseError[PhotoStorage.DiscoveryResult](error), PhotoRepository.ListResult.Failed.pure[IO], Issue.Unexpected),
+      (error.raiseError[IO, PhotoStorage.DiscoveryResult], PhotoRepository.ListResult.Failed.pure[IO], Issue.Unexpected),
       (complete.pure[IO], PhotoRepository.ListResult.Failed.pure[IO], Issue.Persistence),
-      (complete.pure[IO], IO.raiseError[PhotoRepository.ListResult](error), Issue.Persistence)
+      (complete.pure[IO], error.raiseError[IO, PhotoRepository.ListResult], Issue.Persistence)
     ).traverse_ { case (discovery, listed, issue) =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
         val refs    = Refs(events)
@@ -240,7 +240,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO],
         Issue.Undecodable(original.filename)
       ),
-      (IO.raiseError[PhotoStorage.ReadResult](error), PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO], Issue.Unexpected),
+      (error.raiseError[IO, PhotoStorage.ReadResult], PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO], Issue.Unexpected),
       (
         PhotoStorage.ReadResult.Read(content, metadata.copy(hash = "changed")).pure[IO],
         PhotoThumbnailGenerator.GenerationResult.Failed(error).pure[IO],
@@ -277,9 +277,9 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
     val rejected    = PhotoRepository.WriteResult.Failed.pure[IO]
     val failures    = Vector(
       (storage = ThumbnailStorage.StoreResult.Failed(error).pure[IO], writing = rejected, primary = Issue.Storage),
-      (storage = IO.raiseError[ThumbnailStorage.StoreResult](error), writing = rejected, primary = Issue.Storage),
+      (storage = error.raiseError[IO, ThumbnailStorage.StoreResult], writing = rejected, primary = Issue.Storage),
       (storage = storedImage, writing = rejected, primary = Issue.Persistence),
-      (storage = storedImage, writing = IO.raiseError[PhotoRepository.WriteResult](error), primary = Issue.Persistence)
+      (storage = storedImage, writing = error.raiseError[IO, PhotoRepository.WriteResult], primary = Issue.Persistence)
     )
     val outcomes = Vector(
       Vector.empty[PhotoWriteRecovery.Issue],
@@ -352,7 +352,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
 
   test("should preserve absent photos when a retirement identity cannot be allocated"):
     Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
-      val manager = buildManager(Refs(events), discovery = absent.pure[IO], nextId = IO.raiseError[UUID](error))
+      val manager = buildManager(Refs(events), discovery = absent.pure[IO], nextId = error.raiseError[IO, UUID])
 
       for
         result <- manager.refresh(chapter, original.source)
@@ -362,7 +362,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         assertEquals(actual, Vector("transaction"))
 
   test("should reject publication before storing media when its durable evidence cannot be recorded"):
-    Vector(PhotoRepository.RecordWriteResult.Failed.pure[IO], IO.raiseError[PhotoRepository.RecordWriteResult](error)).traverse_ { recording =>
+    Vector(PhotoRepository.RecordWriteResult.Failed.pure[IO], error.raiseError[IO, PhotoRepository.RecordWriteResult]).traverse_ { recording =>
       Ref.of[IO, Vector[String]](Vector.empty).flatMap: events =>
         val noEvidence = buildManager(Refs(events), existingPhotos = Vector.empty[Photo], recording = recording)
 
@@ -404,7 +404,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
       nextId: IO[UUID] = new UUID(0L, 9L).pure[IO],
       maybeFound: Option[IO[PhotoRepository.FindResult]] = None,
       caption: IO[PhotoRepository.SaveCaptionResult] =
-        IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
+        new AssertionError("Unexpected caption mutation").raiseError[IO, PhotoRepository.SaveCaptionResult]
   ) =
     val events = refs.events
     given IdGenerator[IO] with
@@ -419,11 +419,11 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         refs.originals.update(_ :+ location) >> events.update(_ :+ "read") >> readResult
     val thumbnailStorage = new ThumbnailStorage[IO]:
       override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
-        IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected thumbnail read"))
+        new AssertionError("Unexpected thumbnail read").raiseError[IO, ThumbnailStorage.ReadResult]
       override def storeThumbnail(location: ThumbnailLocation, value: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
         refs.thumbnails.update(_.appended((location = location, image = value))) >> events.update(_ :+ "store") >> storage
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-        IO.raiseError[ThumbnailStorage.RemoveResult](new AssertionError("Unexpected cleanup outside recovery"))
+        new AssertionError("Unexpected cleanup outside recovery").raiseError[IO, ThumbnailStorage.RemoveResult]
     val writePhoto  = save
     val removePhoto = remove
     val repository  = new PhotoRepository[Db]:
@@ -448,7 +448,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
           IO,
           Unit,
           PhotoRepository.CompleteWriteResult
-        ](IO.raiseError[PhotoRepository.CompleteWriteResult](new AssertionError("Unexpected completion outside recovery")))
+        ](new AssertionError("Unexpected completion outside recovery").raiseError[IO, PhotoRepository.CompleteWriteResult])
       override def listUnfinishedWrites: Db[PhotoRepository.ListUnfinishedWritesResult] =
         Kleisli.liftF[IO, Unit, PhotoRepository.ListUnfinishedWritesResult](PhotoRepository.ListUnfinishedWritesResult.Failed.pure[IO])
     val selectedQuality = quality
@@ -458,7 +458,7 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
         refs.generated.update(_ :+ value) >> events.update(_ :+ "generate") >> generation
     val recovery = new PhotoWriteRecovery[IO]:
       override def recover: IO[PhotoWriteRecovery.RecoveryResult] =
-        IO.raiseError[PhotoWriteRecovery.RecoveryResult](new AssertionError("Unexpected startup recovery"))
+        new AssertionError("Unexpected startup recovery").raiseError[IO, PhotoWriteRecovery.RecoveryResult]
       override def resolve(intent: PhotoWriteIntent): IO[PhotoWriteRecovery.RecoveryResult] =
         refs.finalized.update(_ :+ intent) >> events.update(_ :+ "resolve") >> finalization
     PhotoManager.make(photoStorage, thumbnailStorage, repository, generator, recovery)

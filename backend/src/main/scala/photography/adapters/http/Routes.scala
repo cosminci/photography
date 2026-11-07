@@ -38,9 +38,9 @@ object Routes:
             case Protection.OwnSpread(_) | Protection.OwnAlbumOpening(_) | Protection.OwnChapterOpening(_, _) =>
               requiredId(request, "X-Editor-Grant").map(value => GrantId(value).some)
             case Protection.ChangeSpreads(_) | Protection.OwnPhotoSpread(_, _) => optionalId(request, "X-Editor-Grant").map(_.map(GrantId(_)))
-          (readConnection(request), grant).tupled.fold(
-            message => Response[F](Status.BadRequest).withEntity(Map("code" -> message)).pure[F],
-            { case (connection, maybeGrant) =>
+          (readConnection(request), grant).tupled match
+            case Left(message)                   => Response[F](Status.BadRequest).withEntity(Map("code" -> message)).pure[F]
+            case Right((connection, maybeGrant)) =>
               route.decode.flatMap:
                 case Left(response) => response.pure[F]
                 case Right(value)   =>
@@ -62,8 +62,6 @@ object Routes:
                         "ownerId" -> owner.value.toString,
                         "alias"   -> alias
                       ))
-            }
-          )
     val routes: HttpRoutes[F] = Kleisli(request => OptionT(definitions.routes.lift(request).traverse(route => serve(request, route))))
     val uncached              = preventCaching(routes)
     Kleisli(request => if request.pathInfo.segments.headOption.exists(_.decoded() === "api") then uncached(request) else routes(request))

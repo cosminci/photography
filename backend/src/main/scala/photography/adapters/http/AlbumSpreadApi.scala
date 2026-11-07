@@ -56,17 +56,17 @@ object AlbumSpreadApi:
       Route(
         Routes.Access.Editor(Protection.OwnSpread(EditingTarget.Spread(spread))),
         parsed,
-        { case (template, confirm) =>
-          spreads.changeTemplate(album, spread, template, confirmPlacements = confirm).flatMap:
-            case ChangeTemplateResult.Changed(id, layout) =>
-              Ok(Json.obj("id" -> Json.fromString(id.value.toString), "templateId" -> Json.fromString(layout.value.toString)))
-            case ChangeTemplateResult.Occupied(placements) => Conflict(encodeOccupied(placements))
-            case ChangeTemplateResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
-            case ChangeTemplateResult.AlbumNotFound        => albumNotFound
-            case ChangeTemplateResult.SpreadNotFound       => notFound("spread_not_found")
-            case ChangeTemplateResult.Failed               => serviceFailure
-        }
+        (template, confirm) => spreads.changeTemplate(album, spread, template, confirmPlacements = confirm).flatMap(respondTemplateChange)
       )
+
+    private def respondTemplateChange(result: ChangeTemplateResult) = result match
+      case ChangeTemplateResult.Changed(id, layout) =>
+        Ok(Json.obj("id" -> Json.fromString(id.value.toString), "templateId" -> Json.fromString(layout.value.toString)))
+      case ChangeTemplateResult.Occupied(placements) => Conflict(encodeOccupied(placements))
+      case ChangeTemplateResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
+      case ChangeTemplateResult.AlbumNotFound        => albumNotFound
+      case ChangeTemplateResult.SpreadNotFound       => notFound("spread_not_found")
+      case ChangeTemplateResult.Failed               => serviceFailure
 
     private def delete(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String]) =
       val parsed = parseConfirmation(maybeValue = maybeConfirm).fold(

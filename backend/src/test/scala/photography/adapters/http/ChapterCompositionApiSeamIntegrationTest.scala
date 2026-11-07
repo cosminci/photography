@@ -134,7 +134,7 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def buildManager(refs: Refs, result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
     override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
-      IO.raiseError[SpreadManager.SetBleedResult](new AssertionError("Unexpected bleed change"))
+      new AssertionError("Unexpected bleed change").raiseError[IO, SpreadManager.SetBleedResult]
     override def replaceChapterOrder(
         id: AlbumId,
         target: ChapterId,
@@ -143,24 +143,24 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
     ): IO[ReplacementResult] =
       refs.orders.update(_ :+ OrderCall(id, target, previous, order)).as(result)
     override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
-      IO.raiseError[AddResult](new AssertionError("Unexpected add"))
+      new AssertionError("Unexpected add").raiseError[IO, AddResult]
     override def changeTemplate(
         album: AlbumId,
         spread: SpreadId,
         template: SpreadTemplateId,
         confirmPlacements: Boolean
     ): IO[ChangeTemplateResult] =
-      IO.raiseError[ChangeTemplateResult](new AssertionError("Unexpected template change"))
+      new AssertionError("Unexpected template change").raiseError[IO, ChangeTemplateResult]
     override def delete(
         album: AlbumId,
         spread: SpreadId,
         confirmPlacements: Boolean
     ): IO[DeleteResult] =
-      IO.raiseError[DeleteResult](new AssertionError("Unexpected deletion"))
+      new AssertionError("Unexpected deletion").raiseError[IO, DeleteResult]
     override def readPlacements(album: AlbumId, spread: SpreadId): IO[PlacementReadResult] =
-      IO.raiseError[PlacementReadResult](new AssertionError("Unexpected placement read"))
+      new AssertionError("Unexpected placement read").raiseError[IO, PlacementReadResult]
     override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
-      IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
+      new AssertionError("Unexpected placement edit").raiseError[IO, PlacementResult]
 
   private def buildAccess(refs: Refs): EditingAccess[IO] = new EditingAccess[IO]:
     override def run[A](

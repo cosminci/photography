@@ -539,10 +539,12 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       used    <- secondManager.editPlacements(album.id, second.id, Edit.Place(second.photoSlots.head.id, photo))
       effects <- refs.effects.get
     yield
+      val saved       = outcomes.count { case PlacementResult.Saved(_) => true; case _ => false }
+      val alreadyUsed = outcomes.count { case PlacementResult.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }
       assertEquals(foreignResult, PlacementResult.Rejected(Failure.PhotoNotInCollection))
       assertEquals(missingPhoto, PlacementResult.Rejected(Failure.PhotoNotInCollection))
-      assertEquals(outcomes.count { case PlacementResult.Saved(_) => true; case _ => false }, 1)
-      assertEquals(outcomes.count { case PlacementResult.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }, 1)
+      assertEquals(saved, 1)
+      assertEquals(alreadyUsed, 1)
       assertEquals(used, PlacementResult.Rejected(Failure.PhotoAlreadyUsed))
       assertEquals(
         effects,
@@ -774,15 +776,15 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def generateId: IO[UUID] = next.getAndUpdate(_ + 1L).map(buildUuid)
     val templates = new SpreadTemplateRepository[IO]:
       override def listAlbumStartTemplates: IO[SpreadTemplateRepository.ListAlbumStartTemplatesResult] =
-        IO.raiseError[SpreadTemplateRepository.ListAlbumStartTemplatesResult](new AssertionError("Unexpected album templates"))
+        new AssertionError("Unexpected album templates").raiseError[IO, SpreadTemplateRepository.ListAlbumStartTemplatesResult]
       override def listChapterStartTemplates: IO[SpreadTemplateRepository.ListChapterStartTemplatesResult] =
-        IO.raiseError[SpreadTemplateRepository.ListChapterStartTemplatesResult](new AssertionError("Unexpected chapter templates"))
+        new AssertionError("Unexpected chapter templates").raiseError[IO, SpreadTemplateRepository.ListChapterStartTemplatesResult]
       override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+        new AssertionError("Unexpected photo templates").raiseError[IO, SpreadTemplateRepository.ListPhotosOnlyTemplatesResult]
       override def findTemplate(id: SpreadTemplateId): IO[FindTemplateResult] = maybeTemplateResult.getOrElse(resolveCatalog(id)).pure[IO]
     val composition = new AlbumCompositionRepository[IO]:
       override def hasAlbum(value: AlbumId): IO[Boolean] =
-        maybeReadError.fold(maybeAlbum.exists(_.id.value === value.value).pure[IO])(error => IO.raiseError[Boolean](error))
+        maybeReadError.fold(maybeAlbum.exists(_.id.value === value.value).pure[IO])(error => error.raiseError[IO, Boolean])
       override def countInteriorSpreads(value: AlbumId): IO[Int] =
         maybeAlbum.filter(_.id.value === value.value).fold(0)(_.collectSpreads.length).pure[IO]
       override def findChapterOrder(value: AlbumId, chapterId: ChapterId): IO[Option[NonEmptyList[SpreadId]]] =
@@ -790,7 +792,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
           maybeAlbum.filter(_.id.value === value.value).flatMap(_.chapters.find(_.id.value === chapterId.value)).map: chapter =>
             NonEmptyList(chapter.opening.id, tail = chapter.spreads.map(_.id).toList)
         maybeReadError match
-          case Some(error) => IO.raiseError[Option[NonEmptyList[SpreadId]]](error)
+          case Some(error) => error.raiseError[IO, Option[NonEmptyList[SpreadId]]]
           case None        => orderReads.getOrElse(saved)
       override def findSpread(value: AlbumId, id: SpreadId): IO[AlbumCompositionRepository.SpreadResult] =
         val saved = located.find(
@@ -799,7 +801,7 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
           AlbumCompositionRepository.SpreadResult.Found(_)
         )
         spreadReads.getOrElse(saved.pure[IO])
-    val writes     = maybeWriteError.fold(IO.unit)(error => IO.raiseError[Unit](error))
+    val writes     = maybeWriteError.fold(IO.unit)(error => error.raiseError[IO, Unit])
     val repository = new SpreadRepository[IO]:
       override def insert(chapterId: ChapterId, spread: Spread.PhotosOnly): IO[Unit] =
         refs.inserts.update(_ :+ (chapterId, spread)) >> writes
@@ -814,10 +816,10 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       override def remove(spread: SpreadId): IO[Unit] = refs.removals.update(_ :+ spread) >> writes
     val placements = new PhotoPlacementRepository[IO]:
       override def findPlacedPhotos(id: ChapterId): IO[PhotoPlacementRepository.FindResult] =
-        IO.raiseError[PhotoPlacementRepository.FindResult](new AssertionError("Unexpected inventory"))
+        new AssertionError("Unexpected inventory").raiseError[IO, PhotoPlacementRepository.FindResult]
       override def inspect(owner: AlbumId, maybeChapter: Option[ChapterId], photo: PhotoId): IO[PhotoPlacementRepository.InspectResult] =
         refs.effects.update(_ :+ Effect.Inspect(owner, maybeChapter, photo)) >>
-          maybeInspectionError.fold(inspection)(IO.raiseError[PhotoPlacementRepository.InspectResult])
+          maybeInspectionError.fold(inspection)(_.raiseError[IO, PhotoPlacementRepository.InspectResult])
     Mutex[IO].map: mutex =>
       given transaction: Transaction[IO, IO] with
         override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)

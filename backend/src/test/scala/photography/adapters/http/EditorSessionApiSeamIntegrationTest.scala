@@ -29,7 +29,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     "Cosmin",
     0.seconds,
     30.seconds,
-    Some(activeConnection),
+    activeConnection.some,
     TargetRevision.initial
   )
 
@@ -47,7 +47,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(body, Json.obj("code" -> Json.fromString("credential_required")))
       assertEquals(
         events.filter(_.eventType.nonEmpty),
-        Vector(ServerSentEvent(data = Some("""{"code":"stale_session"}"""), eventType = Some("session_lost")))
+        Vector(ServerSentEvent(data = """{"code":"stale_session"}""".some, eventType = "session_lost".some))
       )
 
   test("should encode a blocked binding without exposing credentials or acquiring a stream"):
@@ -109,7 +109,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(malformedBodyJson, Json.obj("code" -> Json.fromString("invalid_registration")))
       assertEquals(missingStream.status, Status.BadRequest)
       assertEquals(missingStreamJson, Json.obj("code" -> Json.fromString("missing_credentials")))
-      assertEquals(missingStream.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+      assertEquals(missingStream.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
       assertEquals(duplicate.status, Status.BadRequest)
       assertEquals(duplicateJson, invalidCredentials)
 
@@ -148,7 +148,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           assertEquals(departure.status, Status.Conflict)
           assertEquals(departureBody, expected)
           assertEquals(events.flatMap(_.eventType), Vector("bound", "session_lost"))
-          assertEquals(events.flatMap(_.data).lastOption, Some(expected.noSpaces))
+          assertEquals(events.flatMap(_.data).lastOption, expected.noSpaces.some)
       }
   }
 
@@ -157,7 +157,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       val sessionId  = SessionId(new UUID(0L, 10L))
       val connection = EditorConnection(sessionId, TabId(UUID.fromString(tab)), ConnectionGeneration(new UUID(0L, 11L)))
       val session    =
-        EditorSession(sessionId, EditorId(UUID.fromString(owner)), alias = "Cosmin", 0.seconds, 30.seconds, Some(connection), TargetRevision.initial)
+        EditorSession(sessionId, EditorId(UUID.fromString(owner)), alias = "Cosmin", 0.seconds, 30.seconds, connection.some, TargetRevision.initial)
       val binding = Json.obj(
         "sessionId"  -> Json.fromString(sessionId.value.toString),
         "tabId"      -> Json.fromString(tab),
@@ -186,7 +186,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         departureBody <- departure.as[Json]
         after         <- refs.get
       yield
-        val expectedBefore = Calls(Vector((session.owner, session.alias, Some(sessionId))), Vector.empty, Vector.empty, Vector.empty, Vector.empty)
+        val expectedBefore = Calls(Vector((session.owner, session.alias, sessionId.some)), Vector.empty, Vector.empty, Vector.empty, Vector.empty)
         val expectedAfter  = expectedBefore.copy(
           bindings = Vector((sessionId, connection.tab)),
           reads = Vector(connection, connection),
@@ -200,21 +200,21 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(heartbeat.status, Status.Ok)
         assertEquals(renamed.status, Status.Ok)
         assertEquals(renamedBody, registeredBody.deepMerge(Json.obj("alias" -> Json.fromString("Mara"))))
-        assertEquals(renamed.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+        assertEquals(renamed.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
         assertEquals(invalidNames, Vector.fill(3)(Status.BadRequest))
         assertEquals(departure.status, Status.Ok)
         assertEquals(departureBody, Json.obj("released" -> Json.True))
-        assertEquals(departure.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+        assertEquals(departure.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
         assertEquals(elapsed, 1.second)
-        assertEquals(response.contentType.map(_.mediaType), Some(MediaType.`text/event-stream`))
-        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
-        assertEquals(response.headers.get(CIString("X-Accel-Buffering")).map(_.head.value), Some("no"))
+        assertEquals(response.contentType.map(_.mediaType), MediaType.`text/event-stream`.some)
+        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
+        assertEquals(response.headers.get(CIString("X-Accel-Buffering")).map(_.head.value), "no".some)
         assertEquals(
           events,
           Vector(
-            ServerSentEvent(data = Some(binding.noSpaces), eventType = Some("bound")),
-            ServerSentEvent(data = Some("{}"), eventType = Some("ownership_changed")),
-            ServerSentEvent(comment = Some("heartbeat"))
+            ServerSentEvent(data = binding.noSpaces.some, eventType = "bound".some),
+            ServerSentEvent(data = "{}".some, eventType = "ownership_changed".some),
+            ServerSentEvent(comment = "heartbeat".some)
           )
         )
     }
@@ -251,8 +251,8 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
 
   private def registerSession(manager: EditorSessionManager[IO]) =
     manager.register(EditorId(UUID.fromString(owner)), alias = "Cosmin", maybeSession = None).flatMap {
-      case RegisterResult.Ready(session) => IO.pure(session)
-      case _                             => IO.raiseError[EditorSession](new AssertionError("Expected registered session"))
+      case RegisterResult.Ready(session) => session.pure[IO]
+      case _                             => new AssertionError("Expected registered session").raiseError[IO, EditorSession]
     }
 
   private def buildManager =
@@ -260,14 +260,14 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       .map(refs => buildService(refs, registeredSession, RegisterResult.Ready(registeredSession), BindResult.Active(activeConnection)))
 
   private def rejectRequests(manager: EditorSessionManager[IO], failure: Failure) = new EditorSessionManager[IO]:
-    override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult]           = IO.pure(RenameResult.Rejected(failure))
+    override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult]           = RenameResult.Rejected(failure).pure[IO]
     override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] = manager.authorizeConnection(connection)
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
       manager.register(owner, alias, maybeSession)
     override def bind(session: SessionId, tab: TabId): IO[BindResult]                              = manager.bind(session, tab)
-    override def unbind(connection: EditorConnection): IO[UnbindResult]                            = IO.pure(UnbindResult.Rejected(failure))
-    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult]                      = IO.pure(HeartbeatResult.Rejected(failure))
-    override def read(connection: EditorConnection): IO[ReadResult]                                = IO.pure(ReadResult.Rejected(failure))
+    override def unbind(connection: EditorConnection): IO[UnbindResult]                            = UnbindResult.Rejected(failure).pure[IO]
+    override def heartbeat(connection: EditorConnection): IO[HeartbeatResult]                      = HeartbeatResult.Rejected(failure).pure[IO]
+    override def read(connection: EditorConnection): IO[ReadResult]                                = ReadResult.Rejected(failure).pure[IO]
     override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
       Stream.emit(OwnershipChangeResult.Rejected(failure))
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
@@ -289,7 +289,7 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       override def rename(connection: EditorConnection, alias: EditorAlias): IO[RenameResult] =
         refs.update(calls => calls.copy(reads = calls.reads :+ connection)).as(RenameResult.Renamed(session.copy(alias = alias)))
       override def authorizeConnection(connection: EditorConnection): IO[ConnectionAuthorizationResult] =
-        IO.raiseError[ConnectionAuthorizationResult](new AssertionError("Unexpected connection admission"))
+        new AssertionError("Unexpected connection admission").raiseError[IO, ConnectionAuthorizationResult]
       override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): IO[RegisterResult] =
         refs.update(calls => calls.copy(registrations = calls.registrations :+ (owner, alias, maybeSession))).as(registration)
       override def bind(session: SessionId, tab: TabId): IO[BindResult] =
@@ -303,17 +303,17 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
       override def ownershipChanges(connection: EditorConnection): Stream[IO, OwnershipChangeResult] =
         Stream.emit(OwnershipChangeResult.Changed) ++ Stream.never[IO]
       override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): IO[SelectResult] =
-        IO.raiseError[SelectResult](new AssertionError("Unexpected target selection"))
+        new AssertionError("Unexpected target selection").raiseError[IO, SelectResult]
       override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): IO[ReleaseResult] =
-        IO.raiseError[ReleaseResult](new AssertionError("Unexpected target release"))
+        new AssertionError("Unexpected target release").raiseError[IO, ReleaseResult]
       override def renewTarget(connection: EditorConnection, grant: GrantId): IO[RenewTargetResult] =
-        IO.raiseError[RenewTargetResult](new AssertionError("Unexpected target renewal"))
+        new AssertionError("Unexpected target renewal").raiseError[IO, RenewTargetResult]
       override def readTarget(connection: EditorConnection): IO[ReadTargetResult] =
-        IO.raiseError[ReadTargetResult](new AssertionError("Unexpected target read"))
+        new AssertionError("Unexpected target read").raiseError[IO, ReadTargetResult]
       override def authorizeTarget(connection: EditorConnection, target: EditingTarget, grant: GrantId): IO[AuthorizationResult] =
-        IO.raiseError[AuthorizationResult](new AssertionError("Unexpected target admission"))
+        new AssertionError("Unexpected target admission").raiseError[IO, AuthorizationResult]
       override def authorizeAffected(
           connection: EditorConnection,
           targets: Set[EditingTarget],
           maybeGrant: Option[GrantId]
-      ): IO[AuthorizationResult] = IO.raiseError[AuthorizationResult](new AssertionError("Unexpected shared admission"))
+      ): IO[AuthorizationResult] = new AssertionError("Unexpected shared admission").raiseError[IO, AuthorizationResult]

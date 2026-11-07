@@ -52,7 +52,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         yield
           assertEquals(response.status, Status.BadRequest)
           assertEquals(body, Json.obj("code" -> Json.fromString(code)))
-          assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+          assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
       }
       before <- decoded.get
       invalidBody = Routes.make(access)(buildRoutes(protection, Response[IO](Status.UnprocessableContent).asLeft[Unit].pure[IO])).orNotFound
@@ -65,19 +65,19 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(rejected.status, Status.UnprocessableContent)
       assertEquals(untouched, Vector.empty)
       assertEquals(saved.status, Status.Ok)
-      assertEquals(admitted, Vector((connection, protection, Some(grant))))
-      assertEquals(rejected.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
-      assertEquals(saved.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+      assertEquals(admitted, Vector((connection, protection, grant.some)))
+      assertEquals(rejected.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
+      assertEquals(saved.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
 
   Vector(
-    (Protection.ActiveTab, none[GrantId], Some("invalid"), Status.Ok),
-    (Protection.ChangeSpreads(Set.empty), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.ActiveTab, none[GrantId], "invalid".some, Status.Ok),
+    (Protection.ChangeSpreads(Set.empty), grant.some, grant.value.toString.some, Status.Ok),
     (Protection.ChangeSpreads(Set.empty), none[GrantId], none[String], Status.Ok),
-    (Protection.ChangeSpreads(Set.empty), none[GrantId], Some("invalid"), Status.BadRequest),
-    (Protection.OwnAlbumOpening(AlbumId(new UUID(0L, 5L))), Some(grant), Some(grant.value.toString), Status.Ok),
-    (Protection.OwnChapterOpening(AlbumId(new UUID(0L, 5L)), ChapterId(new UUID(0L, 6L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.ChangeSpreads(Set.empty), none[GrantId], "invalid".some, Status.BadRequest),
+    (Protection.OwnAlbumOpening(AlbumId(new UUID(0L, 5L))), grant.some, grant.value.toString.some, Status.Ok),
+    (Protection.OwnChapterOpening(AlbumId(new UUID(0L, 5L)), ChapterId(new UUID(0L, 6L))), grant.some, grant.value.toString.some, Status.Ok),
     (Protection.OwnChapterOpening(AlbumId(new UUID(0L, 5L)), ChapterId(new UUID(0L, 6L))), none[GrantId], none[String], Status.BadRequest),
-    (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), Some(grant), Some(grant.value.toString), Status.Ok),
+    (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), grant.some, grant.value.toString.some, Status.Ok),
     (Protection.OwnPhotoSpread(ChapterId(new UUID(0L, 5L)), PhotoId(new UUID(0L, 6L))), none[GrantId], none[String], Status.Ok)
   ).foreach { case (protection, maybeGrant, supplied, status) =>
     test(s"should forward $protection with grant header $supplied without implementing its authorization policy"):
@@ -135,7 +135,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
       yield
         assertEquals(response.status, status)
         assertEquals(body, expected)
-        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
+        assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
   }
 
   test("should leave public and unmatched routes outside admission, preserving public decode failures"):
@@ -148,7 +148,7 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
             Routes.Route(
               Routes.Access.Public,
               Response[IO](Status.BadRequest).asLeft[Unit].pure[IO],
-              (_: Unit) => IO.raiseError[Response[IO]](new AssertionError("Invalid body reached handler"))
+              (_: Unit) => new AssertionError("Invalid body reached handler").raiseError[IO, Response[IO]]
             )
       server = Routes.make(buildAccess(calls, Result.Failed[Unit]()))(definitions).orNotFound
       read     <- server.run(Request[IO](uri = Uri.unsafeFromString("/api/read")))

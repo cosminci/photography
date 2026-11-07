@@ -97,7 +97,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
           case _                           => fail("Missing session")
         assertEquals(renamed, RenameResult.Renamed(expectedSession))
         assertEquals(current, ReadResult.Current(expectedSession))
-        assertEquals(grant, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(grant, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
         assertEquals(obsolete, RenameResult.Rejected(Failure.ObsoleteConnection))
         assertEquals(expired, RenameResult.Rejected(Failure.StaleSession))
     }
@@ -112,8 +112,8 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         session    <- requireSession(registered)
         _          <- IO.sleep(20.seconds)
         denied     <- manager.register(owner, alias, maybeSession = None)
-        mismatched <- manager.register(owner, alias, maybeSession = Some(wrong))
-        resumed    <- manager.register(owner, alias, maybeSession = Some(session.id))
+        mismatched <- manager.register(owner, alias, maybeSession = wrong.some)
+        resumed    <- manager.register(owner, alias, maybeSession = session.id.some)
         _          <- IO.sleep(10.seconds)
         expired    <- manager.bind(session.id, tab)
       yield
@@ -154,7 +154,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         assertEquals(oldHeartbeat, HeartbeatResult.Rejected(Failure.ObsoleteConnection))
         assertEquals(oldCleanup, UnbindResult.Rejected(Failure.ObsoleteConnection))
         assertEquals(duplicateResult, BindResult.Blocked(owner, alias))
-        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(second))))
+        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = second.some)))
         assertEquals(expired, HeartbeatResult.Rejected(Failure.StaleSession))
     }
 
@@ -167,7 +167,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         connection <- manager.bind(session.id, tab).flatMap(requireConnection)
         _          <- IO.sleep(20.seconds)
         released   <- manager.unbind(connection)
-        resumed    <- manager.register(owner, alias, maybeSession = Some(session.id))
+        resumed    <- manager.register(owner, alias, maybeSession = session.id.some)
         _          <- IO.sleep(5.seconds)
         reloaded   <- manager.bind(session.id, duplicate).flatMap(requireConnection)
         current    <- manager.read(reloaded)
@@ -177,7 +177,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       yield
         assertEquals(released, UnbindResult.Released)
         assertEquals(resumed, RegisterResult.Ready(session.copy(maybeConnection = None)))
-        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(reloaded))))
+        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = reloaded.some)))
         assertEquals(old, HeartbeatResult.Rejected(Failure.ObsoleteConnection))
         assertEquals(expired, HeartbeatResult.Rejected(Failure.StaleSession))
     }
@@ -194,7 +194,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
           result     <- manager.heartbeat(connection)
         yield
           if elapsed < 30.seconds then
-            val renewed = session.copy(lastHeartbeat = elapsed, expiresAt = elapsed + 30.seconds, maybeConnection = Some(connection))
+            val renewed = session.copy(lastHeartbeat = elapsed, expiresAt = elapsed + 30.seconds, maybeConnection = connection.some)
             assertEquals(result, HeartbeatResult.Alive(renewed))
           else assertEquals(result, HeartbeatResult.Rejected(Failure.StaleSession))
       }
@@ -213,10 +213,10 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         alive       <- manager.read(connection)
         _           <- IO.sleep(10.seconds)
         expired     <- manager.heartbeat(connection)
-        replacement <- manager.register(owner, alias, maybeSession = Some(session.id)).flatMap(requireSession)
+        replacement <- manager.register(owner, alias, maybeSession = session.id.some).flatMap(requireSession)
         oldCleanup  <- manager.unbind(connection)
       yield
-        val expected = session.copy(lastHeartbeat = 20.seconds, expiresAt = 50.seconds, maybeConnection = Some(connection))
+        val expected = session.copy(lastHeartbeat = 20.seconds, expiresAt = 50.seconds, maybeConnection = connection.some)
         assertEquals(renewed, HeartbeatResult.Alive(expected))
         assertEquals(alive, ReadResult.Current(expected))
         assertEquals(expired, HeartbeatResult.Rejected(Failure.StaleSession))
@@ -233,7 +233,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       restarted   <- buildManager()
       oldRead     <- restarted.read(connection)
       oldBind     <- restarted.bind(session.id, tab)
-      replacement <- restarted.register(owner, alias, maybeSession = Some(session.id)).flatMap(requireSession)
+      replacement <- restarted.register(owner, alias, maybeSession = session.id.some).flatMap(requireSession)
     yield
       assertEquals(oldRead, ReadResult.Rejected(Failure.StaleSession))
       assertEquals(oldBind, BindResult.StaleSession)
@@ -309,13 +309,13 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
             outcome <- pending.join
           yield outcome
         }
-        retained <- manager.register(owner, alias, maybeSession = Some(session.id))
+        retained <- manager.register(owner, alias, maybeSession = session.id.some)
         accepted <- manager.bind(session.id, duplicate).flatMap(requireConnection)
         current  <- manager.read(accepted)
       yield
         assertEquals(canceled, Outcome.Canceled[IO, Throwable, BindResult]())
         assertEquals(retained, RegisterResult.Ready(session))
-        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(accepted))))
+        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = accepted.some)))
     }
 
   test("should release shared coordination when connection identity generation is canceled"):
@@ -326,9 +326,9 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         calls      <- Ref.of[IO, Int](0)
         identity = new IdGenerator[IO]:
           override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
-            case 0 => IO.pure(new UUID(0L, 101L))
+            case 0 => new UUID(0L, 101L).pure[IO]
             case 1 => generating.complete(()).void *> IO.never[UUID]
-            case _ => IO.pure(new UUID(0L, 102L))
+            case _ => new UUID(0L, 102L).pure[IO]
           }
         manager    <- buildCoordinatedManager(mutex, identity)
         registered <- manager.register(owner, alias, maybeSession = None)
@@ -338,7 +338,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         _          <- pending.cancel
         canceled   <- pending.join
         _          <- mutex.lock.use(_ => IO.unit)
-        retained   <- manager.register(owner, alias, maybeSession = Some(session.id))
+        retained   <- manager.register(owner, alias, maybeSession = session.id.some)
         accepted   <- manager.bind(session.id, duplicate).flatMap(requireConnection)
         current    <- manager.read(accepted)
       yield
@@ -346,7 +346,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         assertEquals(canceled, Outcome.Canceled[IO, Throwable, BindResult]())
         assertEquals(retained, RegisterResult.Ready(session))
         assertEquals(accepted, expected)
-        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(expected))))
+        assertEquals(current, ReadResult.Current(session.copy(maybeConnection = expected.some)))
     }
 
   test("should retain unbound authority and release coordination when identity generation fails"):
@@ -357,16 +357,16 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       calls <- Ref.of[IO, Int](0)
       identity = new IdGenerator[IO]:
         override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
-          case 0 => IO.pure(new UUID(0L, 103L))
-          case 1 => IO.raiseError[UUID](unavailable)
-          case _ => IO.pure(new UUID(0L, 104L))
+          case 0 => new UUID(0L, 103L).pure[IO]
+          case 1 => unavailable.raiseError[IO, UUID]
+          case _ => new UUID(0L, 104L).pure[IO]
         }
       manager    <- buildCoordinatedManager(mutex, identity)
       registered <- manager.register(owner, alias, maybeSession = None)
       session    <- requireSession(registered)
       failed     <- manager.bind(session.id, tab).attempt
       _          <- mutex.lock.use(_ => IO.unit)
-      retained   <- manager.register(owner, alias, maybeSession = Some(session.id))
+      retained   <- manager.register(owner, alias, maybeSession = session.id.some)
       accepted   <- manager.bind(session.id, duplicate).flatMap(requireConnection)
     yield
       assertEquals(failed, unavailable.asLeft[BindResult])
@@ -406,9 +406,9 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       registered  <- manager.register(owner, alias, maybeSession = None)
       session     <- requireSession(registered)
       first       <- manager.bind(session.id, tab).flatMap(requireConnection)
-      uncertain   <- (manager.bind(session.id, tab) *> IO.raiseError[BindResult](lostAcknowledgement)).attempt
-      recovered   <- manager.register(owner, alias, maybeSession = Some(session.id)).flatMap(requireSession)
-      lost        <- recovered.maybeConnection.fold(IO.raiseError[EditorConnection](new AssertionError("Expected retained binding")))(IO.pure)
+      uncertain   <- (manager.bind(session.id, tab) *> lostAcknowledgement.raiseError[IO, BindResult]).attempt
+      recovered   <- manager.register(owner, alias, maybeSession = session.id.some).flatMap(requireSession)
+      lost        <- recovered.maybeConnection.fold(new AssertionError("Expected retained binding").raiseError[IO, EditorConnection])(_.pure[IO])
       reconciled  <- manager.read(lost)
       blocked     <- manager.bind(session.id, duplicate)
       successor   <- manager.bind(session.id, tab).flatMap(requireConnection)
@@ -419,11 +419,11 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(uncertain, lostAcknowledgement.asLeft[BindResult])
       assertNotEquals(lost.generation, first.generation)
       assertNotEquals(successor.generation, lost.generation)
-      assertEquals(reconciled, ReadResult.Current(session.copy(maybeConnection = Some(lost))))
+      assertEquals(reconciled, ReadResult.Current(session.copy(maybeConnection = lost.some)))
       assertEquals(blocked, BindResult.Blocked(owner, alias))
       assertEquals(oldCleanup, UnbindResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(lostCleanup, UnbindResult.Rejected(Failure.ObsoleteConnection))
-      assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(successor))))
+      assertEquals(current, ReadResult.Current(session.copy(maybeConnection = successor.some)))
 
   test("should reconcile lost release knowledge without replaying release against a new binding"):
     val lostAcknowledgement = new RuntimeException("Release acknowledgement lost")
@@ -433,8 +433,8 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       registered  <- manager.register(owner, alias, maybeSession = None)
       session     <- requireSession(registered)
       connection  <- manager.bind(session.id, tab).flatMap(requireConnection)
-      uncertain   <- (manager.unbind(connection) *> IO.raiseError[UnbindResult](lostAcknowledgement)).attempt
-      recovered   <- manager.register(owner, alias, maybeSession = Some(session.id))
+      uncertain   <- (manager.unbind(connection) *> lostAcknowledgement.raiseError[IO, UnbindResult]).attempt
+      recovered   <- manager.register(owner, alias, maybeSession = session.id.some)
       reloaded    <- manager.bind(session.id, duplicate).flatMap(requireConnection)
       lateRelease <- manager.unbind(connection)
       current     <- manager.read(reloaded)
@@ -442,7 +442,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(uncertain, lostAcknowledgement.asLeft[UnbindResult])
       assertEquals(recovered, RegisterResult.Ready(session.copy(maybeConnection = None)))
       assertEquals(lateRelease, UnbindResult.Rejected(Failure.ObsoleteConnection))
-      assertEquals(current, ReadResult.Current(session.copy(maybeConnection = Some(reloaded))))
+      assertEquals(current, ReadResult.Current(session.copy(maybeConnection = reloaded.some)))
 
   Vector(
     EditingTarget.Spread(SpreadId(new UUID(0L, 10L))),
@@ -471,14 +471,14 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
               val expectedLock    = EditingLock(target, first.session, lock.grant, 30.seconds)
               val expectedResults = (SelectResult.Owned(expectedLock, revision), SelectResult.Blocked(owner, alias, 30.seconds, revision))
               assertEquals(results, expectedResults)
-              assertEquals(firstState, ReadTargetResult.Current(revision, Some(expectedLock)))
+              assertEquals(firstState, ReadTargetResult.Current(revision, expectedLock.some))
               assertEquals(secondState, ReadTargetResult.Current(revision, None))
             case (_, SelectResult.Owned(lock, _)) =>
               val expectedLock    = EditingLock(target, second.session, lock.grant, 30.seconds)
               val expectedResults = (SelectResult.Blocked(otherOwner, otherAlias, 30.seconds, revision), SelectResult.Owned(expectedLock, revision))
               assertEquals(results, expectedResults)
               assertEquals(firstState, ReadTargetResult.Current(revision, None))
-              assertEquals(secondState, ReadTargetResult.Current(revision, Some(expectedLock)))
+              assertEquals(secondState, ReadTargetResult.Current(revision, expectedLock.some))
             case _ => fail(s"Expected one exact owner and one public contender: $results, $firstState, $secondState")
       }
   }
@@ -538,7 +538,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         assertEquals(fresh.expiresAt, 60.seconds)
         assertEquals(oldRelease, ReleaseResult.Rejected(Failure.StaleGrant))
         assertEquals(oldRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
-        assertEquals(current, ReadTargetResult.Current(freshRevision, Some(fresh)))
+        assertEquals(current, ReadTargetResult.Current(freshRevision, fresh.some))
     }
 
   test("should renew only the target and remove it when its session expires"):
@@ -586,7 +586,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(lateRenewal, RenewTargetResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(lateRelease, ReleaseResult.Rejected(Failure.ObsoleteConnection))
       assertEquals(lateRead, ReadTargetResult.Rejected(Failure.ObsoleteConnection))
-      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
       assertEquals(released, ReleaseResult.Released(TargetRevision.initial.next.next))
       assertEquals(replay, ReleaseResult.Rejected(Failure.StaleTransition))
       assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
@@ -598,27 +598,27 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
     for
       manager    <- buildManager()
       connection <- registerConnection(manager, owner, tab)
-      uncertain  <- (manager.select(connection, TargetRevision.initial, target) *> IO.raiseError[SelectResult](lostAcknowledgement)).attempt
+      uncertain  <- (manager.select(connection, TargetRevision.initial, target) *> lostAcknowledgement.raiseError[IO, SelectResult]).attempt
       reconciled <- manager.readTarget(connection)
       lock       <- reconciled match
-        case ReadTargetResult.Current(_, Some(lock)) => IO.pure(lock)
-        case _                                       => IO.raiseError[EditingLock](new AssertionError("Expected retained acquisition"))
+        case ReadTargetResult.Current(_, Some(lock)) => lock.pure[IO]
+        case _                                       => new AssertionError("Expected retained acquisition").raiseError[IO, EditingLock]
       replay         <- manager.select(connection, TargetRevision.initial, target)
       unknownRelease <-
-      (manager.release(connection, TargetRevision.initial.next, lock.grant) *> IO.raiseError[ReleaseResult](lostAcknowledgement)).attempt
+      (manager.release(connection, TargetRevision.initial.next, lock.grant) *> lostAcknowledgement.raiseError[IO, ReleaseResult]).attempt
       released    <- manager.readTarget(connection)
       replacement <- manager.select(connection, TargetRevision.initial.next.next, target).flatMap(requireLock)
       lateRelease <- manager.release(connection, TargetRevision.initial.next, lock.grant)
       current     <- manager.readTarget(connection)
     yield
       assertEquals(uncertain, lostAcknowledgement.asLeft[SelectResult])
-      assertEquals(reconciled, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+      assertEquals(reconciled, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
       assertEquals(replay, SelectResult.Rejected(Failure.StaleTransition))
       assertEquals(unknownRelease, lostAcknowledgement.asLeft[ReleaseResult])
       assertEquals(released, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
       assertNotEquals(lock.grant, replacement.grant)
       assertEquals(lateRelease, ReleaseResult.Rejected(Failure.StaleTransition))
-      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, Some(replacement)))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, replacement.some))
 
   test("should replace even a same-target acquisition and reject another session's grant"):
     val target      = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
@@ -640,7 +640,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(stolenRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
       assertEquals(stolenRelease, ReleaseResult.Rejected(Failure.StaleGrant))
       assertEquals(staleRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
-      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, Some(switched)))
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, switched.some))
       assertEquals(switched.target, destination)
 
   test("should reject restarted authority and never retain a former target grant"):
@@ -677,7 +677,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         identity = new IdGenerator[IO]:
           override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
             case 3     => generating.complete(()).void *> IO.never[UUID]
-            case index => IO.pure(new UUID(0L, index.toLong + 100L))
+            case index => new UUID(0L, index.toLong + 100L).pure[IO]
           }
         manager    <- buildCoordinatedManager(mutex, identity)
         connection <- registerConnection(manager, owner, tab)
@@ -691,7 +691,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         accepted   <- manager.select(connection, TargetRevision.initial.next, destination).flatMap(requireLock)
       yield
         assertEquals(canceled, Outcome.Canceled[IO, Throwable, SelectResult]())
-        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
         assertEquals(accepted.target, destination)
         assertNotEquals(accepted.grant, lock.grant)
     }
@@ -731,7 +731,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
             val expectedLock    = EditingLock(target, second.session, acquired.grant, 60.seconds)
             val expectedResults = (RenewTargetResult.Rejected(Failure.StaleGrant), SelectResult.Owned(expectedLock, TargetRevision.initial.next))
             assertEquals(results, expectedResults)
-            assertEquals(acquiredState, ReadTargetResult.Current(TargetRevision.initial.next, Some(expectedLock)))
+            assertEquals(acquiredState, ReadTargetResult.Current(TargetRevision.initial.next, expectedLock.some))
             assertEquals(revision, TargetRevision.initial.next)
             assertNotEquals(acquired.grant, lock.grant)
           case _ => fail(s"Expected expired renewal and a fresh acquisition: $results")
@@ -748,7 +748,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         identity = new IdGenerator[IO]:
           override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap { index =>
             val id = new UUID(0L, index.toLong + 100L)
-            if index === 2 then IO.sleep(30.seconds).as(id) else IO.pure(id)
+            if index === 2 then IO.sleep(30.seconds).as(id) else id.pure[IO]
           }
         manager    <- buildCoordinatedManager(mutex, identity)
         connection <- registerConnection(manager, owner, tab)
@@ -770,7 +770,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         identity = new IdGenerator[IO]:
           override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap { index =>
             val id = new UUID(0L, index.toLong + 100L)
-            if index === 3 then IO.sleep(10.seconds).as(id) else IO.pure(id)
+            if index === 3 then IO.sleep(10.seconds).as(id) else id.pure[IO]
           }
         manager    <- buildCoordinatedManager(mutex, identity)
         connection <- registerConnection(manager, owner, tab)
@@ -795,8 +795,8 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         calls <- Ref.of[IO, Int](0)
         identity = new IdGenerator[IO]:
           override def generateId: IO[UUID] = calls.getAndUpdate(_ + 1).flatMap {
-            case 3     => IO.raiseError[UUID](unavailable)
-            case index => IO.pure(new UUID(0L, index.toLong + 100L))
+            case 3     => unavailable.raiseError[IO, UUID]
+            case index => new UUID(0L, index.toLong + 100L).pure[IO]
           }
         manager    <- buildCoordinatedManager(mutex, identity)
         connection <- registerConnection(manager, owner, tab)
@@ -809,9 +809,9 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       yield
         val replacement = EditingLock(destination, connection.session, GrantId(new UUID(0L, 104L)), 30.seconds)
         assertEquals(failed, unavailable.asLeft[SelectResult])
-        assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
+        assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
         assertEquals(accepted, SelectResult.Owned(replacement, TargetRevision.initial.next.next))
-        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, Some(replacement)))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, replacement.some))
     }
 
   Vector(target, cover).foreach { destination =>
@@ -1009,8 +1009,8 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
     )
 
   private def requireLock(result: SelectResult) = result match
-    case SelectResult.Owned(lock, _) => IO.pure(lock)
-    case _                           => IO.raiseError[EditingLock](new AssertionError("Expected target ownership"))
+    case SelectResult.Owned(lock, _) => lock.pure[IO]
+    case _                           => new AssertionError("Expected target ownership").raiseError[IO, EditingLock]
 
   private def buildManager() =
     Mutex[IO].flatMap(mutex => buildCoordinatedManager(mutex, IdGenerator.make[IO]))
@@ -1021,9 +1021,9 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
     EditorSessionManager.make[IO](lease = 30L)
 
   private def requireSession(result: RegisterResult) = result match
-    case RegisterResult.Ready(session)     => IO.pure(session)
-    case RegisterResult.CredentialRequired => IO.raiseError[EditorSession](new AssertionError("Expected registered session"))
+    case RegisterResult.Ready(session)     => session.pure[IO]
+    case RegisterResult.CredentialRequired => new AssertionError("Expected registered session").raiseError[IO, EditorSession]
 
   private def requireConnection(result: BindResult) = result match
-    case BindResult.Active(connection) => IO.pure(connection)
-    case _                             => IO.raiseError[EditorConnection](new AssertionError("Expected active connection"))
+    case BindResult.Active(connection) => connection.pure[IO]
+    case _                             => new AssertionError("Expected active connection").raiseError[IO, EditorConnection]

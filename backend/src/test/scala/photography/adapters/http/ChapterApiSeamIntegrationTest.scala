@@ -101,7 +101,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         gearCalls    <- refs.gearCalls.get
         admissions   <- refs.admissions.get
       yield
-        assertEquals(response, (Status.NoContent, "", None, Some("no-store")))
+        assertEquals(response, (Status.NoContent, "", None, "no-store".some))
         assertEquals(descriptions, Vector(DescriptionCall(album.id, chapter.id, text = text)))
         assertEquals(otherCalls, Vector.empty[String])
         assertEquals(gearCalls, Vector.empty[GearCall])
@@ -128,7 +128,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
       yield
         assertEquals(
           response,
-          (scenario.status, Json.obj("code" -> Json.fromString(scenario.code)).noSpaces, MediaType.application.json.some, Some("no-store"))
+          (scenario.status, Json.obj("code" -> Json.fromString(scenario.code)).noSpaces, MediaType.application.json.some, "no-store".some)
         )
         assertEquals(descriptions, Vector(DescriptionCall(otherAlbum, chapter.id, text = "once")))
         assertEquals(otherCalls, Vector.empty[String])
@@ -140,7 +140,7 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
     val server        = buildApi(refs)
     val malformed     = Vector("{", "[]", "null", "{}", """{"text":null}""", """{"text":1}""", """{"text":[]}""")
     val checkPayloads = malformed.traverse_ { body =>
-      val expected = (Status.BadRequest, """{"message":"Supply a text string"}""", MediaType.application.json.some, Some("no-store"))
+      val expected = (Status.BadRequest, """{"message":"Supply a text string"}""", MediaType.application.json.some, "no-store".some)
       sendRaw(server, Method.PUT, path = s"$chapterPath/description", body = body).map(response => assertEquals(response, expected))
     }
     val checkTargets = Vector("bad", "1-1-1-1-1", "00000000-0000-0000-0000-00000000000A").traverse_ { id =>
@@ -607,10 +607,10 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
           chapter.sourceFolder,
           chapter.description
         ))),
-      gearReadResult: IO[GearReadResult] = IO.raiseError[GearReadResult](new AssertionError("Unexpected gear read")),
-      gearReplaceResult: IO[GearReplaceResult] = IO.raiseError[GearReplaceResult](new AssertionError("Unexpected gear replacement")),
+      gearReadResult: IO[GearReadResult] = new AssertionError("Unexpected gear read").raiseError[IO, GearReadResult],
+      gearReplaceResult: IO[GearReplaceResult] = new AssertionError("Unexpected gear replacement").raiseError[IO, GearReplaceResult],
       descriptionResult: IO[ChapterMetadataManager.SaveDescriptionResult] =
-        IO.raiseError[ChapterMetadataManager.SaveDescriptionResult](new AssertionError("Unexpected description mutation"))
+        new AssertionError("Unexpected description mutation").raiseError[IO, ChapterMetadataManager.SaveDescriptionResult]
   ) =
     val chapters = new ChapterMetadataManager[IO]:
       override def saveDescription(album: AlbumId, chapter: ChapterId, text: String): IO[ChapterMetadataManager.SaveDescriptionResult] =

@@ -102,15 +102,24 @@ object PhotoManager:
             s"Photo generation failed for chapter ${chapter.value}: ${original.filename}"
           ).as(Vector(Issue.Generation(original.filename)))
         case PhotoThumbnailGenerator.GenerationResult.Generated(image) =>
-          val maybeCaption                                 = maybePrevious.flatMap(_.maybeCaption)
-          val identity                                     = maybePrevious.fold(IdGenerator[F].generateId.map(PhotoId(_)))(_.id.pure[F])
-          val publication: F[PhotoWriteIntent.Publication] =
-            for
-              id       <- identity
-              location <- IdGenerator[F].generateId.map(ThumbnailLocation(_))
-              writeId  <- IdGenerator[F].generateId.map(PhotoWriteIntentId(_))
-            yield PhotoWriteIntent.Publication(writeId, chapter, id, location, maybePrevious = maybePrevious.map(_.thumbnail.location))
-          publication.flatMap(intent => publish(intent, Photo(intent.photo, chapter, original, metadata, _, maybeCaption = maybeCaption), image))
+          allocatePublication(chapter, maybePrevious = maybePrevious).flatMap: intent =>
+            val photo = (thumbnail: Thumbnail) =>
+              Photo(intent.photo, chapter, original, metadata, thumbnail, maybeCaption = maybePrevious.flatMap(_.maybeCaption))
+            publish(intent, photo, image)
+
+    private def allocatePublication(chapter: ChapterId, maybePrevious: Option[Photo]) =
+      val identity = maybePrevious.fold(IdGenerator[F].generateId.map(PhotoId(_)))(_.id.pure[F])
+      for
+        id       <- identity
+        location <- IdGenerator[F].generateId.map(ThumbnailLocation(_))
+        writeId  <- IdGenerator[F].generateId.map(PhotoWriteIntentId(_))
+      yield PhotoWriteIntent.Publication(
+        writeId,
+        chapter,
+        id,
+        location,
+        maybePrevious = maybePrevious.map(_.thumbnail.location)
+      ): PhotoWriteIntent.Publication
 
     private def publish(intent: PhotoWriteIntent.Publication, photo: Thumbnail => Photo, image: EncodedThumbnail) =
       Async[F].uncancelable: _ =>

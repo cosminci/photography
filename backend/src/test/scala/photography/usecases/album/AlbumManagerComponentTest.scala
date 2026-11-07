@@ -248,9 +248,9 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   private def buildTemplates(listResult: ListAlbumStartTemplatesResult) =
     new SpreadTemplateRepository[IO]:
       override def listPhotosOnlyTemplates: IO[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult] =
-        IO.raiseError[SpreadTemplateRepository.ListPhotosOnlyTemplatesResult](new AssertionError("Unexpected photo templates"))
+        new AssertionError("Unexpected photo templates").raiseError[IO, SpreadTemplateRepository.ListPhotosOnlyTemplatesResult]
       override def findTemplate(id: SpreadTemplateId): IO[SpreadTemplateRepository.FindTemplateResult] =
-        IO.raiseError[SpreadTemplateRepository.FindTemplateResult](new AssertionError("Unexpected template lookup"))
+        new AssertionError("Unexpected template lookup").raiseError[IO, SpreadTemplateRepository.FindTemplateResult]
       override def listAlbumStartTemplates: IO[ListAlbumStartTemplatesResult]                              = listResult.pure[IO]
       override def listChapterStartTemplates: IO[SpreadTemplateRepository.ListChapterStartTemplatesResult] =
         SpreadTemplateRepository.ListChapterStartTemplatesResult.Failed(SpreadTemplateRepository.Failure.DatabaseFailure).pure[IO]

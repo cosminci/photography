@@ -93,13 +93,11 @@ object ChapterMetadataManager:
       val update = summon[Mutex[F]].lock.surround:
         val program: EitherT[F, UpdateFailure, Option[ImportLaunch]] =
           for
-            current     <- readAlbum(album).eitherT.leftWiden[UpdateFailure]
-            plan        <- planUpdate(current.year, current = current.chapters, chapter, name, period, sourceFolder).eitherT[F]
-            retirements <- prepareRetirements(chapter, sourceChanged = plan.changesSource(sourceFolder)).lift[UpdateFailure]
-            command = ChapterRepository.Update(album, chapter, name, countries = countries, plan.period, sourceFolder, order = plan.order)
-            _            <- persistUpdate(plan.previousSource, command, retirements = retirements).eitherT
-            maybeRequest <- prepareImport(album, chapter, sourceFolder, sourceChanged = plan.changesSource(sourceFolder)).lift[UpdateFailure]
-          yield maybeRequest.map(value => ImportLaunch(value, retirements = retirements))
+            current <- readAlbum(album).eitherT.leftWiden[UpdateFailure]
+            plan    <- translateUpdatePlan(planning.planUpdate(current, chapter, name, period, sourceFolder)).eitherT[F]
+            launch  <-
+              applyUpdate(plan.previousSource, ChapterRepository.Update(album, chapter, name, countries, plan.period, sourceFolder, plan.order))
+          yield launch
         program.value
       MonadCancelThrow[F].uncancelable: _ =>
         update.flatMap:
@@ -134,18 +132,19 @@ object ChapterMetadataManager:
         case AlbumRepository.PlanningResult.NotFound     => Failure.AlbumNotFound.asLeft[PlanningSnapshot]
         case _: AlbumRepository.PlanningResult.Failed    => Failure.Unavailable.asLeft[PlanningSnapshot]
 
-    private def planUpdate(
-        year: AlbumYear,
-        current: Vector[ChapterMetadata],
-        id: ChapterId,
-        name: DestinationName,
-        period: Period,
-        folder: PhotoSource
-    ) =
-      planning.planUpdate(year, chapters = current, id, name, period, folder) match
+    private def translateUpdatePlan(result: ChapterPlanning.UpdateResult) =
+      result match
         case ChapterPlanning.UpdateResult.Planned(plan)    => plan.asRight[UpdateFailure]
         case ChapterPlanning.UpdateResult.Rejected(reason) => Failure.Conflict(reason).asLeft[ChapterPlanning.UpdatePlan]
         case ChapterPlanning.UpdateResult.ChapterNotFound  => MissingChapter.asLeft[ChapterPlanning.UpdatePlan]
+
+    private def applyUpdate(previousSource: PhotoSource, command: ChapterRepository.Update) =
+      val sourceChanged = (previousSource: String) =!= command.sourceFolder
+      for
+        retirements <- prepareRetirements(command.chapter, sourceChanged = sourceChanged).lift[UpdateFailure]
+        _           <- persistUpdate(previousSource, command, retirements = retirements).eitherT
+        request     <- prepareImport(command.album, command.chapter, command.sourceFolder, sourceChanged = sourceChanged).lift[UpdateFailure]
+      yield request.map(value => ImportLaunch(value, retirements = retirements))
 
     private def persistCreation(album: AlbumId, plan: ChapterPlanning.CreationResult) =
       val save = plan match
