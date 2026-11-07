@@ -22,7 +22,7 @@ describe("canonical photo selection and chronological whole-image rows", () => {
   it("should combine canonical collections using camera-local order, filename and chapter tie-breaks without deriving counts from photos", () => {
     const later = { ...photo, id: "later", capturedLocal: "2026-01-01T10:00:00.001" };
     const undated = { ...photo, id: "undated", capturedLocal: null };
-    const uppercase = { ...photo, id: "upper", filename: "A.jpg" };
+    const uppercase = { ...photo, id: "upper", filename: "A.jpg", capturedLocal: "2026-01-01T10:00" };
     const collections = {
       z: { ...inventory, photos: [later, undated], counts: { unplaced: 1, total: 2 } },
       b: { ...inventory, photos: [photo, uppercase], counts: { unplaced: 1, total: 2 } },

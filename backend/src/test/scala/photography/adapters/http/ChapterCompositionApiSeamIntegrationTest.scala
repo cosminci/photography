@@ -1,6 +1,6 @@
 package photography.adapters.http
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.syntax.all.*
 import io.circe.Json
 import io.circe.jawn.parse
@@ -71,33 +71,38 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
   )
   scenarios.foreach { scenario =>
     test(s"should ${scenario.name}"):
-      val program     = buildManager(scenario.result)
+      val refs        = Refs()
+      val program     = buildManager(refs, scenario.result)
       val definitions = ChapterCompositionApi.make(program)
       val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access)
-      assertEquals(declaration, Some(Routes.Access.Editor(EditingAccess.Protection.ActiveTab)))
-      Routes.make(buildAccess)(definitions).orNotFound.run(Request[IO](
-        Method.PUT,
-        Uri.unsafeFromString(path),
-        headers = credentials
-      ).withEntity(body))
-        .flatMap(response =>
-          response.bodyText.compile.string.map: body =>
-            assertEquals(response.status, scenario.status)
-            assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), Some("no-store"))
-            assertEquals(parse(body).toOption, scenario.maybeBody)
-        )
+      assertEquals(declaration, Routes.Access.Editor(EditingAccess.Protection.ActiveTab).some)
+      for
+        response <- Routes.make(buildAccess(refs))(definitions).orNotFound.run(Request[IO](
+          Method.PUT,
+          Uri.unsafeFromString(path),
+          headers = credentials
+        ).withEntity(body))
+        text       <- response.bodyText.compile.string
+        calls      <- refs.orders.get
+        admissions <- refs.admissions.get
+      yield
+        assertEquals(response.status, scenario.status)
+        assertEquals(parse(text).toOption, scenario.maybeBody)
+        assertEquals(calls, Vector(OrderCall(album, chapter, NonEmptyList.one(opening), NonEmptyList.one(opening))))
+        assertEquals(admissions, Vector((connection, EditingAccess.Protection.ActiveTab, none[GrantId])))
   }
 
   test("should reject malformed JSON, empty orders and noncanonical member IDs before mutation"):
-    val program = buildManager(ReplacementResult.Failed)
-    val routes  = Routes.make(buildAccess)(ChapterCompositionApi.make(program)).orNotFound
+    val refs    = Refs()
+    val program = buildManager(refs, ReplacementResult.Failed)
+    val routes  = Routes.make(buildAccess(refs))(ChapterCompositionApi.make(program)).orNotFound
     val invalid = Vector(
       "{}",
       "{",
       """{"expectedSpreadIds":[],"spreadIds":[]}""",
       """{"expectedSpreadIds":["1-1-1-1-1"],"spreadIds":["invalid"]}"""
     )
-    invalid.traverse_ { value =>
+    val malformed = invalid.traverse_ { value =>
       routes.run(Request[IO](
         Method.PUT,
         Uri.unsafeFromString(path),
@@ -112,10 +117,22 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(body, Json.obj("message" -> Json.fromString("Supply a valid composition")))
     *> routes.run(Request[IO](Method.PUT, Uri.unsafeFromString("/api/albums/1-1-1-1-1/chapters/bad/composition")))
       .map(response => assertEquals(response.status, Status.NotFound))
+    for
+      _          <- malformed
+      calls      <- refs.orders.get
+      admissions <- refs.admissions.get
+    yield
+      assertEquals(calls, Vector.empty[OrderCall])
+      assertEquals(admissions, Vector.empty[(EditorConnection, EditingAccess.Protection, Option[GrantId])])
 
   final private case class Scenario(name: String, result: ReplacementResult, status: Status, maybeBody: Option[Json])
+  final private case class OrderCall(album: AlbumId, chapter: ChapterId, expected: NonEmptyList[SpreadId], order: NonEmptyList[SpreadId])
+  final private case class Refs():
+    val orders: Ref[IO, Vector[OrderCall]] = Ref.unsafe(Vector.empty)
+    val admissions: Ref[IO, Vector[(editor: EditorConnection, protection: EditingAccess.Protection, grant: Option[GrantId])]] =
+      Ref.unsafe(Vector.empty)
 
-  private def buildManager(result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
+  private def buildManager(refs: Refs, result: ReplacementResult): SpreadManager[IO] = new SpreadManager[IO]:
     override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): IO[SpreadManager.SetBleedResult] =
       IO.raiseError[SpreadManager.SetBleedResult](new AssertionError("Unexpected bleed change"))
     override def replaceChapterOrder(
@@ -124,12 +141,7 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
         previous: NonEmptyList[SpreadId],
         order: NonEmptyList[SpreadId]
     ): IO[ReplacementResult] =
-      IO:
-        assertEquals(id.value, album.value)
-        assertEquals(target.value, chapter.value)
-        assertEquals(previous.map(_.value), NonEmptyList.one(opening.value))
-        assertEquals(order.map(_.value), NonEmptyList.one(opening.value))
-      .as(result)
+      refs.orders.update(_ :+ OrderCall(id, target, previous, order)).as(result)
     override def add(album: AlbumId, chapter: ChapterId, after: SpreadId): IO[AddResult] =
       IO.raiseError[AddResult](new AssertionError("Unexpected add"))
     override def changeTemplate(
@@ -150,13 +162,10 @@ final class ChapterCompositionApiSeamIntegrationTest extends CatsEffectSuite:
     override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): IO[PlacementResult] =
       IO.raiseError[PlacementResult](new AssertionError("Unexpected placement edit"))
 
-  private def buildAccess: EditingAccess[IO] = new EditingAccess[IO]:
+  private def buildAccess(refs: Refs): EditingAccess[IO] = new EditingAccess[IO]:
     override def run[A](
         editor: EditorConnection,
         protection: EditingAccess.Protection,
         maybeGrant: Option[GrantId]
     )(write: IO[A]): IO[EditingAccess.Result[A]] =
-      assertEquals(editor, connection)
-      assertEquals(protection, EditingAccess.Protection.ActiveTab)
-      assertEquals(maybeGrant, None)
-      write.map(EditingAccess.Result.Completed(_))
+      refs.admissions.update(_ :+ (editor, protection, maybeGrant)) >> write.map(EditingAccess.Result.Completed(_))

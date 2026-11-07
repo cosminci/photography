@@ -55,7 +55,7 @@ class LocalRunnerComponentTest(unittest.TestCase):
         with mock.patch.object(
             local.shutil,
             "which",
-            side_effect=lambda executable: None if executable == "sbt" else "/usr/bin/java",
+            side_effect=["/usr/bin/java", None],
         ):
             with self.assertRaises(local.PreflightError):
                 local.check_prerequisites(host="127.0.0.1", port=8080)

@@ -48,8 +48,9 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       (retirement, Vector.empty[Photo], Vector(old)),
       (retirement, Vector(photo.copy(thumbnail = thumbnail.copy(location = old))), Vector.empty[ThumbnailLocation])
     ).traverse_ { case (intent, photos, removed) =>
-      val refs       = Refs(initial = Vector(intent))
-      val recovery   = buildRecovery(refs, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])
+      val refs       = Refs()
+      val pending    = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(intent)).pure[IO]
+      val recovery   = buildRecovery(refs, pending = pending, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])
       val superseded = new Transaction[IO, IO]:
         override def run[A](program: IO[A]): IO[A]     = IO.raiseError[A](new AssertionError("Superseded import cannot start guarded writes"))
         override def resolve[A](program: IO[A]): IO[A] = program
@@ -57,50 +58,53 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       for
         first     <- recovery.recover
         resolved  <- buildRecovery(refs, listed = PhotoRepository.ListResult.Listed(photos = photos).pure[IO])(using superseded).resolve(intent)
-        second    <- recovery.recover
+        second    <- buildRecovery(refs).recover
         deletions <- refs.removed.get
-        pending   <- refs.pending.get
+        completed <- refs.completed.get
+        reads     <- refs.chapterReads.get
       yield
         assertEquals(first, RecoveryResult.Recovered)
         assertEquals(resolved, RecoveryResult.Recovered)
         assertEquals(second, RecoveryResult.Recovered)
         assertEquals(deletions, removed ++ removed)
-        assertEquals(pending, Vector.empty[PhotoWriteIntent])
+        assertEquals(completed, Vector(intent.id, intent.id))
+        assertEquals(reads, Vector(intent.chapter, intent.chapter))
     }
 
   test("should fail startup explicitly when evidence cannot be listed"):
     Vector(PhotoRepository.ListUnfinishedWritesResult.Failed.pure[IO], IO.raiseError[PhotoRepository.ListUnfinishedWritesResult](error))
       .traverse_ { pending =>
-        val refs = Refs(initial = Vector(publication))
+        val refs = Refs()
 
         for
-          result  <- buildRecovery(refs, maybePending = pending.some).recover
+          result  <- buildRecovery(refs, pending = pending).recover
           removed <- refs.removed.get
-          writes  <- refs.pending.get
+          writes  <- refs.completed.get
         yield
           assertEquals(result, RecoveryResult.Failed(issues = Vector(Issue.Listing)))
           assertEquals(removed, Vector.empty[ThumbnailLocation])
-          assertEquals(writes, Vector(publication))
+          assertEquals(writes, Vector.empty)
       }
 
   test("should retain evidence and avoid deletion when current references cannot be read"):
     Vector(PhotoRepository.ListResult.Failed.pure[IO], IO.raiseError[PhotoRepository.ListResult](error)).traverse_ { listed =>
-      val refs = Refs(initial = Vector(publication))
+      val refs = Refs()
 
       for
         result  <- buildRecovery(refs, listed = listed).resolve(publication)
         removed <- refs.removed.get
-        writes  <- refs.pending.get
+        writes  <- refs.completed.get
       yield
         assertEquals(result, RecoveryResult.Failed(issues = Vector(Issue.References(writeId))))
         assertEquals(removed, Vector.empty[ThumbnailLocation])
-        assertEquals(writes, Vector(publication))
+        assertEquals(writes, Vector.empty)
     }
 
-  test("should retain evidence after cleanup or completion failure and resolve it on retry"):
+  test("should report cleanup or completion failure and retry supplied unfinished evidence"):
     Vector(false, true).traverse_ { failCompletion =>
       Vector(false, true).traverse_ { throwError =>
-        val refs     = Refs(initial = Vector(publication))
+        val refs     = Refs()
+        val pending  = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(publication)).pure[IO]
         val cleaning =
           if failCompletion then ThumbnailStorage.RemoveResult.Removed.pure[IO]
           else if throwError then IO.raiseError[ThumbnailStorage.RemoveResult](error)
@@ -112,15 +116,15 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
         val issue = if failCompletion then Issue.Completion(writeId) else Issue.Cleanup(writeId, old)
 
         for
-          failed  <- buildRecovery(refs, cleaning = _ => cleaning, completing = completing).recover
-          pending <- refs.pending.get
-          retried <- buildRecovery(refs).recover
-          cleared <- refs.pending.get
+          failed    <- buildRecovery(refs, pending = pending, cleaning = cleaning, completing = completing).recover
+          attempted <- refs.completed.get
+          retried   <- buildRecovery(refs, pending = pending).recover
+          completed <- refs.completed.get
         yield
           assertEquals(failed, RecoveryResult.Failed(issues = Vector(issue)))
-          assertEquals(pending, Vector(publication))
+          assertEquals(attempted, if failCompletion then Vector(writeId) else Vector.empty[PhotoWriteIntentId])
           assertEquals(retried, RecoveryResult.Recovered)
-          assertEquals(cleared, Vector.empty[PhotoWriteIntent])
+          assertEquals(completed, attempted :+ writeId)
       }
     }
 
@@ -128,57 +132,66 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
     val otherId       = PhotoWriteIntentId(new UUID(0L, 7L))
     val otherLocation = ThumbnailLocation(new UUID(0L, 8L))
     val otherWrite    = PhotoWriteIntent.Retirement(otherId, chapter, photoId, otherLocation)
-    val refs          = Refs(initial = Vector(publication, otherWrite))
-    val cleaning      = (location: ThumbnailLocation) =>
-      (if location.value === fresh.value then ThumbnailStorage.RemoveResult.Failed(error) else ThumbnailStorage.RemoveResult.Removed).pure[IO]
-    val empty = PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo]).pure[IO]
+    val refs          = Refs()
+    val pending       = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(publication, otherWrite)).pure[IO]
+    val remaining     = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(publication)).pure[IO]
+    val responses     = Ref.unsafe[IO, List[ThumbnailStorage.RemoveResult]](List(
+      ThumbnailStorage.RemoveResult.Failed(error),
+      ThumbnailStorage.RemoveResult.Removed,
+      ThumbnailStorage.RemoveResult.Removed
+    ))
+    val cleaning = responses.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unexpected cleanup")))
+    val empty    = PhotoRepository.ListResult.Listed(photos = Vector.empty[Photo]).pure[IO]
 
     for
-      failed  <- buildRecovery(refs, listed = empty, cleaning = cleaning).recover
-      pending <- refs.pending.get
-      removed <- refs.removed.get
-      retried <- buildRecovery(refs, listed = empty).recover
-      cleared <- refs.pending.get
+      failed    <- buildRecovery(refs, pending = pending, listed = empty, cleaning = cleaning).recover
+      attempted <- refs.completed.get
+      removed   <- refs.removed.get
+      retried   <- buildRecovery(refs, pending = remaining, listed = empty).recover
+      completed <- refs.completed.get
     yield
       assertEquals(failed, RecoveryResult.Failed(issues = Vector(Issue.Cleanup(writeId, fresh))))
-      assertEquals(pending, Vector(publication))
+      assertEquals(attempted, Vector(otherId))
       assertEquals(removed, Vector(fresh, old, otherLocation))
       assertEquals(retried, RecoveryResult.Recovered)
-      assertEquals(cleared, Vector.empty[PhotoWriteIntent])
+      assertEquals(completed, Vector(otherId, writeId))
 
   test("should retain evidence when recovery is interrupted after deletion and complete it on retry"):
     (Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (deleted, release) =>
-      val refs     = Refs(initial = Vector(publication))
-      val cleaning = (_: ThumbnailLocation) => deleted.complete(()).void >> release.get.as(ThumbnailStorage.RemoveResult.Removed)
-      val recovery = buildRecovery(refs, cleaning = cleaning)
+      val refs     = Refs()
+      val pending  = PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector(publication)).pure[IO]
+      val cleaning = deleted.complete(()).void >> release.get.as(ThumbnailStorage.RemoveResult.Removed)
+      val recovery = buildRecovery(refs, pending = pending, cleaning = cleaning)
       val program  =
         for
-          worker  <- recovery.recover.start
-          _       <- deleted.get
-          _       <- worker.cancel
-          outcome <- worker.join
-          pending <- refs.pending.get
-          retried <- buildRecovery(refs).recover
-          cleared <- refs.pending.get
+          worker    <- recovery.recover.start
+          _         <- deleted.get
+          _         <- worker.cancel
+          outcome   <- worker.join
+          attempted <- refs.completed.get
+          retried   <- buildRecovery(refs, pending = pending).recover
+          completed <- refs.completed.get
         yield
           assert(outcome.isCanceled)
-          assertEquals(pending, Vector(publication))
+          assertEquals(attempted, Vector.empty)
           assertEquals(retried, RecoveryResult.Recovered)
-          assertEquals(cleared, Vector.empty[PhotoWriteIntent])
+          assertEquals(completed, Vector(writeId))
 
       TestControl.executeEmbed(program)
     }
 
-  final private case class Refs(initial: Vector[PhotoWriteIntent]):
-    val pending: Ref[IO, Vector[PhotoWriteIntent]]  = Ref.unsafe(initial)
-    val removed: Ref[IO, Vector[ThumbnailLocation]] = Ref.unsafe(Vector.empty)
+  final private case class Refs():
+    val completed: Ref[IO, Vector[PhotoWriteIntentId]] = Ref.unsafe(Vector.empty)
+    val chapterReads: Ref[IO, Vector[ChapterId]]       = Ref.unsafe(Vector.empty)
+    val removed: Ref[IO, Vector[ThumbnailLocation]]    = Ref.unsafe(Vector.empty)
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildRecovery(
       refs: Refs,
       listed: IO[PhotoRepository.ListResult] = PhotoRepository.ListResult.Listed(photos = Vector(photo)).pure[IO],
-      maybePending: Option[IO[PhotoRepository.ListUnfinishedWritesResult]] = None,
-      cleaning: ThumbnailLocation => IO[ThumbnailStorage.RemoveResult] = _ => ThumbnailStorage.RemoveResult.Removed.pure[IO],
+      pending: IO[PhotoRepository.ListUnfinishedWritesResult] =
+        PhotoRepository.ListUnfinishedWritesResult.Listed(intents = Vector.empty[PhotoWriteIntent]).pure[IO],
+      cleaning: IO[ThumbnailStorage.RemoveResult] = ThumbnailStorage.RemoveResult.Removed.pure[IO],
       completing: IO[PhotoRepository.CompleteWriteResult] = PhotoRepository.CompleteWriteResult.Completed.pure[IO]
   )(using Transaction[IO, IO]) =
     val photos = new PhotoRepository[IO]:
@@ -186,7 +199,7 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
         IO.raiseError[PhotoRepository.FindResult](new AssertionError("Unexpected photo read"))
       override def saveCaption(chapter: ChapterId, id: PhotoId, text: String): IO[PhotoRepository.SaveCaptionResult] =
         IO.raiseError[PhotoRepository.SaveCaptionResult](new AssertionError("Unexpected caption mutation"))
-      override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] = IO(assertEquals(id, chapter)) >> listed
+      override def listChapter(id: ChapterId): IO[PhotoRepository.ListResult] = refs.chapterReads.update(_ :+ id) >> listed
       override def save(value: Photo): IO[PhotoRepository.WriteResult]        =
         IO.raiseError[PhotoRepository.WriteResult](new AssertionError("Unexpected publication"))
       override def remove(id: PhotoId): IO[PhotoRepository.WriteResult] =
@@ -194,17 +207,15 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
       override def recordWrite(intent: PhotoWriteIntent): IO[PhotoRepository.RecordWriteResult] =
         IO.raiseError[PhotoRepository.RecordWriteResult](new AssertionError("Unexpected evidence creation"))
       override def completeWrite(id: PhotoWriteIntentId): IO[PhotoRepository.CompleteWriteResult] =
-        completing.flatTap:
-          case PhotoRepository.CompleteWriteResult.Completed => refs.pending.update(_.filterNot(_.id.value === id.value))
-          case PhotoRepository.CompleteWriteResult.Failed    => IO.unit
+        refs.completed.update(_ :+ id) >> completing
       override def listUnfinishedWrites: IO[PhotoRepository.ListUnfinishedWritesResult] =
-        maybePending.getOrElse(refs.pending.get.map(intents => PhotoRepository.ListUnfinishedWritesResult.Listed(intents = intents)))
+        pending
     val storage = new ThumbnailStorage[IO]:
       override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): IO[ThumbnailStorage.ReadResult] =
         IO.raiseError[ThumbnailStorage.ReadResult](new AssertionError("Unexpected read"))
       override def storeThumbnail(location: ThumbnailLocation, image: EncodedThumbnail): IO[ThumbnailStorage.StoreResult] =
         IO.raiseError[ThumbnailStorage.StoreResult](new AssertionError("Unexpected thumbnail storage"))
       override def removeThumbnail(location: ThumbnailLocation): IO[ThumbnailStorage.RemoveResult] =
-        refs.removed.update(_ :+ location) >> cleaning(location)
+        refs.removed.update(_ :+ location) >> cleaning
     PhotoWriteRecovery.make(photos, storage)
   // scalafix:on DisableSyntax.defaultArgs

@@ -7,8 +7,32 @@ import type { PlacementSnapshot, SpreadSnapshot } from "../../../src/features/al
 import { photoDragType, type PhotoChoice } from "../../../src/features/albums/workspace/PhotoDrag";
 import { createCaptionEditing } from "../../../src/features/albums/workspace/PhotoCaption";
 import { RetainedCaption } from "../../../src/features/albums/workspace/RetainedCaption";
+import { buildPlacementSession } from "./PlacementSessionStub";
 
 describe("on-slot photo editing", () => {
+  it("should focus an explicitly highlighted saved-photo frame without issuing a placement command", () => {
+    const refs = buildPlacementSession();
+    render(() => (
+      <PhotoSlot
+        slotId="s"
+        label="Photo slot 1"
+        width={200}
+        height={200}
+        session={refs.session}
+        placement={undefined}
+        photo={undefined}
+        choice={undefined}
+        onChoose={vi.fn()}
+        unavailable={undefined}
+        reader={true}
+        highlighted
+      />
+    ));
+
+    expect(screen.getByRole("group", { name: "Photo slot 1" })).toHaveFocus();
+    expect(screen.getByRole("group", { name: "Photo slot 1" })).toHaveAttribute("aria-current", "true");
+    expect(refs.session.edit).not.toHaveBeenCalled();
+  });
   it("should expose a failed photograph and retry media without repeating placement writes", async () => {
     const write = vi.fn();
     const session = createRoot(() => createPlacementSession({ readPlacements: vi.fn().mockResolvedValue(initial), editPlacements: write }, vi.fn()));

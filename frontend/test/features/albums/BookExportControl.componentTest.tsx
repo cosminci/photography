@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { Blob as DownloadBlob } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BookExportControl } from "../../../src/features/albums/workspace/BookExportControl";
 import { BookExportBlocked, type BookDownload } from "../../../src/features/albums/model/BookExport";
+import { createSignal, untrack } from "solid-js";
 
 describe("saved-book InDesign export", () => {
   afterEach(() => {
@@ -95,7 +97,21 @@ describe("saved-book InDesign export", () => {
     const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:book");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
-    render(() => <BookExportControl album="book" year={2025} client={{ exportBook }} unavailable={undefined} />);
+    const [feedbackMount, setFeedbackMount] = createSignal<HTMLDivElement>();
+    const issueLink = vi.fn().mockReturnValue({ label: "Photo frame", href: "#", navigate: vi.fn() });
+    render(() => (
+      <>
+        <div ref={setFeedbackMount} />
+        <BookExportControl
+          album="book"
+          year={2025}
+          client={{ exportBook }}
+          unavailable={undefined}
+          feedbackMount={feedbackMount()}
+          issueLink={issueLink}
+        />
+      </>
+    ));
 
     const button = screen.getByRole("button");
     button.focus();
@@ -110,10 +126,18 @@ describe("saved-book InDesign export", () => {
           target: { kind: "slot", spread: "opening", slot: "portrait" },
           message: "Hội An - spread 12, photo 2: IMG_4321.jpg is 242 DPI (recommended 300 DPI).",
         },
+        {
+          code: "low_resolution",
+          severity: "warning",
+          target: { kind: "slot", spread: "opening", slot: "other" },
+          message: "Second photograph is 200 DPI.",
+        },
       ],
     });
 
-    await screen.findByText(/Low-resolution photos:.*Hội An - spread 12, photo 2: IMG_4321.jpg is 242 DPI/);
+    expect(await screen.findAllByRole("link", { name: "Photo frame" })).toHaveLength(2);
+    expect(untrack(feedbackMount)?.contains(screen.getByRole("status"))).toBe(true);
+    expect(screen.getByRole("status")).toHaveTextContent("Low-resolution photos: Photo frame,");
     expect(screen.queryByText(/opening.*portrait/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm export" })).toHaveFocus();
     expect(createObjectURL).not.toHaveBeenCalled();
@@ -144,6 +168,7 @@ describe("saved-book InDesign export", () => {
   });
 
   it("should require low-resolution confirmation then revalidate and download only the fresh saved book", async () => {
+    vi.stubGlobal("Blob", DownloadBlob);
     const onDismiss = vi.fn();
     const warnings = [
       {
@@ -184,7 +209,10 @@ describe("saved-book InDesign export", () => {
 
     await waitFor(() => expect(button).toBeEnabled());
     expect(click).toHaveBeenCalledOnce();
-    expect(createObjectURL.mock.calls[0]?.[0]).toHaveProperty("size", new Blob(['{"saved":"fresh after reviewing photographs"}']).size);
+    const download = createObjectURL.mock.calls[0]?.[0];
+    if (!(download instanceof DownloadBlob)) throw new Error("Expected the exported JSON as a Blob.");
+    expect(await download.text()).toBe('{"saved":"fresh after reviewing photographs"}');
+    expect(download.type).toBe("application/json");
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:fresh-book");
     expect(screen.queryByRole("button", { name: "Confirm export" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Low-resolution photos:/)).not.toBeInTheDocument();

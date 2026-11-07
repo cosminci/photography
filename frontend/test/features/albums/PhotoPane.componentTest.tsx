@@ -6,15 +6,21 @@ import type { PhotoInventory } from "../../../src/features/albums/model/Photo";
 
 describe("photo processing visibility", () => {
   it.each([
-    ["idle", 0, 0, [], false],
-    ["completed", 0, 0, [], false],
-    ["queued", 0, 0, [], true],
-    ["running", 0, 0, [], true],
-    ["failed", 0, 0, [], true],
-    ["completed", 1, 0, [], true],
-    ["completed", 0, 1, [], true],
-    ["completed", 0, 0, [{ stage: "cleanup", code: "cleanup_failed", filename: null }], true],
-  ] as const)("should expose only meaningful %s processing feedback", (state, unsupportedCount, skippedCount, issues, expected) => {
+    { state: "idle", unsupportedCount: 0, skippedCount: 0, issues: [], expected: false },
+    { state: "completed", unsupportedCount: 0, skippedCount: 0, issues: [], expected: false },
+    { state: "queued", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
+    { state: "running", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
+    { state: "failed", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
+    { state: "completed", unsupportedCount: 1, skippedCount: 0, issues: [], expected: true },
+    { state: "completed", unsupportedCount: 0, skippedCount: 1, issues: [], expected: true },
+    {
+      state: "completed",
+      unsupportedCount: 0,
+      skippedCount: 0,
+      issues: [{ stage: "cleanup", code: "cleanup_failed", filename: null }],
+      expected: true,
+    },
+  ] as const)("should expose only meaningful $state processing feedback", ({ state, unsupportedCount, skippedCount, issues, expected }) => {
     expect(hasProcessingFeedback({ state, unsupportedCount, skippedCount, issues })).toBe(expected);
   });
 });
@@ -349,12 +355,15 @@ describe("photo pane browser controls", () => {
     if (notify === undefined) throw new Error("Missing viewport observer");
 
     expect(image).toHaveStyle({ width: "308.5px" });
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(0);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect());
     notify();
     notify();
     expect(request).toHaveBeenCalledOnce();
     if (frame === undefined) throw new Error("Missing scheduled measurement");
     frame(0);
     expect(screen.getByRole("img", { name: "Photo.jpg" })).toBe(image);
+    expect(image).toHaveStyle({ width: "308.5px" });
     notify();
     view.unmount();
 

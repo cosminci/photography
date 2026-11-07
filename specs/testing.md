@@ -17,6 +17,8 @@ Tests follow responsibility boundaries. Most behavior is proved through domain a
 
 Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
 
+Each component suite exercises its owner and substitutes its collaborators, including child UI components. Substitutes supply independently arranged responses and record requests and effects separately; saved-state evidence comes from arranged reads at component boundaries and actual committed state at persistence seams.
+
 Recovery confidence requires evidence for both the persisted commit and the client's knowledge of its outcome. Partial saves, lost acknowledgements and stale reads must be exercised across those boundaries to establish that recovery preserves successful work.
 
 Reversible editing needs cross-owner journeys to establish chronological intent and history lifetime. Component tests prove compensation and retained progress; real persistence and access boundaries establish saved round trips and interference handling, including identity changes during restoration.

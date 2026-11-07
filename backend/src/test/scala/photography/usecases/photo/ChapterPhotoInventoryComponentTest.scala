@@ -1,6 +1,6 @@
 package photography.usecases.photo
 
-import cats.effect.IO
+import cats.effect.{IO, Ref}
 import cats.syntax.all.*
 import io.github.iltotore.iron.autoRefine
 import munit.CatsEffectSuite
@@ -18,39 +18,72 @@ final class ChapterPhotoInventoryComponentTest extends CatsEffectSuite:
     val completed = Status.Finished(PhotoManager.RefreshResult(unsupportedCount = 3, issues = skipped))
     val failed    = Status.Finished(PhotoManager.RefreshResult(unsupportedCount = 3, issues = skipped :+ PhotoManager.Issue.Storage))
     val cases     = Vector(
-      (Status.Idle, ChapterPhotoInventory.ProcessingState.Idle, 0, 0),
-      (Status.Queued, ChapterPhotoInventory.ProcessingState.Queued, 0, 0),
-      (Status.Running, ChapterPhotoInventory.ProcessingState.Running, 0, 0),
-      (Status.LaunchFailed, ChapterPhotoInventory.ProcessingState.Failed, 0, 0),
-      (Status.Uncertain, ChapterPhotoInventory.ProcessingState.Failed, 0, 0),
-      (completed, ChapterPhotoInventory.ProcessingState.Completed, 3, 2),
-      (failed, ChapterPhotoInventory.ProcessingState.Failed, 3, 2)
+      (status = Status.Idle, state = ChapterPhotoInventory.ProcessingState.Idle, unsupported = 0, skipped = 0),
+      (status = Status.Queued, state = ChapterPhotoInventory.ProcessingState.Queued, unsupported = 0, skipped = 0),
+      (status = Status.Running, state = ChapterPhotoInventory.ProcessingState.Running, unsupported = 0, skipped = 0),
+      (status = Status.LaunchFailed, state = ChapterPhotoInventory.ProcessingState.Failed, unsupported = 0, skipped = 0),
+      (status = Status.Uncertain, state = ChapterPhotoInventory.ProcessingState.Failed, unsupported = 0, skipped = 0),
+      (status = completed, state = ChapterPhotoInventory.ProcessingState.Completed, unsupported = 3, skipped = 2),
+      (status = failed, state = ChapterPhotoInventory.ProcessingState.Failed, unsupported = 3, skipped = 2)
     )
-    cases.foreach { case (status, state, unsupported, skippedCount) =>
-      val snapshot = ChapterPhotoInventory.Snapshot(inventory, execution.copy(status = status))
-      assertEquals((snapshot.processingState, snapshot.unsupportedCount, snapshot.skippedCount), (state, unsupported, skippedCount))
-      val unresolved = snapshot.copy(execution = snapshot.execution.copy(retirementIssues = Vector(PhotoWriteRecovery.Issue.Listing)))
-      assertEquals(unresolved.processingState, ChapterPhotoInventory.ProcessingState.Failed)
+    cases.traverse_ { case (status, state, unsupported, skippedCount) =>
+      val processing = execution.copy(status = status)
+      val unresolved = processing.copy(retirementIssues = Vector(PhotoWriteRecovery.Issue.Listing))
+      val response   = PhotoInventory.ListResult.Listed(inventory)
+
+      for
+        result <- buildInventory(Refs(), response, processing).read(chapter)
+        failed <- buildInventory(Refs(), response, unresolved).read(chapter)
+      yield
+        result match
+          case ChapterPhotoInventory.Result.Found(snapshot) =>
+            assertEquals(snapshot.processingState, state)
+            assertEquals(snapshot.unsupportedCount, unsupported)
+            assertEquals(snapshot.skippedCount, skippedCount)
+          case other => fail(s"Expected chapter inventory, got $other")
+        failed match
+          case ChapterPhotoInventory.Result.Found(snapshot) => assertEquals(snapshot.processingState, ChapterPhotoInventory.ProcessingState.Failed)
+          case other                                        => fail(s"Expected unresolved chapter inventory, got $other")
     }
 
-  test("inventory owns chapter absence and storage failure; processing joins only successful reads"):
+  test("should join processing only after successful inventory reads and preserve chapter absence or failure"):
     val cases = Vector(
       PhotoInventory.ListResult.Listed(inventory) -> ChapterPhotoInventory.Result.Found(ChapterPhotoInventory.Snapshot(inventory, execution)),
       PhotoInventory.ListResult.ChapterNotFound   -> ChapterPhotoInventory.Result.ChapterNotFound,
       PhotoInventory.ListResult.Failed            -> ChapterPhotoInventory.Result.Failed
     )
     cases.traverse_ { case (read, expected) =>
-      val photos = new PhotoInventory[IO]:
-        override def listChapter(id: ChapterId): IO[PhotoInventory.ListResult] =
-          IO(assertEquals(id.value, chapter.value)).as(read)
-      val imports = new ChapterPhotoImport[IO]:
-        override def status(id: ChapterId): IO[ExecutionOutcome] =
-          IO(assertEquals(id.value, chapter.value)).as(execution)
-        override def prepare(album: AlbumId, chapter: ChapterId, source: PhotoSource): IO[Request] =
-          IO.raiseError[Request](new AssertionError("Unexpected preparation"))
-        override def launch(request: Request): IO[Scheduling] = IO.raiseError[Scheduling](new AssertionError("Unexpected scheduling"))
-        override def retire(album: AlbumId, retirements: Vector[PhotoWriteIntent.Retirement]): IO[Unit] =
-          IO.raiseError[Unit](new AssertionError("Unexpected retirement"))
-        override def suspend(chapter: ChapterId): IO[Unit] = IO.raiseError[Unit](new AssertionError("Unexpected suspension"))
-      ChapterPhotoInventory.make(photos, imports).read(chapter).map(result => assertEquals(result, expected))
+      val refs                = Refs()
+      val expectedStatusReads = read match
+        case PhotoInventory.ListResult.Listed(_) => Vector(chapter)
+        case _                                   => Vector.empty[ChapterId]
+      val manager = buildInventory(refs, read, execution)
+
+      for
+        result      <- manager.read(chapter)
+        reads       <- refs.inventoryReads.get
+        statusReads <- refs.statusReads.get
+      yield
+        assertEquals(result, expected)
+        assertEquals(reads, Vector(chapter))
+        assertEquals(statusReads, expectedStatusReads)
     }
+
+  final private case class Refs():
+    val inventoryReads: Ref[IO, Vector[ChapterId]] = Ref.unsafe(Vector.empty)
+    val statusReads: Ref[IO, Vector[ChapterId]]    = Ref.unsafe(Vector.empty)
+
+  private def buildInventory(refs: Refs, read: PhotoInventory.ListResult, processing: ExecutionOutcome) =
+    val photos = new PhotoInventory[IO]:
+      override def listChapter(id: ChapterId): IO[PhotoInventory.ListResult] =
+        refs.inventoryReads.update(_ :+ id).as(read)
+    val imports = new ChapterPhotoImport[IO]:
+      override def status(id: ChapterId): IO[ExecutionOutcome] =
+        refs.statusReads.update(_ :+ id).as(processing)
+      override def prepare(album: AlbumId, chapter: ChapterId, source: PhotoSource): IO[Request] =
+        IO.raiseError[Request](new AssertionError("Unexpected preparation"))
+      override def launch(request: Request): IO[Scheduling] = IO.raiseError[Scheduling](new AssertionError("Unexpected scheduling"))
+      override def retire(album: AlbumId, retirements: Vector[PhotoWriteIntent.Retirement]): IO[Unit] =
+        IO.raiseError[Unit](new AssertionError("Unexpected retirement"))
+      override def suspend(chapter: ChapterId): IO[Unit] = IO.raiseError[Unit](new AssertionError("Unexpected suspension"))
+    ChapterPhotoInventory.make(photos, imports)

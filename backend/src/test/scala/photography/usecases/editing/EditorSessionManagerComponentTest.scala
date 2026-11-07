@@ -21,6 +21,9 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
   private val tab                = TabId(new UUID(0L, 2L))
   private val duplicate          = TabId(new UUID(0L, 3L))
   private val alias: EditorAlias = "Cosmin"
+  private val target             = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
+  private val cover              = EditingTarget.Cover(AlbumId(new UUID(0L, 11L)))
+  private val otherOwner         = EditorId(new UUID(0L, 4L))
 
   Vector("release", "switch", "expiry", "rename").foreach { transition =>
     test(s"should notify waiting browsers of acquisition and $transition through the ownership stream"):
@@ -809,6 +812,195 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next, Some(lock)))
         assertEquals(accepted, SelectResult.Owned(replacement, TargetRevision.initial.next.next))
         assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, Some(replacement)))
+    }
+
+  Vector(target, cover).foreach { destination =>
+    test(s"should authorize only the exact live grant for $destination"):
+      for
+        mutex      <- Mutex[IO]
+        manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        connection <- registerConnection(manager, owner, tab)
+        lock       <- manager.select(connection, TargetRevision.initial, destination).flatMap(requireLock)
+        accepted   <- mutex.lock.surround(manager.authorizeTarget(connection, destination, lock.grant))
+        wrong      <- mutex.lock.surround(manager.authorizeTarget(connection, destination, GrantId(new UUID(0L, 99L))))
+        other <- mutex.lock.surround(manager.authorizeTarget(connection, if Set(target).contains(destination) then cover else target, lock.grant))
+      yield
+        assertEquals(accepted, AuthorizationResult.Authorized)
+        assertEquals(wrong, AuthorizationResult.Rejected(Failure.StaleGrant))
+        assertEquals(other, AuthorizationResult.Rejected(Failure.StaleGrant))
+  }
+
+  test("should reject an unowned direct target even when it is free"):
+    for
+      mutex      <- Mutex[IO]
+      manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      connection <- registerConnection(manager, owner, tab)
+      result     <- mutex.lock.surround(manager.authorizeTarget(connection, target, GrantId(new UUID(0L, 99L))))
+    yield assertEquals(result, AuthorizationResult.Rejected(Failure.StaleGrant))
+
+  test("should authorize independent mutations and unlocked affected targets without acquiring them"):
+    for
+      mutex       <- Mutex[IO]
+      manager     <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      connection  <- registerConnection(manager, owner, tab)
+      independent <- mutex.lock.surround(manager.authorizeAffected(connection, targets = Set.empty, maybeGrant = none[GrantId]))
+      shared      <- mutex.lock.surround(manager.authorizeAffected(connection, targets = Set(target, cover), maybeGrant = none[GrantId]))
+      current     <- manager.readTarget(connection)
+    yield
+      assertEquals(independent, AuthorizationResult.Authorized)
+      assertEquals(shared, AuthorizationResult.Authorized)
+      assertEquals(current, ReadTargetResult.Current(TargetRevision.initial, none[EditingLock]))
+
+  test("should prove an affected owned grant and reject missing or obsolete evidence"):
+    for
+      mutex      <- Mutex[IO]
+      manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      connection <- registerConnection(manager, owner, tab)
+      lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+      missing    <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target, cover), maybeGrant = none[GrantId]))
+      obsolete   <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), GrantId(new UUID(0L, 99L)).some))
+      accepted   <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target, cover), lock.grant.some))
+      unrelated  <- mutex.lock.surround(manager.authorizeAffected(connection, Set(cover), maybeGrant = none[GrantId]))
+    yield
+      assertEquals(missing, AuthorizationResult.Rejected(Failure.StaleGrant))
+      assertEquals(obsolete, AuthorizationResult.Rejected(Failure.StaleGrant))
+      assertEquals(accepted, AuthorizationResult.Authorized)
+      assertEquals(unrelated, AuthorizationResult.Authorized)
+
+  test("should reject a shared mutation atomically if another session owns any affected target"):
+    TestControl.executeEmbed {
+      val otherAlias: EditorAlias = "Alex"
+
+      for
+        mutex      <- Mutex[IO]
+        manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        connection <- registerConnection(manager, owner, tab)
+        other      <- manager.register(otherOwner, otherAlias, maybeSession = none[SessionId]).flatMap(requireSession)
+        competing  <- manager.bind(other.id, tab).flatMap(requireConnection)
+        ownLock    <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _          <- manager.select(competing, TargetRevision.initial, cover)
+        result     <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target, cover), ownLock.grant.some))
+        current    <- manager.readTarget(connection)
+      yield
+        assertEquals(result, AuthorizationResult.Blocked(cover, otherOwner, otherAlias))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, ownLock.some))
+    }
+
+  test("should validate the current tab for independent and protected admissions"):
+    for
+      mutex        <- Mutex[IO]
+      manager      <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      first        <- registerConnection(manager, owner, tab)
+      lock         <- manager.select(first, TargetRevision.initial, target).flatMap(requireLock)
+      connected    <- mutex.lock.surround(manager.authorizeConnection(first))
+      second       <- manager.bind(first.session, tab).flatMap(requireConnection)
+      staleBinding <- mutex.lock.surround(manager.authorizeConnection(first))
+      independent  <- mutex.lock.surround(manager.authorizeAffected(first, targets = Set.empty, maybeGrant = none[GrantId]))
+      obsolete     <- mutex.lock.surround(manager.authorizeTarget(first, target, lock.grant))
+      accepted     <- mutex.lock.surround(manager.authorizeTarget(second, target, lock.grant))
+      _            <- manager.unbind(second)
+      unbound      <- mutex.lock.surround(manager.authorizeConnection(second))
+      released     <- mutex.lock.surround(manager.authorizeAffected(second, targets = Set.empty, maybeGrant = none[GrantId]))
+    yield
+      assertEquals(connected, ConnectionAuthorizationResult.Authorized)
+      assertEquals(staleBinding, ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(unbound, ConnectionAuthorizationResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(independent, AuthorizationResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(obsolete, AuthorizationResult.Rejected(Failure.ObsoleteConnection))
+      assertEquals(accepted, AuthorizationResult.Authorized)
+      assertEquals(released, AuthorizationResult.Rejected(Failure.ObsoleteConnection))
+
+  test("should reject expired sessions for every mutation without extending authority"):
+    TestControl.executeEmbed {
+      for
+        mutex        <- Mutex[IO]
+        manager      <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        connection   <- registerConnection(manager, owner, tab)
+        lock         <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _            <- IO.sleep(30.seconds)
+        staleSession <- mutex.lock.surround(manager.authorizeConnection(connection))
+        direct       <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        shared       <- mutex.lock.surround(manager.authorizeAffected(connection, Set(cover), maybeGrant = none[GrantId]))
+        independent  <- mutex.lock.surround(manager.authorizeAffected(connection, targets = Set.empty, maybeGrant = none[GrantId]))
+        current      <- manager.read(connection)
+      yield
+        val rejected = AuthorizationResult.Rejected(Failure.StaleSession)
+        assertEquals(staleSession, ConnectionAuthorizationResult.Rejected(Failure.StaleSession))
+        assertEquals(direct, rejected)
+        assertEquals(shared, rejected)
+        assertEquals(independent, rejected)
+        assertEquals(current, ReadResult.Rejected(Failure.StaleSession))
+    }
+
+  test("should expire grants independently and reject late evidence even for now unlocked shared targets"):
+    TestControl.executeEmbed {
+      for
+        mutex      <- Mutex[IO]
+        manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        connection <- registerConnection(manager, owner, tab)
+        lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _          <- IO.sleep(20.seconds)
+        _          <- manager.heartbeat(connection)
+        _          <- IO.sleep(10.seconds)
+        direct     <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        stale      <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), lock.grant.some))
+        shared     <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), maybeGrant = none[GrantId]))
+        current    <- manager.readTarget(connection)
+      yield
+        assertEquals(direct, AuthorizationResult.Rejected(Failure.StaleGrant))
+        assertEquals(stale, AuthorizationResult.Rejected(Failure.StaleGrant))
+        assertEquals(shared, AuthorizationResult.Authorized)
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, none[EditingLock]))
+    }
+
+  test("should not let released or replaced grants authorize a later acquisition"):
+    for
+      mutex      <- Mutex[IO]
+      manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      connection <- registerConnection(manager, owner, tab)
+      first      <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+      _          <- manager.release(connection, TargetRevision.initial.next, first.grant)
+      second     <- manager.select(connection, TargetRevision.initial.next.next, target).flatMap(requireLock)
+      obsolete   <- mutex.lock.surround(manager.authorizeTarget(connection, target, first.grant))
+      accepted   <- mutex.lock.surround(manager.authorizeTarget(connection, target, second.grant))
+    yield
+      assertEquals(obsolete, AuthorizationResult.Rejected(Failure.StaleGrant))
+      assertEquals(accepted, AuthorizationResult.Authorized)
+
+  test("should reject another session's grant and restart credentials without changing saved state"):
+    for
+      mutex      <- Mutex[IO]
+      manager    <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      connection <- registerConnection(manager, owner, tab)
+      competitor <- registerConnection(manager, otherOwner, duplicate)
+      lock       <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+      borrowed   <- mutex.lock.surround(manager.authorizeTarget(competitor, target, lock.grant))
+      restarted  <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+      oldTarget  <- mutex.lock.surround(restarted.authorizeTarget(connection, target, lock.grant))
+      oldSession <- mutex.lock.surround(restarted.authorizeAffected(connection, targets = Set.empty, maybeGrant = none[GrantId]))
+    yield
+      assertEquals(borrowed, AuthorizationResult.Rejected(Failure.StaleGrant))
+      assertEquals(oldTarget, AuthorizationResult.Rejected(Failure.StaleSession))
+      assertEquals(oldSession, AuthorizationResult.Rejected(Failure.StaleSession))
+
+  test("should never renew either lease through successful authorization"):
+    TestControl.executeEmbed {
+      for
+        mutex          <- Mutex[IO]
+        manager        <- buildCoordinatedManager(mutex, IdGenerator.make[IO])
+        connection     <- registerConnection(manager, owner, tab)
+        lock           <- manager.select(connection, TargetRevision.initial, target).flatMap(requireLock)
+        _              <- IO.sleep(29.seconds)
+        connectionOnly <- mutex.lock.surround(manager.authorizeConnection(connection))
+        direct         <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+        shared         <- mutex.lock.surround(manager.authorizeAffected(connection, Set(target), lock.grant.some))
+        _              <- IO.sleep(1.second)
+        expired        <- mutex.lock.surround(manager.authorizeTarget(connection, target, lock.grant))
+      yield
+        assertEquals(connectionOnly, ConnectionAuthorizationResult.Authorized)
+        assertEquals(direct, AuthorizationResult.Authorized)
+        assertEquals(shared, AuthorizationResult.Authorized)
+        assertEquals(expired, AuthorizationResult.Rejected(Failure.StaleSession))
     }
 
   private def registerConnection(manager: EditorSessionManager[IO], editor: EditorId, document: TabId) =

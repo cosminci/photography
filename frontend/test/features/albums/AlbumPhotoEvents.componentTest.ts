@@ -1,21 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeAlbumPhotoEvents } from "../../../src/features/albums/api/AlbumPhotoEvents";
 
-describe("album EventSource representation boundary", () => {
+describe("AlbumPhotoEvents", () => {
   it("should adapt named events and interruptions independently for each browser subscription and dispose listeners", () => {
-    const sources: (EventTarget & { close: () => void })[] = [];
-    const construct = vi.fn<(url: string) => EventTarget & { close: () => void }>(() => {
-      const source = Object.assign(new EventTarget(), { close: vi.fn() });
-      sources.push(source);
-      return source;
-    });
+    const source = Object.assign(new EventTarget(), { close: vi.fn() });
+    const otherSource = Object.assign(new EventTarget(), { close: vi.fn() });
+    const construct = vi.fn<(url: string) => EventTarget & { close: () => void }>().mockReturnValueOnce(source).mockReturnValueOnce(otherSource);
     const events = makeAlbumPhotoEvents(construct);
     const receive = vi.fn();
     const otherReceive = vi.fn();
     const dispose = events.subscribe("album/id", receive);
     const disposeOther = events.subscribe("album/id", otherReceive);
-    const source = sources[0];
-    if (source === undefined) throw new Error("Missing browser subscription");
     const expectedEvents = [
       { kind: "subscribed" },
       { kind: "inventory-changed", chapterId: "chapter" },
@@ -37,7 +32,7 @@ describe("album EventSource representation boundary", () => {
 
     expect(source.close).toHaveBeenCalledOnce();
     expect(receive).toHaveBeenCalledTimes(4);
-    expect(sources[1]?.close).not.toHaveBeenCalled();
+    expect(otherSource.close).not.toHaveBeenCalled();
     disposeOther();
   });
 

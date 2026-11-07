@@ -32,10 +32,9 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
     val suspendedChapter          = ChapterId(new UUID(0L, 3L))
     val secondSource: PhotoSource = "/photos/b"
     (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (mutex, entered, release) =>
-      val refresh = (_: Transaction[Db, IO], _: ChapterId, current: PhotoSource) =>
-        if (current: String) === (source: String) then
-          entered.complete(()).void >> release.get.as(PhotoManager.RefreshResult(0, Vector(PhotoManager.Issue.Discovery)))
-        else finished.pure[IO]
+      val pending = entered.complete(()).void >> release.get.as(PhotoManager.RefreshResult(0, Vector(PhotoManager.Issue.Discovery)))
+      val replies = Ref.unsafe[IO, Vector[IO[PhotoManager.RefreshResult]]](Vector(pending, finished.pure[IO]))
+      val refresh = replies.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unarranged reconciliation"))).flatten
       val program = buildImport(refs, refresh)(using mutex).use { imports =>
         for
           first     <- imports.prepare(album, chapter, source)
@@ -72,7 +71,7 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
   test("should coalesce active requests, ignore duplicate launches and allow a fresh pass after completion"):
     val refs = Refs()
     (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (mutex, entered, release) =>
-      val refresh = (_: Transaction[Db, IO], _: ChapterId, _: PhotoSource) => entered.complete(()).void >> release.get.as(finished)
+      val refresh = entered.complete(()).void >> release.get.as(finished)
       buildImport(refs, refresh)(using mutex).use { imports =>
         for
           initial   <- imports.prepare(album, chapter, source)
@@ -104,12 +103,13 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
     val replacement: PhotoSource = "/photos/replacement"
     (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit], Ref.of[IO, Vector[PhotoSource]](Vector.empty)).tupled.flatMap {
       case (mutex, entered, release, published) =>
-        val refresh = (guarded: Transaction[Db, IO], _: ChapterId, current: PhotoSource) =>
-          val write = guarded.run(Kleisli.liftF[IO, Unit, Unit](published.update(_ :+ current))).attempt >>
+        val manager = (guarded: Transaction[Db, IO]) =>
+          val write = guarded.run(Kleisli.liftF[IO, Unit, Unit](published.update(_ :+ source))).attempt >>
             guarded.resolve(Kleisli.liftF[IO, Unit, Unit](IO.unit)).as(finished)
-          if (current: String) === (source: String) then IO.uncancelable(_ => entered.complete(()).void >> release.get >> write)
-          else write
-        val program = buildImport(refs, refresh)(using mutex).use { imports =>
+          buildManager(refs, IO.uncancelable(_ => entered.complete(()).void >> release.get >> write))
+        given Mutex[IO] = mutex
+        val resource = ChapterPhotoImport.make(manager, buildRecovery(refs, PhotoWriteRecovery.RecoveryResult.Recovered), buildEvents(refs, IO.unit))
+        val program  = resource.use { imports =>
           for
             old           <- imports.prepare(album, chapter, source)
             _             <- imports.launch(old)
@@ -122,10 +122,12 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
             _             <- awaitFinished(imports, chapter)
             saved         <- published.get
             notifications <- refs.invalidations.get
+            refreshes     <- refs.refreshes.get
           yield
             assertEquals(fresh.generation, old.generation + 2)
             assertEquals(saved, Vector(source))
             assertEquals(notifications, Vector.fill(5)((album, chapter)))
+            assertEquals(refreshes, Vector.fill(2)((chapter, source)))
         }
         for
           control <- TestControl.execute(program)
@@ -139,8 +141,7 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
   test("should suspend uncertain source work without allowing its queued request to launch"):
     Mutex[IO].flatMap { mutex =>
       val refs    = Refs()
-      val refresh = (_: Transaction[Db, IO], _: ChapterId, _: PhotoSource) =>
-        IO.raiseError[PhotoManager.RefreshResult](new AssertionError("Suspended source must not run"))
+      val refresh = finished.pure[IO]
       buildImport(refs, refresh)(using mutex).use { imports =>
         for
           idle       <- imports.status(chapter)
@@ -148,10 +149,12 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
           _          <- imports.suspend(chapter)
           scheduling <- imports.launch(request)
           status     <- imports.status(chapter)
+          calls      <- refs.refreshes.get
         yield
           assertEquals(idle, ExecutionOutcome(Status.Idle, Vector.empty))
           assertEquals(scheduling, Scheduling.Coalesced)
           assertEquals(status, ExecutionOutcome(Status.Uncertain, Vector.empty))
+          assertEquals(calls, Vector.empty[(ChapterId, PhotoSource)])
       }
     }
 
@@ -160,9 +163,9 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
       Mutex[IO].flatMap { mutex =>
         val refs         = Refs()
         val error        = new IllegalStateException(scenario)
-        val refresh      = (_: Transaction[Db, IO], _: ChapterId, _: PhotoSource) => finished.pure[IO]
+        val refresh      = finished.pure[IO]
         val notification = IO.raiseError[Unit](error)
-        val manager      = (guarded: Transaction[Db, IO]) => buildManager(refs, refresh, guarded)
+        val manager      = (_: Transaction[Db, IO]) => buildManager(refs, refresh)
         given Mutex[IO]  = mutex
         val resource     =
           ChapterPhotoImport.make(manager, buildRecovery(refs, PhotoWriteRecovery.RecoveryResult.Recovered), buildEvents(refs, notification))
@@ -192,7 +195,7 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
     Vector(PhotoWriteRecovery.RecoveryResult.Recovered, PhotoWriteRecovery.RecoveryResult.Failed(Vector(issue))).traverse_ { recovery =>
       Mutex[IO].flatMap { mutex =>
         val refs    = Refs()
-        val refresh = (_: Transaction[Db, IO], _: ChapterId, _: PhotoSource) => finished.pure[IO]
+        val refresh = finished.pure[IO]
         buildImport(refs, refresh, recovery)(using mutex).use { imports =>
           for
             _ <- imports.retire(album, Vector(intent))
@@ -228,11 +231,11 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
   // scalafix:off DisableSyntax.defaultArgs
   private def buildImport(
       refs: Refs,
-      onRefresh: (Transaction[Db, IO], ChapterId, PhotoSource) => IO[PhotoManager.RefreshResult],
+      response: IO[PhotoManager.RefreshResult],
       recovery: PhotoWriteRecovery.RecoveryResult = PhotoWriteRecovery.RecoveryResult.Recovered
   )(using Mutex[IO]) =
     ChapterPhotoImport.make(
-      guarded => buildManager(refs, onRefresh, guarded),
+      (_: Transaction[Db, IO]) => buildManager(refs, response),
       buildRecovery(refs, recovery),
       buildEvents(refs, IO.unit)
     )
@@ -240,11 +243,10 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
 
   private def buildManager(
       refs: Refs,
-      onRefresh: (Transaction[Db, IO], ChapterId, PhotoSource) => IO[PhotoManager.RefreshResult],
-      guarded: Transaction[Db, IO]
+      response: IO[PhotoManager.RefreshResult]
   ) = new PhotoManager[IO]:
     override def refresh(chapter: ChapterId, source: PhotoSource): IO[PhotoManager.RefreshResult] =
-      refs.refreshes.update(_ :+ (chapter, source)) >> onRefresh(guarded, chapter, source)
+      refs.refreshes.update(_ :+ (chapter, source)) >> response
     override def read(photo: PhotoId): IO[PhotoManager.ReadResult]                                                 = fail("Scheduler only reconciles")
     override def saveCaption(chapter: ChapterId, photo: PhotoId, text: String): IO[PhotoManager.SaveCaptionResult] = fail("Scheduler only reconciles")
 

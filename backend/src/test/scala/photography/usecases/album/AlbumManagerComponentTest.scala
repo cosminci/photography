@@ -36,9 +36,12 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
     val lastPage          = AlbumPage(Vector(buildMetadata(index = 0)), page = 3, pageSize = 6, totalAlbums = 13, totalPages = 3)
     val emptyPage         = AlbumPage(albums = Vector.empty[AlbumRepository.Metadata], page = 1, pageSize = 6, totalAlbums = 0, totalPages = 0)
     val expectedFirstPage = ListAlbumsResult.Listed(AlbumPage(thirteenAlbums.take(6), page = 1, pageSize = 6, totalAlbums = 13, totalPages = 3))
+    val firstSlice        = AlbumRepository.ListResult.Listed(AlbumPageSlice(totalAlbums = 13, albums = thirteenAlbums.take(6)))
+    val lastSlice         = AlbumRepository.ListResult.Listed(AlbumPageSlice(totalAlbums = 13, albums = Vector(buildMetadata(index = 0))))
+    val listing           = buildListing(List(firstSlice, lastSlice, firstSlice))
 
     for
-      manager      <- buildManager(refs, albums = thirteenAlbums)
+      manager      <- buildManager(refs, listing = listing)
       selected     <- manager.list(page = 99)
       calls        <- refs.listCalls.get
       firstPage    <- manager.list(page = 1)
@@ -51,15 +54,23 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       assertEquals(empty, ListAlbumsResult.Listed(emptyPage))
 
   test("should report failure when either album page query fails"):
-    val firstPageFails    = buildManager(Refs(), maybeListFailureOffset = 0.some).flatMap(_.list(page = 1))
-    val selectedPageFails = buildManager(Refs(), albums = thirteenAlbums, maybeListFailureOffset = 12.some).flatMap(_.list(page = 99))
+    val firstRefs         = Refs()
+    val selectedRefs      = Refs()
+    val failure           = AlbumRepository.ListResult.Failed(Failure.DatabaseFailure)
+    val firstSlice        = AlbumRepository.ListResult.Listed(AlbumPageSlice(totalAlbums = 13, albums = thirteenAlbums.take(6)))
+    val firstPageFails    = buildManager(firstRefs, listing = failure.pure[IO]).flatMap(_.list(page = 1))
+    val selectedPageFails = buildManager(selectedRefs, listing = buildListing(List(firstSlice, failure))).flatMap(_.list(page = 99))
 
     for
-      first    <- firstPageFails
-      selected <- selectedPageFails
+      first         <- firstPageFails
+      selected      <- selectedPageFails
+      firstCalls    <- firstRefs.listCalls.get
+      selectedCalls <- selectedRefs.listCalls.get
     yield
       assertEquals(first, ListAlbumsResult.Failed)
       assertEquals(selected, ListAlbumsResult.Failed)
+      assertEquals(firstCalls, Vector((offset = 0, limit = 6)))
+      assertEquals(selectedCalls, Vector((offset = 0, limit = 6), (offset = 12, limit = 6)))
 
   test("should create an Album from the first AlbumStart template the repository lists"):
     Vector[AlbumYear](2020, 2025, selectedYear).traverse_ { year =>
@@ -196,7 +207,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   final private case class Refs():
     val synopsisCalls: Ref[IO, Vector[(AlbumId, String)]]      = Ref.unsafe(Vector.empty)
     val authorsCalls: Ref[IO, Vector[(AlbumId, AlbumAuthors)]] = Ref.unsafe(Vector.empty)
-    val listCalls: Ref[IO, Vector[(Int, Int)]]                 = Ref.unsafe(Vector.empty)
+    val listCalls: Ref[IO, Vector[(offset: Int, limit: Int)]]  = Ref.unsafe(Vector.empty)
     val maybeCreated: Ref[IO, Option[(Album, Cover)]]          = Ref.unsafe(None)
     val maybeLastReadId: Ref[IO, Option[AlbumId]]              = Ref.unsafe(None)
     val maybeRenamedTitle: Ref[IO, Option[AlbumTitle]]         = Ref.unsafe(None)
@@ -205,8 +216,8 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
       refs: Refs,
-      albums: Vector[AlbumRepository.Metadata] = Vector.empty[AlbumRepository.Metadata],
-      maybeListFailureOffset: Option[Int] = None,
+      listing: IO[AlbumRepository.ListResult] =
+        AlbumRepository.ListResult.Listed(AlbumPageSlice(totalAlbums = 0, albums = Vector.empty[AlbumRepository.Metadata])).pure[IO],
       createResult: AlbumRepository.CreateResult = AlbumRepository.CreateResult.Created,
       getResult: AlbumRepository.PlanningResult = AlbumRepository.PlanningResult.NotFound,
       renameResult: AlbumRepository.RenameResult = AlbumRepository.RenameResult.NotFound,
@@ -224,8 +235,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def readInstant: IO[Instant] = currentTime.pure[IO]
     val repository = buildRepository(
       refs,
-      albums = albums,
-      maybeListFailureOffset = maybeListFailureOffset,
+      listing = listing,
       createResult,
       getResult,
       renameResult,
@@ -247,8 +257,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
 
   private def buildRepository(
       refs: Refs,
-      albums: Vector[AlbumRepository.Metadata],
-      maybeListFailureOffset: Option[Int],
+      listing: IO[AlbumRepository.ListResult],
       createResult: AlbumRepository.CreateResult,
       getResult: AlbumRepository.PlanningResult,
       renameResult: AlbumRepository.RenameResult,
@@ -262,10 +271,7 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def saveAuthors(album: AlbumId, authors: AlbumAuthors): IO[AlbumRepository.SaveAuthorsResult] =
         refs.authorsCalls.update(_ :+ (album -> authors)).as(authorsResult)
       override def list(offset: Int, limit: Int): IO[AlbumRepository.ListResult] =
-        refs.listCalls.update(_ :+ (offset -> limit)).as(
-          if maybeListFailureOffset.contains(offset) then AlbumRepository.ListResult.Failed(Failure.DatabaseFailure)
-          else AlbumRepository.ListResult.Listed(AlbumPageSlice(totalAlbums = albums.size.toLong, albums.slice(offset, offset + limit)))
-        )
+        refs.listCalls.update(_.appended((offset = offset, limit = limit))) >> listing
 
       override def create(album: Album, cover: Cover): IO[AlbumRepository.CreateResult] =
         refs.maybeCreated.set((album, cover).some).as(createResult)
@@ -279,6 +285,10 @@ final class AlbumManagerComponentTest extends CatsEffectSuite:
       override def delete(id: AlbumId): IO[AlbumRepository.DeleteResult] =
         refs.maybeDeletedId.set(id.some).as(deleteResult)
   // scalafix:on DisableSyntax.defaultArgs
+
+  private def buildListing(results: List[AlbumRepository.ListResult]) =
+    val responses = Ref.unsafe[IO, List[AlbumRepository.ListResult]](results)
+    responses.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unexpected page query")))
 
   private def buildAlbumStartTemplate(index: Int) =
     val name = s"Template $index".refineUnsafe[Not[Empty]]

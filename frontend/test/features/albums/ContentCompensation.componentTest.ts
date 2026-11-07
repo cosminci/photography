@@ -40,23 +40,20 @@ describe("content compensating commands", () => {
     expect(write).not.toHaveBeenCalled();
   });
   it("should reverse and reapply only the saved content after checking current content", async () => {
-    let value = "After";
-    const write = vi.fn((text: string) => {
-      value = text;
-      return Promise.resolve();
-    });
+    const read = vi.fn().mockResolvedValueOnce("After").mockResolvedValueOnce("Before");
+    const write = vi.fn().mockResolvedValue(undefined);
     const action = createContentCompensation({
       label: "Edit caption",
       before: "Before",
       after: "After",
-      read: () => Promise.resolve(value),
+      read,
       write,
       equal: (left, right) => left === right,
       prepare: () => Promise.resolve(undefined),
     });
 
     expect(await action.apply("undo")).toEqual({ kind: "saved" });
-    expect(value).toBe("Before");
+    expect(write).toHaveBeenCalledExactlyOnceWith("Before");
     expect(await action.apply("redo")).toEqual({ kind: "saved" });
     expect(write.mock.calls).toEqual([["Before"], ["After"]]);
   });

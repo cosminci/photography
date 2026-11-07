@@ -43,9 +43,10 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     val cases    = Vector[InteriorSpreadCount](0, 15, 16, 65)
 
     cases.traverse_ { count =>
+      val refs = Refs()
+
       for
-        state   <- Ref.of[IO, Composition](empty)
-        manager <- buildManager(state, interiorSpreads = count, specifications = catalog)
+        manager <- buildManager(refs, read = buildRead(empty, interiorSpreads = count, specifications = catalog))
         result  <- manager.read(cover.album)
       yield
         val selected = if count <= 15 then specification else expanded
@@ -55,55 +56,62 @@ class CoverManagerComponentTest extends CatsEffectSuite:
 
   test("should change either spine owner without changing either photograph or its framing"):
     val occupied = empty.copy(placements = Vector(first, second))
+    val refs     = Refs()
 
     for
-      state   <- Ref.of[IO, Composition](occupied)
-      manager <- buildManager(state)
+      manager <- buildManager(refs, read = buildRead(occupied))
       front   <- manager.setSpineOwner(cover.album, SpineOwner.Front)
       back    <- manager.setSpineOwner(cover.album, SpineOwner.Back)
-      saved   <- state.get
+      owners  <- refs.owners.get
     yield
       assertEquals(front, SetSpineOwnerResult.Saved(occupied.copy(cover = cover.copy(spineOwner = SpineOwner.Front))))
       assertEquals(back, SetSpineOwnerResult.Saved(occupied))
-      assertEquals(saved, occupied)
+      assertEquals(owners, Vector((album = cover.album, owner = SpineOwner.Front), (album = cover.album, owner = SpineOwner.Back)))
 
   test("should initialize, replace, release and re-place photos without changing cover structure"):
     val placed   = empty.copy(placements = Vector(first.copy(transform = initial)))
     val replaced = empty.copy(placements = Vector(first.copy(photo = otherPhoto, transform = initial)))
+    val refs     = Refs()
 
     for
-      state       <- Ref.of[IO, Composition](empty)
-      manager     <- buildManager(state)
+      manager     <- buildManager(refs, read = buildReads(List(empty, placed, placed, replaced, empty)))
       saved       <- manager.edit(cover.album, Edit.Place(cover.front.id, photo))
       read        <- manager.read(cover.album)
       changed     <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto))
       removed     <- manager.edit(cover.album, Edit.Remove(fresh))
       freshResult <- manager.edit(cover.album, Edit.Place(cover.front.id, photo))
+      writes      <- refs.replacements.get
+      inspections <- refs.inspections.get
     yield
       assertEquals(saved, Result.Saved(placed))
       assertEquals(read, ReadResult.Found(placed))
       assertEquals(changed, Result.Saved(replaced))
       assertEquals(removed, Result.Saved(empty))
       assertEquals(freshResult, Result.Saved(placed))
+      assertEquals(writes, Vector(placed, replaced, empty, placed).map(value => (album = cover.album, placements = value.placements)))
+      assertEquals(inspections, Vector(photo, otherPhoto, photo).map(value => (album = cover.album, chapter = none[ChapterId], photo = value)))
 
   test("should retain transforms when moving or swapping and save completed adjustments"):
     val occupied = empty.copy(placements = Vector(first, second))
     val swapped  = occupied.copy(placements = Vector(first.copy(slot = cover.back.id), second.copy(slot = cover.front.id)))
     val changed  = swapped.copy(placements = Vector(first.copy(slot = cover.back.id), second.copy(slot = cover.front.id, transform = adjusted)))
+    val released = changed.copy(placements = Vector(first.copy(slot = cover.back.id)))
+    val refs     = Refs()
 
     for
-      state      <- Ref.of[IO, Composition](occupied)
-      manager    <- buildManager(state)
+      manager    <- buildManager(refs, read = buildReads(List(occupied, swapped, swapped, changed, released)))
       swap       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id))
       same       <- manager.edit(cover.album, Edit.Move(fresh, cover.back.id))
       adjustment <- manager.edit(cover.album, Edit.Adjust(otherId, adjusted))
       _          <- manager.edit(cover.album, Edit.Remove(otherId))
       move       <- manager.edit(cover.album, Edit.Move(fresh, cover.front.id))
+      writes     <- refs.replacements.get
     yield
       assertEquals(swap, Result.Saved(swapped))
       assertEquals(same, swap)
       assertEquals(adjustment, Result.Saved(changed))
       assertEquals(move, Result.Saved(empty.copy(placements = Vector(first))))
+      assertEquals(writes.map(_.placements), Vector(swapped.placements, swapped.placements, changed.placements, released.placements, Vector(first)))
 
   test("should reject stale slots, vanished sources and invalid zoom without changing saved state"):
     val occupied = empty.copy(placements = Vector(first))
@@ -119,44 +127,78 @@ class CoverManagerComponentTest extends CatsEffectSuite:
     )
 
     requests.traverse_ { case (request, failure) =>
+      val refs = Refs()
+
       for
-        state   <- Ref.of[IO, Composition](occupied)
-        manager <- buildManager(state)
+        manager <- buildManager(refs, read = buildRead(occupied))
         result  <- manager.edit(cover.album, request)
-        saved   <- state.get
+        writes  <- refs.replacements.get
       yield
         assertEquals(result, Result.Rejected(failure))
-        assertEquals(saved, occupied)
+        assertEquals(writes, Vector.empty)
     }
 
-  test("should reject wrong-owner and used photos and serialize current cover placement decisions"):
+  test("should reject wrong-owner, missing and already-used photos before persistence"):
+    val responses = Vector(
+      PhotoPlacementRepository.InspectResult.Found(inCollection = false, placed = false) -> Failure.PhotoNotInCollection,
+      PhotoPlacementRepository.InspectResult.NotFound                                    -> Failure.PhotoNotInCollection,
+      PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = true)   -> Failure.PhotoAlreadyUsed
+    )
+    responses.traverse_ { case (response, failure) =>
+      val refs = Refs()
+
+      for
+        manager <- buildManager(refs, inspected = response.pure[IO])
+        result  <- manager.edit(cover.album, Edit.Place(cover.front.id, foreign))
+        calls   <- refs.inspections.get
+        writes  <- refs.replacements.get
+      yield
+        assertEquals(result, Result.Rejected(failure))
+        assertEquals(calls, Vector((album = cover.album, chapter = none[ChapterId], photo = foreign)))
+        assertEquals(writes, Vector.empty)
+    }
+
+  test("should serialize current cover reads, photo inspection and placement writes"):
+    val refs      = Refs()
+    val responses = Ref.unsafe[IO, List[PhotoPlacementRepository.InspectResult]](List(
+      PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = false),
+      PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = true)
+    ))
+    val inspected = responses.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unexpected inspection")))
+
     for
-      state        <- Ref.of[IO, Composition](empty)
-      manager      <- buildManager(state, usedElsewhere = Set(otherPhoto))
-      wrongOwner   <- manager.edit(cover.album, Edit.Place(cover.front.id, foreign))
-      missingPhoto <- manager.edit(cover.album, Edit.Place(cover.front.id, PhotoId(new UUID(0L, 999L))))
-      used         <- manager.edit(cover.album, Edit.Place(cover.front.id, otherPhoto))
-      outcomes     <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(cover.album, Edit.Place(slot, photo)))
-      saved        <- state.get
+      manager  <- buildManager(refs, inspected = inspected)
+      outcomes <- Vector(cover.front.id, cover.back.id).parTraverse(slot => manager.edit(cover.album, Edit.Place(slot, photo)))
+      writes   <- refs.replacements.get
+      events   <- refs.events.get
     yield
-      assertEquals(wrongOwner, Result.Rejected(Failure.PhotoNotInCollection))
-      assertEquals(missingPhoto, Result.Rejected(Failure.PhotoNotInCollection))
-      assertEquals(used, Result.Rejected(Failure.PhotoAlreadyUsed))
       assertEquals(outcomes.count { case Result.Saved(_) => true; case _ => false }, 1)
       assertEquals(outcomes.count { case Result.Rejected(Failure.PhotoAlreadyUsed) => true; case _ => false }, 1)
-      assertEquals(saved.placements.map(_.photo), Vector(photo))
+      assertEquals(writes.map(_.placements.map(_.photo)), Vector(Vector(photo)))
+      assertEquals(events, Vector("read", "inspect", "replace", "read", "inspect"))
 
   test("should distinguish missing cover and read, inspection or write failures without empty success"):
-    val absent = AlbumId(new UUID(0L, 99L))
+    val absent       = AlbumId(new UUID(0L, 99L))
+    val refs         = Refs()
+    val readFailure  = IO.raiseError[CoverRepository.ReadResult](new IllegalStateException("read failed"))
+    val writeFailure = new IllegalStateException("write failed")
 
     for
-      state            <- Ref.of[IO, Composition](empty)
-      manager          <- buildManager(state)
-      absentManager    <- buildManager(state)
-      broken           <- buildManager(state, readFails = true)
-      uninspectable    <- buildManager(state, inspectionFails = true)
-      unwritable       <- buildManager(state, writeFails = true)
-      vanished         <- buildManager(state, replaceMissing = true)
+      manager       <- buildManager(refs, read = CoverRepository.ReadResult.NotFound.pure[IO])
+      absentManager <- buildManager(refs, read = CoverRepository.ReadResult.NotFound.pure[IO])
+      broken        <- buildManager(refs, read = readFailure)
+      uninspectable <-
+        buildManager(refs, inspected = IO.raiseError[PhotoPlacementRepository.InspectResult](new IllegalStateException("inspection failed")))
+      unwritable <- buildManager(
+        refs,
+        replaced = IO.raiseError[CoverRepository.ReplaceResult](writeFailure),
+        ownerWrite = IO.raiseError[CoverRepository.SetSpineOwnerResult](writeFailure)
+      )
+      vanished <- buildManager(
+        refs,
+        replaced = CoverRepository.ReplaceResult.NotFound.pure[IO],
+        ownerWrite = CoverRepository.SetSpineOwnerResult.NotFound.pure[IO]
+      )
       absentRead       <- manager.read(absent)
       absentEdit       <- absentManager.edit(absent, Edit.Place(cover.front.id, photo))
       failedRead       <- broken.read(cover.album)
@@ -168,7 +210,6 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       failedOwnerRead  <- broken.setSpineOwner(cover.album, SpineOwner.Front)
       failedOwnerWrite <- unwritable.setSpineOwner(cover.album, SpineOwner.Front)
       vanishedOwner    <- vanished.setSpineOwner(cover.album, SpineOwner.Front)
-      saved            <- state.get
     yield
       assertEquals(absentRead, ReadResult.CoverNotFound)
       assertEquals(absentEdit, Result.CoverNotFound)
@@ -181,47 +222,37 @@ class CoverManagerComponentTest extends CatsEffectSuite:
       assertEquals(failedOwnerRead, SetSpineOwnerResult.Failed)
       assertEquals(failedOwnerWrite, SetSpineOwnerResult.Failed)
       assertEquals(vanishedOwner, SetSpineOwnerResult.CoverNotFound)
-      assertEquals(saved, empty)
+
+  final private case class Refs():
+    val events: Ref[IO, Vector[String]]                                                            = Ref.unsafe(Vector.empty)
+    val reads: Ref[IO, Vector[AlbumId]]                                                            = Ref.unsafe(Vector.empty)
+    val owners: Ref[IO, Vector[(album: AlbumId, owner: SpineOwner)]]                               = Ref.unsafe(Vector.empty)
+    val replacements: Ref[IO, Vector[(album: AlbumId, placements: Vector[CoverPlacement])]]        = Ref.unsafe(Vector.empty)
+    val inspections: Ref[IO, Vector[(album: AlbumId, chapter: Option[ChapterId], photo: PhotoId)]] = Ref.unsafe(Vector.empty)
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
-      state: Ref[IO, Composition],
-      usedElsewhere: Set[PhotoId] = Set.empty[PhotoId],
-      readFails: Boolean = false,
-      inspectionFails: Boolean = false,
-      writeFails: Boolean = false,
-      replaceMissing: Boolean = false,
-      interiorSpreads: InteriorSpreadCount = 0,
-      specifications: NonEmptyVector[CoverSpecification] = NonEmptyVector.one(specification)
+      refs: Refs,
+      read: IO[CoverRepository.ReadResult] = buildRead(empty),
+      inspected: IO[PhotoPlacementRepository.InspectResult] =
+        PhotoPlacementRepository.InspectResult.Found(inCollection = true, placed = false).pure[IO],
+      replaced: IO[CoverRepository.ReplaceResult] = CoverRepository.ReplaceResult.Replaced.pure[IO],
+      ownerWrite: IO[CoverRepository.SetSpineOwnerResult] = CoverRepository.SetSpineOwnerResult.Updated.pure[IO]
   ) =
+    val reading    = read
     val repository = new CoverRepository[IO]:
       override def setSpineOwner(album: AlbumId, owner: SpineOwner): IO[CoverRepository.SetSpineOwnerResult] =
-        if writeFails then IO.raiseError[CoverRepository.SetSpineOwnerResult](new IllegalStateException("write failed"))
-        else if replaceMissing then CoverRepository.SetSpineOwnerResult.NotFound.pure[IO]
-        else state.update(value => value.copy(cover = value.cover.copy(spineOwner = owner))).as(CoverRepository.SetSpineOwnerResult.Updated)
+        refs.owners.update(_.appended((album = album, owner = owner))) >> ownerWrite
       override def read(album: AlbumId): IO[CoverRepository.ReadResult] =
-        if readFails then IO.raiseError[CoverRepository.ReadResult](new IllegalStateException("read failed"))
-        else
-          state.get.map: value =>
-            if album.value === value.cover.album.value then
-              CoverRepository.ReadResult.Found(CoverRepository.Stored(value.cover, value.placements, interiorSpreads, specifications))
-            else CoverRepository.ReadResult.NotFound
+        refs.reads.update(_ :+ album) >> refs.events.update(_ :+ "read") >> IO.cede >> reading
       override def replace(album: AlbumId, placements: Vector[CoverPlacement]): IO[CoverRepository.ReplaceResult] =
-        if writeFails then IO.raiseError[CoverRepository.ReplaceResult](new IllegalStateException("write failed"))
-        else if replaceMissing then CoverRepository.ReplaceResult.NotFound.pure[IO]
-        else state.update(_.copy(placements = placements)).as(CoverRepository.ReplaceResult.Replaced)
+        refs.replacements.update(_.appended((album = album, placements = placements))) >> refs.events.update(_ :+ "replace") >> replaced
     val photos = new PhotoPlacementRepository[IO]:
       override def findPlacedPhotos(chapter: ChapterId): IO[PhotoPlacementRepository.FindResult] =
         IO.raiseError[PhotoPlacementRepository.FindResult](new AssertionError("Unexpected chapter inventory"))
       override def inspect(album: AlbumId, maybeChapter: Option[ChapterId], requested: PhotoId): IO[PhotoPlacementRepository.InspectResult] =
-        if inspectionFails then IO.raiseError[PhotoPlacementRepository.InspectResult](new IllegalStateException("inspection failed"))
-        else
-          state.get.map: value =>
-            assertEquals(album, cover.album)
-            assertEquals(maybeChapter, none[ChapterId])
-            val used = usedElsewhere.contains(requested) || value.placements.exists(_.photo.value === requested.value)
-            if requested.value === new UUID(0L, 999L) then PhotoPlacementRepository.InspectResult.NotFound
-            else PhotoPlacementRepository.InspectResult.Found(inCollection = requested.value =!= foreign.value, placed = used)
+        refs.inspections.update(_.appended((album = album, chapter = maybeChapter, photo = requested))) >> refs.events.update(_ :+ "inspect") >>
+          inspected
     given IdGenerator[IO] with
       override def generateId: IO[UUID] = fresh.value.pure[IO]
     Mutex[IO].map: mutex =>
@@ -229,4 +260,15 @@ class CoverManagerComponentTest extends CatsEffectSuite:
         override def run[A](program: IO[A]): IO[A]     = mutex.lock.surround(program)
         override def resolve[A](program: IO[A]): IO[A] = mutex.lock.surround(program)
       CoverManager.make[IO, IO](repository, photos)
+
+  private def buildRead(
+      composition: Composition,
+      interiorSpreads: InteriorSpreadCount = 0,
+      specifications: NonEmptyVector[CoverSpecification] = NonEmptyVector.one(specification)
+  ) =
+    CoverRepository.ReadResult.Found(CoverRepository.Stored(composition.cover, composition.placements, interiorSpreads, specifications)).pure[IO]
   // scalafix:on DisableSyntax.defaultArgs
+
+  private def buildReads(compositions: List[Composition]) =
+    val responses = Ref.unsafe[IO, List[Composition]](compositions)
+    responses.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unexpected cover read"))).flatMap(buildRead(_))

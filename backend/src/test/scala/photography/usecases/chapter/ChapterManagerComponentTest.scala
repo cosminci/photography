@@ -39,7 +39,15 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
     )
 
     cases.traverse_ { case (response, expected) =>
-      buildManager(Refs(), read = response).flatMap(_.readGear(album, chapter)).map(assertEquals(_, expected))
+      val refs = Refs()
+
+      for
+        manager <- buildManager(refs, read = response)
+        result  <- manager.readGear(album, chapter)
+        calls   <- refs.reads.get
+      yield
+        assertEquals(result, expected)
+        assertEquals(calls, Vector((album = album, chapter = chapter)))
     }
 
   test("should replace complete ordered gear once after validating the loaded catalog"):
@@ -57,9 +65,11 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
         manager <- buildManager(refs, write = response)
         result  <- manager.replaceGear(album, chapter, selection = selection)
         events  <- refs.events.get
+        writes  <- refs.writes.get
       yield
         assertEquals(result, expected)
         assertEquals(events, Vector("catalog", "replace"))
+        assertEquals(writes, Vector((album = album, chapter = chapter, selection = selection)))
     }
 
   test("should accept empty selections and preserve order when compatible bodies share lenses"):
@@ -77,11 +87,15 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
     )
 
     cases.traverse_ { values =>
-      buildManager(
-        Refs(),
-        current = current,
-        requested = values
-      ).flatMap(_.replaceGear(album, chapter, values)).map(assertEquals(_, GearReplaceResult.Saved))
+      val refs = Refs()
+
+      for
+        manager <- buildManager(refs, current = current)
+        result  <- manager.replaceGear(album, chapter, values)
+        writes  <- refs.writes.get
+      yield
+        assertEquals(result, GearReplaceResult.Saved)
+        assertEquals(writes, Vector((album = album, chapter = chapter, selection = values)))
     }
 
   test("should require matching mounts and sufficient coverage for every sensor format"):
@@ -98,7 +112,7 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       val current  = GearCatalog(cameras = Vector(camera.copy(kind = kind)), lenses = Vector(lens))
       val accepted = kind.mount === lens.mount && (kind.sensor === SensorFormat.ApsC || lens.coverage === SensorFormat.FullFrame)
       val expected = if accepted then GearReplaceResult.Saved else GearReplaceResult.Rejected(Failure.IncompatibleLens)
-      buildManager(Refs(), current = GearRepository.CatalogReadResult.Found(current), requested = selected)
+      buildManager(Refs(), current = GearRepository.CatalogReadResult.Found(current))
         .flatMap(_.replaceGear(album, chapter, selected)).map(assertEquals(_, expected))
     }
 
@@ -176,7 +190,9 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       assertEquals(write, GearReplaceResult.Uncertain)
 
   final private case class Refs():
-    val events: Ref[IO, Vector[String]] = Ref.unsafe(Vector.empty)
+    val events: Ref[IO, Vector[String]]                                                         = Ref.unsafe(Vector.empty)
+    val reads: Ref[IO, Vector[(album: AlbumId, chapter: ChapterId)]]                            = Ref.unsafe(Vector.empty)
+    val writes: Ref[IO, Vector[(album: AlbumId, chapter: ChapterId, selection: GearSelection)]] = Ref.unsafe(Vector.empty)
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildManager(
@@ -184,7 +200,6 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       read: ChapterRepository.GearReadResult = ChapterRepository.GearReadResult.Found(selection = selection),
       write: ChapterRepository.GearWriteResult = ChapterRepository.GearWriteResult.Saved,
       current: GearRepository.CatalogReadResult = GearRepository.CatalogReadResult.Found(catalog),
-      requested: GearSelection = selection,
       maybeMutex: Option[Mutex[IO]] = None,
       beforeCatalog: IO[Unit] = IO.unit,
       beforeTransaction: IO[Unit] = IO.unit
@@ -194,9 +209,9 @@ final class ChapterManagerComponentTest extends CatsEffectSuite:
       override def resolve[A](program: IO[A]): IO[A] = unexpected
     val chapters = new ChapterRepository[IO]:
       override def readGear(owner: AlbumId, id: ChapterId): IO[ChapterRepository.GearReadResult] =
-        IO(assertEquals((owner, id), (album, chapter))).as(read)
+        refs.reads.update(_.appended((album = owner, chapter = id))).as(read)
       override def replaceGear(owner: AlbumId, id: ChapterId, values: GearSelection): IO[ChapterRepository.GearWriteResult] =
-        IO(assertEquals((owner, id, values), (album, chapter, requested))) >> refs.events.update(_ :+ "replace").as(write)
+        refs.writes.update(_.appended((album = owner, chapter = id, selection = values))) >> refs.events.update(_ :+ "replace").as(write)
       override def readSelections: IO[ChapterRepository.SelectionsReadResult]                                                = unexpected
       override def saveDescription(owner: AlbumId, id: ChapterId, text: String): IO[ChapterRepository.SaveDescriptionResult] = unexpected
       override def findSource(id: ChapterId): IO[ChapterRepository.SourceResult]                                             = unexpected

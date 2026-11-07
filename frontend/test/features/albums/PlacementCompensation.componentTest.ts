@@ -5,7 +5,7 @@ import {
   planPlacementCompensation,
   sameComposition,
 } from "../../../src/features/albums/workspace/PlacementCompensation";
-import type { CoverSnapshot, PlacementContext, PlacementEdit, PlacementSnapshot, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
+import type { CoverSnapshot, PlacementSnapshot, SpreadSnapshot } from "../../../src/features/albums/model/Placement";
 import { AlbumRequestError } from "../../../src/features/albums/model/Album";
 
 const transform = { x: 12, y: -3, zoom: 2, mirrored: true };
@@ -27,6 +27,17 @@ const populated: SpreadSnapshot = {
   ...empty,
   placements: [{ kind: "spread", id: "old-placement", slotId: "left", photoId: "photo", transform, captionCorner: "top_left" }],
 };
+const newlyPlaced: SpreadSnapshot = {
+  ...populated,
+  placements: populated.placements.map((row) => ({
+    ...row,
+    id: "new-placement",
+    transform: { x: 0, y: 0, zoom: 1, mirrored: false },
+    captionCorner: "bottom_right",
+  })),
+};
+const framed: SpreadSnapshot = { ...newlyPlaced, placements: newlyPlaced.placements.map((row) => ({ ...row, transform })) };
+const restored: SpreadSnapshot = { ...framed, placements: framed.placements.map((row) => ({ ...row, captionCorner: "top_left" })) };
 const cover: CoverSnapshot = {
   kind: "cover",
   frontSlotId: "front",
@@ -112,17 +123,17 @@ describe("placement compensating commands", () => {
       layout: { ...empty.layout, templateId: "two-photos" },
       placements: [first, { ...first, id: "second-placement", photoId: "second-photo", slotId: "right" }],
     };
-    const restored: SpreadSnapshot = {
+    const recovered: SpreadSnapshot = {
       ...empty,
       layout: { ...empty.layout, slots: empty.layout.slots.slice(0, 1) },
       placements: [{ ...first, transform: { x: 0, y: 0, zoom: 1, mirrored: false } }],
     };
-    const built = build(restored, current);
-    built.templates.mockResolvedValue([{ id: "template", name: "One photograph", slots: restored.layout.slots }]);
+    const built = build(recovered, current);
+    built.templates.mockResolvedValue([{ id: "template", name: "One photograph", slots: recovered.layout.slots }]);
     built.changeSpreadTemplate.mockRejectedValue(new Error("Lost response"));
 
     expect(await built.action.apply("undo")).toMatchObject({ kind: "uncertain" });
-    built.read.mockResolvedValue(restored);
+    built.read.mockResolvedValue(recovered);
     expect(await built.action.reconcile("undo")).toEqual({ kind: "saved" });
     expect(built.changeSpreadTemplate).toHaveBeenCalledOnce();
     expect(built.edit).not.toHaveBeenCalled();
@@ -322,45 +333,23 @@ describe("placement compensating commands", () => {
     expect(clearing.edit).toHaveBeenCalledWith("album", { kind: "spread", id: "spread" }, { operation: "bleed", enabled: false });
   });
   it("should change back to the saved template and follow newly generated slot and placement identities", async () => {
-    let saved: SpreadSnapshot = { ...empty, layout: { ...empty.layout, templateId: "other", slots: [] } };
-    const changeTemplate = vi.fn(() => {
-      saved = {
-        ...empty,
-        layout: { ...empty.layout, slots: empty.layout.slots.map((slot) => ({ ...slot, id: `new-${slot.id}` })) },
-      };
-      return Promise.resolve();
-    });
-    const edit = vi.fn((_album: string, _context: PlacementContext, command: PlacementEdit) => {
-      if (command.operation === "place")
-        saved = {
-          ...saved,
-          placements: [
-            {
-              ...populated.placements[0],
-              kind: "spread",
-              id: "new-photo",
-              photoId: command.photoId,
-              slotId: command.slotId,
-              transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-              captionCorner: "bottom_right",
-            },
-          ],
-        };
-      else if (command.operation === "adjust")
-        saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, transform: command.transform })) };
-      else if (command.operation === "captionCorner")
-        saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, captionCorner: command.captionCorner })) };
-      return Promise.resolve(saved);
-    });
+    const after: SpreadSnapshot = { ...empty, layout: { ...empty.layout, templateId: "other", slots: [] } };
+    const remapped = { ...empty, layout: { ...empty.layout, slots: empty.layout.slots.map((slot) => ({ ...slot, id: `new-${slot.id}` })) } };
+    const placed = { ...remapped, placements: newlyPlaced.placements.map((row) => ({ ...row, slotId: "new-left" })) };
+    const adjusted = { ...remapped, placements: framed.placements.map((row) => ({ ...row, slotId: "new-left" })) };
+    const completed = { ...remapped, placements: restored.placements.map((row) => ({ ...row, slotId: "new-left" })) };
+    const read = vi.fn().mockResolvedValueOnce(after).mockResolvedValueOnce(remapped);
+    const changeTemplate = vi.fn().mockResolvedValue(undefined);
+    const edit = vi.fn().mockResolvedValueOnce(placed).mockResolvedValueOnce(adjusted).mockResolvedValueOnce(completed);
     const action = createPlacementCompensation({
       album: "album",
       label: "Change template",
       before: populated,
-      after: saved,
+      after,
       context: () => ({ kind: "spread", id: "spread" }),
       authorize: () => Promise.resolve(undefined),
       client: {
-        readPlacements: () => Promise.resolve(saved),
+        readPlacements: read,
         editPlacements: edit,
         changeSpreadTemplate: changeTemplate,
         templates: () => Promise.resolve([{ id: "template", name: "Original", slots: empty.layout.slots }]),
@@ -369,36 +358,30 @@ describe("placement compensating commands", () => {
 
     expect(await action.apply("undo")).toEqual({ kind: "saved" });
     expect(changeTemplate).toHaveBeenCalledExactlyOnceWith("album", "spread", "template", true);
-    expect(edit).toHaveBeenCalledWith("album", { kind: "spread", id: "spread" }, { operation: "place", photoId: "photo", slotId: "new-left" });
-    expect(sameComposition(saved, populated)).toBe(true);
+    expect(edit).toHaveBeenCalledTimes(3);
+    expect(edit).toHaveBeenNthCalledWith(1, "album", { kind: "spread", id: "spread" }, { operation: "place", photoId: "photo", slotId: "new-left" });
+    expect(edit).toHaveBeenNthCalledWith(
+      2,
+      "album",
+      { kind: "spread", id: "spread" },
+      { operation: "adjust", placementId: "new-placement", transform },
+    );
+    expect(edit).toHaveBeenNthCalledWith(
+      3,
+      "album",
+      { kind: "spread", id: "spread" },
+      { operation: "captionCorner", placementId: "new-placement", captionCorner: "top_left" },
+    );
   });
 
   it("should recreate a removed photograph and restore its framing and corner through ordinary commands", async () => {
-    let saved = empty;
-    const commands: PlacementEdit[] = [];
-    const edit = vi.fn((_album: string, _context: PlacementContext, command: PlacementEdit) => {
-      commands.push(command);
-      if (command.operation === "place")
-        saved = {
-          ...empty,
-          placements: [
-            {
-              kind: "spread",
-              id: "new-placement",
-              photoId: command.photoId,
-              slotId: command.slotId,
-              transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-              captionCorner: "bottom_right",
-            },
-          ],
-        };
-      else if (command.operation === "adjust")
-        saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, transform: command.transform })) };
-      else if (command.operation === "captionCorner")
-        saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, captionCorner: command.captionCorner })) };
-      else if (command.operation === "remove") saved = empty;
-      return Promise.resolve(saved);
-    });
+    const read = vi.fn().mockResolvedValueOnce(empty).mockResolvedValueOnce(restored);
+    const edit = vi
+      .fn()
+      .mockResolvedValueOnce(newlyPlaced)
+      .mockResolvedValueOnce(framed)
+      .mockResolvedValueOnce(restored)
+      .mockResolvedValueOnce(empty);
     const action = createPlacementCompensation({
       album: "album",
       label: "Remove photo",
@@ -406,36 +389,36 @@ describe("placement compensating commands", () => {
       after: empty,
       context: () => ({ kind: "spread", id: "spread" }),
       authorize: vi.fn().mockResolvedValue(undefined),
-      client: { readPlacements: vi.fn(() => Promise.resolve(saved)), editPlacements: edit },
+      client: { readPlacements: read, editPlacements: edit },
     });
 
     expect(await action.apply("undo")).toEqual({ kind: "saved" });
-    expect(commands).toEqual([
-      { operation: "place", photoId: "photo", slotId: "left" },
+    expect(edit).toHaveBeenCalledTimes(3);
+    expect(edit).toHaveBeenNthCalledWith(1, "album", { kind: "spread", id: "spread" }, { operation: "place", photoId: "photo", slotId: "left" });
+    expect(edit).toHaveBeenNthCalledWith(
+      2,
+      "album",
+      { kind: "spread", id: "spread" },
       { operation: "adjust", placementId: "new-placement", transform },
+    );
+    expect(edit).toHaveBeenNthCalledWith(
+      3,
+      "album",
+      { kind: "spread", id: "spread" },
       { operation: "captionCorner", placementId: "new-placement", captionCorner: "top_left" },
-    ]);
-    expect(sameComposition(saved, populated)).toBe(true);
+    );
     expect(await action.apply("redo")).toEqual({ kind: "saved" });
-    expect(commands.at(-1)).toEqual({ operation: "remove", placementId: "new-placement" });
+    expect(edit).toHaveBeenLastCalledWith("album", { kind: "spread", id: "spread" }, { operation: "remove", placementId: "new-placement" });
   });
 
   it("should retain acknowledged steps when a later request is rejected and retry only unfinished compensation", async () => {
-    const placed = {
-      ...populated,
-      placements: populated.placements.map((row) => ({
-        ...row,
-        id: "new",
-        captionCorner: "bottom_right" as const,
-        transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-      })),
-    };
-    let saved = empty;
-    const edit = vi.fn().mockImplementationOnce(() => {
-      saved = placed;
-      return Promise.resolve(saved);
-    });
-    edit.mockRejectedValueOnce(new AlbumRequestError(409, "Editing ownership unavailable."));
+    const read = vi.fn().mockResolvedValueOnce(empty).mockResolvedValueOnce(newlyPlaced);
+    const edit = vi
+      .fn()
+      .mockResolvedValueOnce(newlyPlaced)
+      .mockRejectedValueOnce(new AlbumRequestError(409, "Editing ownership unavailable."))
+      .mockResolvedValueOnce(framed)
+      .mockResolvedValueOnce(restored);
     const action = createPlacementCompensation({
       album: "album",
       label: "Remove photo",
@@ -443,36 +426,37 @@ describe("placement compensating commands", () => {
       after: empty,
       context: () => ({ kind: "spread", id: "spread" }),
       authorize: vi.fn().mockResolvedValue(undefined),
-      client: { readPlacements: vi.fn(() => Promise.resolve(saved)), editPlacements: edit },
+      client: { readPlacements: read, editPlacements: edit },
     });
 
     expect(await action.apply("undo")).toEqual({ kind: "blocked", message: "Editing ownership unavailable.", partial: true });
     expect(edit).toHaveBeenCalledTimes(2);
-    edit.mockImplementation((_album: string, _context: PlacementContext, command: PlacementEdit) => {
-      if (command.operation === "adjust") saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, transform: command.transform })) };
-      else if (command.operation === "captionCorner")
-        saved = { ...saved, placements: saved.placements.map((row) => ({ ...row, captionCorner: command.captionCorner })) };
-      return Promise.resolve(saved);
-    });
     expect(await action.apply("undo")).toEqual({ kind: "saved" });
-    expect(edit.mock.calls.filter((call) => (call[2] as PlacementEdit).operation === "place")).toHaveLength(1);
+    expect(edit).toHaveBeenCalledTimes(4);
+    expect(edit).toHaveBeenNthCalledWith(1, "album", { kind: "spread", id: "spread" }, { operation: "place", photoId: "photo", slotId: "left" });
+    expect(edit).toHaveBeenNthCalledWith(
+      2,
+      "album",
+      { kind: "spread", id: "spread" },
+      { operation: "adjust", placementId: "new-placement", transform },
+    );
+    expect(edit).toHaveBeenNthCalledWith(
+      3,
+      "album",
+      { kind: "spread", id: "spread" },
+      { operation: "adjust", placementId: "new-placement", transform },
+    );
+    expect(edit).toHaveBeenNthCalledWith(
+      4,
+      "album",
+      { kind: "spread", id: "spread" },
+      { operation: "captionCorner", placementId: "new-placement", captionCorner: "top_left" },
+    );
   });
 
   it("should reconcile a lost placement acknowledgement using reads without placing the photo twice", async () => {
-    const placed = {
-      ...populated,
-      placements: populated.placements.map((row) => ({
-        ...row,
-        id: "new",
-        transform: { x: 0, y: 0, zoom: 1, mirrored: false },
-        captionCorner: "bottom_right" as const,
-      })),
-    };
-    let saved = empty;
-    const edit = vi.fn(() => {
-      saved = placed;
-      return Promise.reject(new Error("Lost acknowledgement"));
-    });
+    const read = vi.fn().mockResolvedValueOnce(empty).mockResolvedValueOnce(newlyPlaced);
+    const edit = vi.fn().mockRejectedValue(new Error("Lost acknowledgement"));
     const action = createPlacementCompensation({
       album: "album",
       label: "Remove photo",
@@ -480,7 +464,7 @@ describe("placement compensating commands", () => {
       after: empty,
       context: () => ({ kind: "spread", id: "spread" }),
       authorize: vi.fn().mockResolvedValue(undefined),
-      client: { readPlacements: vi.fn(() => Promise.resolve(saved)), editPlacements: edit },
+      client: { readPlacements: read, editPlacements: edit },
     });
 
     expect(await action.apply("undo")).toMatchObject({ kind: "uncertain" });

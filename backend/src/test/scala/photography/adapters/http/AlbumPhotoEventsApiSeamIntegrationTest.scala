@@ -21,12 +21,14 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
     val program =
       for
         released <- Ref.of[IO, Boolean](false)
+        calls    <- Ref.of[IO, Vector[AlbumId]](Vector.empty)
         lifecycle = Resource.make(IO.unit)(_ => released.set(true))
         events    = Stream.resource(lifecycle) >> (Stream.emits(Vector(Event.Subscribed, Event.InventoryChanged(chapter))) ++ Stream.never[IO])
-        service   = buildEvents(SubscribeResult.Opened(events))
-        response <- PublicRoutes(AlbumPhotoEventsApi.make(service)).orNotFound.run(Request[IO](uri = uri))
-        received <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
-        closed   <- released.get
+        service   = buildEvents(calls, SubscribeResult.Opened(events))
+        response  <- PublicRoutes(AlbumPhotoEventsApi.make(service)).orNotFound.run(Request[IO](uri = uri))
+        received  <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
+        closed    <- released.get
+        requested <- calls.get
       yield
         assertEquals(response.status, Status.Ok)
         assertEquals(response.contentType.map(_.mediaType), MediaType.`text/event-stream`.some)
@@ -36,6 +38,7 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(received.flatMap(_.data), Vector("{}", s"""{"chapterId":"${chapter.value}"}"""))
         assert(received.exists(_.comment.nonEmpty))
         assert(closed)
+        assertEquals(requested, Vector(album))
 
     TestControl.executeEmbed(program)
 
@@ -44,19 +47,22 @@ final class AlbumPhotoEventsApiSeamIntegrationTest extends CatsEffectSuite:
       SubscribeResult.AlbumNotFound[IO]() -> Status.NotFound,
       SubscribeResult.Failed[IO]()        -> Status.InternalServerError
     ).traverse_ { case (result, expected) =>
-      val app = PublicRoutes(AlbumPhotoEventsApi.make(buildEvents(result))).orNotFound
+      val calls = Ref.unsafe[IO, Vector[AlbumId]](Vector.empty)
+      val app   = PublicRoutes(AlbumPhotoEventsApi.make(buildEvents(calls, result))).orNotFound
 
       for
         response  <- app.run(Request[IO](uri = uri))
         body      <- response.as[String]
         malformed <- app.run(Request[IO](uri = Uri.unsafeFromString("/api/albums/not-an-id/photo-events")))
+        requested <- calls.get
       yield
         assertEquals(response.status, expected)
         assertEquals(body, if expected === Status.NotFound then """{"code":"album_not_found"}""" else """{"code":"service_failure"}""")
         assertEquals(malformed.status, Status.NotFound)
+        assertEquals(requested, Vector(album))
     }
 
-  private def buildEvents(result: SubscribeResult[IO]) =
+  private def buildEvents(calls: Ref[IO, Vector[AlbumId]], result: SubscribeResult[IO]) =
     new AlbumPhotoEvents[IO]:
-      override def subscribe(id: AlbumId): IO[SubscribeResult[IO]]       = IO(assertEquals(id, album)).as(result)
+      override def subscribe(id: AlbumId): IO[SubscribeResult[IO]]       = calls.update(_ :+ id).as(result)
       override def invalidate(id: AlbumId, chapter: ChapterId): IO[Unit] = IO.raiseError[Unit](new AssertionError("Unexpected invalidation"))

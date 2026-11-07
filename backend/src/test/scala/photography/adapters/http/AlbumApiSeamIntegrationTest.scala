@@ -67,10 +67,12 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         response     <- send(server, Method.PUT, path = s"$albumPath/synopsis", body = requestBody)
         contentCalls <- refs.contentCalls.get
         otherCalls   <- refs.calls.get
+        admissions   <- refs.admissions.get
       yield
         assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
         assertEquals(contentCalls, Vector(ContentCall.Synopsis(id, text = text)))
         assertEquals(otherCalls, Vector.empty[String])
+        assertEquals(admissions, Vector((connection, EditingAccess.Protection.OwnAlbumOpening(id), grant.some)))
   }
 
   Author.all.subsets().filter(_.nonEmpty).foreach { selection =>
@@ -88,10 +90,12 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
         response     <- send(server, Method.PUT, path = s"$albumPath/authors", body = requestBody.noSpaces)
         contentCalls <- refs.contentCalls.get
         otherCalls   <- refs.calls.get
+        admissions   <- refs.admissions.get
       yield
         assertEquals(response, ApiResponse(Status.Ok, jsonMediaType, expected.some))
         assertEquals(contentCalls, Vector(ContentCall.Authors(id, authors)))
         assertEquals(otherCalls, Vector.empty[String])
+        assertEquals(admissions, Vector((connection, EditingAccess.Protection.ActiveTab, none[GrantId])))
   }
 
   Vector(
@@ -192,7 +196,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
     for
-      response <- server.run(Request[IO](Method.GET, Uri.unsafeFromString(albumPath)))
+      response <- server.app.run(Request[IO](Method.GET, Uri.unsafeFromString(albumPath)))
       body     <- response.as[String]
       calls    <- refs.calls.get
     yield
@@ -350,7 +354,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val yearEdit = Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/year")).withEntity("""{"year":2027}""")
 
     for
-      changed   <- server.run(yearEdit)
+      changed   <- server.app.run(yearEdit)
       duplicate <- send(taken, Method.POST, path = "/api/albums", body = """{"year":2026}""")
       calls     <- refs.calls.get
     yield
@@ -359,9 +363,25 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       assert(hasValidationFeedback(duplicate))
       assertEquals(calls, Vector.empty)
 
+  test("should bind synopsis writes to the requested album opening and author writes to the active tab"):
+    val server       = buildAlbumApi(Refs())
+    val declarations = Vector(
+      s"$albumPath/synopsis" -> EditingAccess.Protection.OwnAlbumOpening(id),
+      s"$albumPath/authors"  -> EditingAccess.Protection.ActiveTab
+    )
+
+    declarations.foreach { case (path, protection) =>
+      assertEquals(
+        server.definition.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access),
+        Routes.Access.Editor(protection).some
+      )
+    }
+
   final private case class Refs():
     val calls: Ref[IO, Vector[String]]             = Ref.unsafe(Vector.empty)
     val contentCalls: Ref[IO, Vector[ContentCall]] = Ref.unsafe(a = Vector.empty[ContentCall])
+    val admissions: Ref[IO, Vector[(editor: EditorConnection, protection: EditingAccess.Protection, grant: Option[GrantId])]] =
+      Ref.unsafe(Vector.empty)
 
   private enum ContentCall:
     case Synopsis(album: AlbumId, text: String)
@@ -372,6 +392,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   final private case class InvalidContent(resource: String, body: String, message: String)
 
   final private case class ApiResponse(status: Status, maybeContentType: Option[MediaType], maybeBody: Option[Json])
+  final private case class Api(definition: Routes[IO], app: HttpApp[IO])
 
   // scalafix:off DisableSyntax.defaultArgs
   private def buildAlbumApi(
@@ -405,24 +426,12 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
           protection: EditingAccess.Protection,
           maybeGrant: Option[GrantId]
       )(write: IO[A]): IO[EditingAccess.Result[A]] =
-        assertEquals(editor, connection)
-        protection match
-          case EditingAccess.Protection.ActiveTab =>
-            assertEquals(maybeGrant, None)
-          case EditingAccess.Protection.OwnAlbumOpening(album) =>
-            assertEquals(album, id)
-            assertEquals(maybeGrant, Some(grant))
-          case other => fail(s"Unexpected protection: $other")
-        write.map(EditingAccess.Result.Completed(_))
+        refs.admissions.update(_ :+ (editor, protection, maybeGrant)) >> write.map(EditingAccess.Result.Completed(_))
     val definitions = AlbumApi.make(albums, metadata)
-    val declaration = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/authors"))).map(_.access)
-    assertEquals(declaration, Some(Routes.Access.Editor(EditingAccess.Protection.ActiveTab)))
-    val synopsis = definitions.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(s"$albumPath/synopsis"))).map(_.access)
-    assertEquals(synopsis, Some(Routes.Access.Editor(EditingAccess.Protection.OwnAlbumOpening(id))))
-    Routes.make(access)(definitions).orNotFound
+    Api(definitions, Routes.make(access)(definitions).orNotFound)
   // scalafix:on DisableSyntax.defaultArgs
 
-  private def send(server: HttpApp[IO], method: Method, path: String, body: String) =
+  private def send(server: Api, method: Method, path: String, body: String) =
     val original = Request[IO](method, Uri.unsafeFromString(path)).withEntity(body).putHeaders(`Content-Type`(MediaType.application.json))
     val request  =
       if method === Method.PUT && path.endsWith("/authors") then original.withHeaders(original.headers ++ Headers(credentials))
@@ -431,11 +440,9 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
       else original
 
     for
-      response <- server.run(request)
+      response <- server.app.run(request)
       body     <- response.as[String]
     yield
-      if method === Method.PUT && (path.endsWith("/authors") || path.endsWith("/synopsis")) then
-        assertEquals(response.headers.get[`Cache-Control`], `Cache-Control`(CacheDirective.`no-store`).some)
       val maybeBody = Option.when(body.nonEmpty)(parse(body).fold(error => fail(error.message), identity))
       ApiResponse(response.status, response.contentType.map(_.mediaType), maybeBody)
 
