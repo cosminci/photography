@@ -2499,11 +2499,10 @@
         "properties": {
           "albums": {
             "type": "array",
-            "maxItems": 6,
             "items": { "$ref": "#/components/schemas/AlbumSummary" }
           },
           "page": { "type": "integer", "minimum": 1 },
-          "pageSize": { "const": 6 },
+          "pageSize": { "type": "integer", "minimum": 1 },
           "totalAlbums": { "type": "integer", "minimum": 0 },
           "totalPages": { "type": "integer", "minimum": 0 }
         }

@@ -754,7 +754,7 @@ describe("same-origin album HTTP client", () => {
       title: "Journey of the Shepherds 2026",
       createdAt: "2026-10-24T12:00:00Z",
     };
-    const page = { albums: [album], page: 1, pageSize: 6, totalAlbums: 1, totalPages: 1 };
+    const page = { albums: [album], page: 1, pageSize: 9, totalAlbums: 1, totalPages: 1 };
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(page)))
