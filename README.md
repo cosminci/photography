@@ -1,8 +1,8 @@
 # Photography
 
-Album Layout Studio turns chapter-organized photographs into a saved book: compose it in the browser, read it without editing controls and export it for InDesign print composition.
+Album Layout Studio organizes chapter photo collections into persisted books and produces validated InDesign print handoffs.
 
-The [SolidJS frontend](frontend/) and [Scala backend](backend/) ship together as one application image. [Dagger](.dagger/) checks and packages them.
+Code lives in the [Scala backend](backend/), [SolidJS presentation layer](frontend/) and [Dagger module](.dagger/).
 
 ## Engineering context
 

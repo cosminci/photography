@@ -54,11 +54,21 @@ Before putting a proxy in front of the listener, apply the [API transport requir
 
 For a blocked extra tab, close the active tab and allow automatic binding retry; after a browser crash, wait for access expiry. Do not clear remembered browser identity as a substitute for releasing the binding.
 
-After backend restart or access loss, reconnect, reload saved state and review retained drafts before resubmitting. [Editing ownership](design.md#browser-editing-ownership) explains which authority expires and which browser state survives.
+After backend restart or access loss, reconnect, reload saved state and review retained drafts before resubmitting. [Mutation authority](design.md#protected-mutation-admission) explains access lifetimes; [presentation recovery](design.md#presentation-at-the-backend-boundary) explains draft handling.
 
 ## Readiness, logs and metrics
 
-Probe `GET /health` for HTTP readiness. Startup migrates SQLite and reconciles unfinished photo writes before opening the listener. This probe establishes startup completion and reachability, not continuous database or storage health.
+```mermaid
+flowchart LR
+  Migrate["Migrate SQLite"] -->|Success| Recover["Resolve unfinished photo writes"]
+  Migrate -->|Failure| Stop["Abort startup without an HTTP listener"]
+  Recover -->|Failure| Stop
+  Recover -->|Success| Serve["Serve HTTP"]
+```
+
+[Startup implementation](../backend/src/main/scala/photography/app/runtime/Main.scala); [write recovery](design.md#thumbnail-publication-and-recovery).
+
+Probe `GET /health` for HTTP readiness. This establishes startup completion and reachability, not continuous database or storage health.
 
 The backend writes startup and failure diagnostics through SLF4J to process output. Capture stdout/stderr with the local terminal or NAS supervisor; retain application errors alongside migration and database-pool diagnostics when investigating failures.
 
