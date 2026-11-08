@@ -1,16 +1,19 @@
 # Pipeline contracts
 
-> Standard: Agentic Engineering Standards v1.2.0
+## Provided
 
-## Contract inventory
-
-| Surface | Authoritative source |
+| Boundary | Definition |
 | --- | --- |
-| Public Dagger functions and component gates | [Dagger module](../../.dagger/src/index.ts) |
-| Path-to-component ownership | [Selection policy](../../.dagger/src/selection.ts) |
-| Shared verification and outgoing-revision validation | [Verification entrypoint](../../scripts/verify) and [pre-push hook](../../.githooks/pre-push) |
-| Hosted invocation and toolchain pins | [GitHub workflows](../../.github/workflows/) |
+| Gates and selection | [Module](../../.dagger/src/index.ts), [selection policy](../../.dagger/src/selection.ts) |
+| Push verification | [Entrypoint](../../scripts/verify), [hook](../../.githooks/pre-push) |
+| Release identity | [Version rules](../../.dagger/src/version.ts), [image assembly](../../.dagger/src/hooks/image.ts) |
 
-## Completion semantics
+## Consumed
 
-Successful verification means every required stage completed successfully. Selecting no application component still requires the shared Markdown and pipeline-module checks; an explicit all-component run bypasses selection, not the component gates.
+| Dependency | Required contract |
+| --- | --- |
+| Git | Available candidate/baseline ancestry: [Git boundary](../../.dagger/src/hooks/git.ts). |
+| GitHub Actions/Packages | Dispatch, permissions and package visibility: [workflows](../../.github/workflows/). |
+| GHCR | OCI publication and manifest reads; release completion requires public anonymous access and a matching Git tag: [release workflow](../../.github/workflows/release.yml). |
+| Dagger/Docker | Container execution and image delivery: [build environment](../../.dagger/src/buildEnv.ts), [Dockerfile](../../containers/photography/Dockerfile). |
+| Unraid/WUD | Template application, release discovery and host-triggered replacement: [template](../../unraid/photography.xml). |

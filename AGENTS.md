@@ -1,7 +1,7 @@
-# Repository guidance
+# Agent entrypoint
 
-- Use the shared [SDD router](.agents/skills/sdd/SKILL.md) for changes and [local guidance](.agents/skills/sdd/local.md) for ownership/safety.
-- README orients the repository; current `specs/` own product knowledge.
-- Backend, frontend and pipeline behavior remain with their owners.
-- Preserve active agents' branches and local state; isolated work belongs in separate worktrees.
-- Product decisions come from current contracts and maintainer-approved scope.
+Start with the [SDD router](.agents/skills/sdd/SKILL.md). Use [README](README.md) to select task context.
+
+Read [UX patterns](frontend/UX-PATTERNS.md) before UI changes. Read the [NAS runbook](unraid/README.md) before deployment or retained-state operations.
+
+Preserve other agents' work; use an isolated worktree when their checkout is active.

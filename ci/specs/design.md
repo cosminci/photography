@@ -1,29 +1,17 @@
 # Pipeline design
 
-> Standard: Agentic Engineering Standards v1.2.0
-
-## Purpose
-
-One verification path serves local pushes and pull requests. Shared checks always run; affected-component selection avoids rebuilding unrelated application components.
-
 ```mermaid
 flowchart TD
-  Push["Local push"] --> Verify["Shared verification entrypoint"]
-  PR["Pull request"] --> Verify
-  Verify --> Shared["Markdown and pipeline-module checks"]
-  Shared --> Selection["Changed paths against a Git baseline"]
-  Selection --> Backend
-  Selection --> Frontend
-  Selection --> Pipeline
-  All["Explicit all-component verification"] --> Backend & Frontend & Pipeline
+    Push["Local push"] --> Verify["Shared verification"]
+    PR["Pull request"] --> Verify
+    Verify --> Shared["Markdown and module validation"]
+    Shared --> Selection["Git diff: path ownership"]
+    Selection --> Backend & Frontend & Pipeline
+    All["Explicit all-component run"] --> Backend & Frontend & Pipeline
 ```
 
-Backend, frontend and pipeline gates own independent build boundaries in pinned environments. Selection follows path ownership, not file type: frontend-owned changes select the frontend gate; standalone living-doc changes retain shared checks without selecting an application component.
+The hook validates the outgoing checkout; the shared entrypoint orchestrates checks; the Dagger module owns selection and component execution. Shared infrastructure changes select all components. A failed stage stops verification.
 
-Changes to shared verification infrastructure or its environment select every component. The checks exercise the application builds they govern rather than validating selection policy alone.
+Release publication runs host module validation and all component gates before image assembly. Publication can precede an access-check or tagging failure; the existing immutable image remains recoverable, not replaceable.
 
-## Verification boundary
-
-Git ancestry defines the change under review. The pre-push hook verifies the actual outgoing checkout, while pull-request CI compares the candidate with its target branch. A failed stage stops verification rather than producing a partial success.
-
-The pipeline module owns path-selection policy and component execution. The shared entrypoint owns orchestration; the hook owns outgoing-revision safety. [Contracts](contracts.md) identifies their authoritative sources, and [operations](operational.md) explains how to invoke them.
+[Contracts](contracts.md) defines boundaries; [operations](operational.md) owns invocation.
