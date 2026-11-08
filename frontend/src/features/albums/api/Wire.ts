@@ -3,7 +3,6 @@ import {
   check,
   finite,
   integer,
-  literal,
   maxValue,
   minLength,
   minValue,
@@ -39,7 +38,7 @@ const album = object({
 const page = object({
   albums: array(summary),
   page: pipe(finiteNumber, integer(), minValue(1)),
-  pageSize: literal(6),
+  pageSize: pipe(finiteNumber, integer(), minValue(1)),
   totalAlbums: pipe(finiteNumber, integer(), minValue(0)),
   totalPages: pipe(finiteNumber, integer(), minValue(0)),
 });
