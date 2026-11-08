@@ -1,24 +1,17 @@
-# Pipeline testing
+# Dagger testing
 
-> Standard: Agentic Engineering Standards v1.2.0
+## What the automated tests prove
 
-## Confidence model
+[Selection tests](../../.dagger/test/selection.componentTest.ts) prove path parsing, owner mappings, shared-infrastructure expansion, unrelated-path exclusion and canonical component order. Change these tests with the mapping: an all-component build cannot detect a path that selective verification wrongly ignores.
 
-Pipeline confidence has two independent parts: selecting the correct work and proving that work builds. Pure policy tests establish selection; execution against real tools establishes delivery.
+[Version tests](../../.dagger/test/version.componentTest.ts) prove UTC generation, valid calendar dates and the release format. They reject mutable tags, padded date components, invalid times and trailing newlines; they do not prove registry publication.
 
-| Boundary | Strategy |
-| --- | --- |
-| Selection policy | Component tests prove changed-path interpretation and ownership independently of containers. |
-| Git and shell orchestration | Process-seam tests exercise real temporary repositories and scripts, substituting expensive build commands. |
-| Component delivery | Pinned containers run the actual backend, frontend and pipeline gates. |
-| Release identity | Component tests prove timestamp generation and validation; the release workflow checks registry access and duplicate versions before completing publication. |
-| NAS integration | An authorized smoke deployment proves the image, Unraid configuration, storage permissions and application work together, using disposable state and read-only originals. |
-| Hosted integration | Pull-request CI and explicit all-component verification establish that the same entrypoints work outside local development. |
+[Verification-wrapper tests](../../scripts/test_verification.py) exercise real temporary Git repositories and subprocesses, substituting expensive build commands. They prove that host checks run for docs, stage failure stops execution and the pre-push hook rejects a different outgoing revision or dirty checkout; they do not execute the Dagger engine.
 
-The host-side module checks validate the verification code itself. They run even when an application rebuild is unnecessary.
+## Evidence limits
 
-## Nomenclature and scope
+[Vitest configuration](../../.dagger/vitest.config.ts) excludes the module entrypoint, build constants and container hooks from coverage. Passing policy coverage therefore does not prove Git mounting, dependency installation, image assembly or publication.
 
-Use the [application testing nomenclature](../../specs/testing.md#nomenclature) for component and seam suites. The boundary actually crossed determines the category, not whether the subject happens to launch another tool.
+Validate changed container hooks by executing the affected gates against the committed candidate. A successful application gate proves that build path, not unexecuted hooks; image assembly needs a build, and publication needs an authorized registry operation.
 
-Keep scenario inventories and execution results with their tests and change evidence. Passing selection tests does not establish a successful application build; conversely, an all-component build cannot prove that selective verification is sound.
+Use the shared [test nomenclature](../../specs/testing.md#nomenclature). Keep individual command results in change evidence rather than this document.

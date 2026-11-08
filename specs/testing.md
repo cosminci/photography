@@ -1,44 +1,42 @@
 # Photography testing
 
-> Standard: Agentic Engineering Standards v1.2.0
+## Evidence boundaries
 
-## Confidence model
+```mermaid
+flowchart LR
+  subgraph Component["Component tests"]
+    Domain["Pure book, layout and gear rules"]
+    Usecase["Owning usecase's public operations"] --> Peers["Substituted ports / collaborators"]
+  end
+  subgraph HTTP["HTTP seam integration"]
+    Request["Real HTTP request"] --> Adapter["HTTP adapter under test"] --> Stub["Substituted usecase"]
+  end
+  subgraph Persistence["SQLite seam integration"]
+    Repository["Repository adapter under test"] --> Database[("Real migrated SQLite")]
+  end
+  subgraph Media["File / codec seam integration"]
+    Storage["Original / thumbnail / image adapter under test"] --> Resources["Actual files and JPEG representations"]
+  end
+  Architecture["ArchitectureTest"] --> Direction["Enforced package and dependency direction"]
+```
 
-Tests follow responsibility boundaries. Most behavior is proved through domain and application components; adapters are proved against the real external representation or resource they translate. A smaller set of browser journeys checks that those boundaries compose into a usable editor.
+## Backend evidence requirements
 
-| Layer | What it establishes |
-| --- | --- |
-| Domain and application components | Business rules, state transitions and orchestration through public operations, substituting effectful collaborators. |
-| Adapter seams | Faithful translation and failure behavior against real HTTP, SQLite, files, image codecs or configuration. |
-| Browser components | User-observable interaction, reactive state, accessibility and focus through rendered controls. |
-| Local application journeys | Integration, visual hierarchy and native browser behavior that isolated components cannot establish. |
-| Native publishing | InDesign and final-output inspection establish print fidelity; automated handoff and script checks establish representation and orchestration. |
-| Architecture and build gates | Dependency direction, type safety and reproducible delivery across supported components. |
-
-Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
-
-Each component suite exercises its owner and substitutes its collaborators, including child UI components. Substitutes supply independently arranged responses and record requests and effects separately; saved-state evidence comes from arranged reads at component boundaries and actual committed state at persistence seams.
-
-Recovery confidence requires evidence for both the persisted commit and the client's knowledge of its outcome. Partial saves, lost acknowledgements and stale reads must be exercised across those boundaries to establish that recovery preserves successful work.
-
-Reversible editing needs cross-owner journeys to establish chronological intent and history lifetime. Component tests prove compensation and retained progress; real persistence and access boundaries establish saved round trips and interference handling, including identity changes during restoration.
-
-Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
-
-Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.
-
-HTTP seams prove credential translation and exact-generation stream finalization; SQLite seams prove persistence and rollback rather than recreating lock policy. Browser components establish retained drafts and fail-closed editing across ownership loss.
-
-Actual socket cancellation and multiple browser engines establish close/reload recovery when departure requests are dropped. Native journeys isolate profiles and tabs, include the local proxy, and check authoritative refresh without replaying retained drafts.
+- Prove admission, fencing and lease races in [session](../backend/src/test/scala/photography/usecases/editing/EditorSessionManagerComponentTest.scala) and [editing-access](../backend/src/test/scala/photography/usecases/editing/EditingAccessComponentTest.scala) suites. Prove credential translation and stream finalization at HTTP seams, and actual commit/rollback at SQLite seams.
+- Prove source-generation scheduling in [import](../backend/src/test/scala/photography/usecases/photo/ChapterPhotoImportComponentTest.scala), publication ordering in [photo reconciliation](../backend/src/test/scala/photography/usecases/photo/PhotoManagerComponentTest.scala), and committed-reference cleanup in [write recovery](../backend/src/test/scala/photography/usecases/photo/PhotoWriteRecoveryComponentTest.scala). Use real repository/file seams for durable evidence and filesystem guarantees.
+- Arrange failed, missing, rejected and uncertain outcomes separately; observe complete results and requested effects. An acknowledged write followed by a failed read needs a different scenario from a write whose commit outcome is unknown.
+- Prove saved-book acquisition, blocking issues, warnings and schema validity in [export](../backend/src/test/scala/photography/usecases/album/BookExportComponentTest.scala). Export component tests use saved records; they do not establish local original-file availability or print fidelity.
 
 ## Nomenclature
 
-Name domain and application suites `<Boundary>ComponentTest` and adapter suites `<Adapter>SeamIntegrationTest`; TypeScript uses the corresponding `.componentTest` and `.seamIntegrationTest` suffixes. A seam test crosses the adapter's real external boundary; substituting a network call establishes component behavior instead.
+Name domain and usecase suites `<Boundary>ComponentTest` and adapter suites `<Adapter>SeamIntegrationTest`; TypeScript uses the corresponding `.componentTest` and `.seamIntegrationTest` suffixes.
 
-Case descriptions start with `should` and name the observable guarantee in domain vocabulary. Keep runner-required prefixes, such as Python's `test_`, before that description.
+Every usecase or port trait must have exactly one owning test suite. Group its operation scenarios in that suite; a seam crosses its adapter's real external boundary, not a substituted exchange.
 
-## Change validation
+Keep architecture rules in one `ArchitectureTest` suite with one test. Case descriptions start with `should` and name the observable guarantee; keep runner-required prefixes such as Python's `test_`.
 
-Project acceptance criteria into the owning suites and retain traceability with the change evidence. Exercise the complete local journey before archival, with isolated data and read-only access to original photographs.
+## Consumer checks and validation
 
-Coverage is an enforcing guardrail, not a substitute for boundary evidence or a reason to duplicate tests. Build configuration owns thresholds and exclusions; [Contributing](../CONTRIBUTING.md) owns conventions and gate commands, and [pipeline testing](../ci/specs/testing.md) owns verification infrastructure.
+Browser component tests use rendered accessible controls and real events, with collaborators substituted. Real-browser checks establish native selection/focus, profile/tab isolation, socket cancellation and draft/history recovery; [InDesign handoff](operational.md#print-handoff) checks actual originals, page geometry and final composition.
+
+Map changed guarantees to owning scenarios and record results with change evidence. The [backend build](../backend/build.sbt) and [frontend test configuration](../frontend/vitest.config.ts) own coverage thresholds/exclusions; [contribution validation](../CONTRIBUTING.md#validation) owns gate commands, and [Dagger testing](../ci/specs/testing.md) owns verification infrastructure.

@@ -1,7 +1,6 @@
-# Repository guidance
+# Agent entrypoints
 
-- Use the shared [SDD router](.agents/skills/sdd/SKILL.md) for changes and [local guidance](.agents/skills/sdd/local.md) for ownership/safety.
-- README orients the repository; current `specs/` own product knowledge.
-- Backend, frontend and pipeline behavior remain with their owners.
-- Preserve active agents' branches and local state; isolated work belongs in separate worktrees.
-- Product decisions come from current contracts and maintainer-approved scope.
+- Start changes and investigations through the [SDD router](.agents/skills/sdd/SKILL.md).
+- For service behavior, read the [current product context](README.md#engineering-context); for Dagger changes, read [Dagger design](ci/specs/design.md).
+- Before UI changes, read [UX patterns](frontend/UX-PATTERNS.md).
+- Before publication, follow [contribution validation](CONTRIBUTING.md#validation).

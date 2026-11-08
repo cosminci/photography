@@ -1,209 +1,304 @@
 # Photography design
 
-> Standard: Agentic Engineering Standards v1.2.0
-
-## Purpose and system boundary
-
-Album Layout Studio turns a year's chapter-organized photographs into a persisted book for browser presentation and InDesign print composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
+## Backend responsibilities
 
 ```mermaid
-flowchart LR
-  Editor --> Browser["Album catalog and workspace"]
-  Browser <-->|Commands and reads| Backend["Application services"]
-  Backend --> Database[("Albums and composition")]
-  Originals["Original photographs"] -->|Read only| Backend
-  Backend --> Thumbnails[("Managed thumbnails")]
-  Backend -->|Inventory and ownership invalidations| Browser
+flowchart TB
+  Client["Browser presentation / API clients"] --> HTTP["HTTP adapters"]
+  subgraph Backend["Backend"]
+    subgraph Core["Domain and application"]
+      Book["Book usecases<br/>Lifecycle / content<br/>Interior / Cover<br/>Gear selection / catalogs<br/>Saved-book export"]
+      Access["Editing admission"]
+      Photos["Photo processing<br/>Import / reconciliation<br/>Write recovery"]
+      Repositories["Repository ports"]
+      OriginalsPort["Original-photo port"]
+      GeneratorPort["Thumbnail-generation port"]
+      ThumbnailsPort["Thumbnail-storage port"]
+      Access -->|Protected commands| Book
+      Book -->|Chapter sources| Photos
+      Book & Photos --> Repositories
+      Photos --> OriginalsPort & GeneratorPort & ThumbnailsPort
+    end
+    HTTP -->|Reads and independent commands| Book
+    HTTP --> Access
+    Repositories --> SQLite["SQLite adapters"]
+    OriginalsPort --> Files["Original-file adapter"]
+    GeneratorPort --> Codec["JPEG / EXIF / ImageIO adapter"]
+    ThumbnailsPort --> Media["Managed-file adapter"]
+  end
+  SQLite --> State[("Saved book, catalogs and write intents")]
+  Files --> Originals[("Independent original-photo archive")]
+  Media --> Thumbnails[("Derived thumbnails")]
 ```
 
-Original photographs remain independently owned. The application stores editorial decisions and derived previews, rather than becoming the authoritative photo archive.
+[Backend composition](../backend/src/main/scala/photography/app/runtime/ProgramsBuilder.scala); [boundary definitions](contracts.md).
 
-## Album model
+## Book model
+
+```mermaid
+flowchart TB
+  Album["Album<br/>Year, title, synopsis, authors"] --> Opening["Synopsis opening"]
+  Album --> Cover["Cover<br/>Front, back and spine owner"]
+  Album --> Chapters["Ordered chapters<br/>Destination, period, description, source and gear selection"]
+  Chapters --> ChapterOpening["Chapter opening"]
+  Chapters --> Spreads["Ordered photo spreads"]
+  Chapters --> Collection["Chapter photo collection<br/>Photo identity, source metadata and caption"]
+  Opening & ChapterOpening & Spreads --> Interior["Interior placements<br/>Photo reference, transform and caption position"]
+  Cover --> Exterior["Cover placements<br/>Photo reference and transform"]
+  Interior & Exterior -->|Reference; do not own| Collection
+  Templates["Context-specific template catalog"] -->|Geometry| Opening & ChapterOpening & Spreads
+  Cameras["Shared camera catalog"] -->|Selected by identity| Chapters
+  Lenses["Shared lens catalog"] -->|Selected by identity| Chapters
+```
+
+**Invariants**
+
+- Album years are unique and immutable; author selections are nonempty and supply Cover credits.
+- Home covers its album's whole year, remains last and cannot change into another chapter type; an album has at most one Home.
+- A source folder belongs to at most one chapter in an album.
+- The interior begins with Synopsis, followed by chapter blocks whose openings cannot be deleted or reordered behind photo spreads; it contains at most 65 spreads, excluding Cover.
+- Chapter placements use that chapter's collection; Synopsis and Cover can use the album collection. A photo can occupy only one placement across interior and Cover.
+- Removing a photo spread releases placements without deleting collection photos or photo-owned captions.
+- Camera and lens lifecycles are independent; catalog edits must preserve every affected saved selection, and referenced entries cannot be deleted.
+
+## Layout geometry
 
 ```mermaid
 flowchart TD
-  Album --> Synopsis["Album opening: Synopsis"]
-  Album --> Cover
-  Album --> Chapters["Chronological chapters"]
-  Chapters --> Opening["Chapter opening"]
-  Chapters --> Spreads["Ordered photo spreads"]
-  Chapters --> Photos["Chapter photo collection"]
-  Synopsis & Opening & Spreads --> Template["Context-specific layout"]
-  Synopsis & Opening & Spreads & Cover --> Placements
-  Placements --> Photos
+  Count["Actual interior spread count"] --> Cover["Cover sizing"]
+  Specifications["Saved print specifications"] --> Cover
+  Spine["Saved spine owner"] --> Cover
+  Cover --> Frames["Front/back frames; spine included in its owner's frame"]
+  Bleed["Enable spread-wide bleed"] --> Full{"Full-height outer photo?"}
+  Full -->|Yes| Three["Full-height photos bleed top, bottom and outward; opposite stack stays inset"]
+  Full -->|No| Stacks["Outer stacks bleed outward together"]
+  Three & Stacks --> Inner["Inner slots remain inset"]
 ```
 
-An album has a unique, immutable year and an editable title. Chapters describe destinations and visit periods; Home represents the whole year and remains last. The interior starts with Synopsis, followed by chapter blocks whose openings stay ahead of their photo spreads.
+[Layout domain](../backend/src/main/scala/photography/domain/layout/).
 
-Editorial content belongs to the book's domain owners, independently of layout:
+**Invariants**
 
-| Owner | Content and relationship |
-| --- | --- |
-| Album | Synopsis and a nonempty author selection from which Cover credits derive. |
-| Chapter | Plain-text description and ordered gear selection, separate from destination and visit-period metadata. |
-| Photo | Caption retained independently of placement. |
-| Interior placement | Caption position within the layout, separate from photo-owned text. |
+- Bleed changes edges, not template geometry or placement identities; mixed saved directions remain readable without automatic normalization.
+- Cover sizing, editor and Reader use the same saved transforms and authoritative frames.
 
-Cameras and lenses have independent, shared catalog lifecycles; chapters select compatible equipment rather than owning catalog entries. A lens can serve several bodies, so changing or deleting one entry must preserve the validity of every saved selection that references it.
-
-Gear compatibility is a pure catalog-relative domain rule; application operations acquire current catalog state before applying it, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
-
-Book presentation preserves editorial text and derives headings and supporting information from structured data. Editing, navigation and Reader share presentation policy over saved composition, keeping content and catalog identities with their existing owners.
-
-Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
-
-Cover artwork dimensions derive from the actual interior page count and persisted print specifications. The saved spine owner includes the spine in its photograph's frame; catalog, editor and Reader share those authoritative frames and saved transforms.
-
-Photos belong to chapter collections independently of their use in layouts. Chapter spreads use their chapter's photos; Synopsis and Cover can use the album collection. Removing a spread releases its placements rather than deleting its photographs.
-
-## Editing journey
-
-```mermaid
-stateDiagram-v2
-  [*] --> Catalog
-  Catalog --> Workspace: Create or open album
-  Workspace --> Workspace: Edit structure, content and photo composition
-  Workspace --> Reader: Enter Reader
-  Reader --> Workspace: Resume editing
-  Workspace --> Catalog: Return to catalog
-```
-
-The workspace keeps the selected part addressable and restores it across navigation and reloads. Structural editing owns chapter-bound command and history reconciliation, while the workspace owns navigation, focus and context-specific template controls.
-
-Photo editing persists placements and transforms for interior layouts and Cover; collection availability is derived from saved placements. Reader presents the same saved book content and composition without editing chrome.
-
-Bleed selects one spread-wide mode: full-height outer photos bleed top, bottom and outward, leaving an opposite stack inset; without a full-height outer photo, outer stacks bleed outward together. Inner slots remain inset, and imported and newly created spreads use the same rule without changing template geometry or placement identities.
-
-The command box starts the metadata row and groups bleed with chapter editing. Mixed saved directions remain readable without mutation and have an explained disabled toggle; standard directions can be enabled or cleared through the existing spread save and ownership boundary.
-
-Album cards display both saved cover faces and the actual interior page count, refreshing when the catalog is re-entered. Album renaming belongs to the Synopsis command box and preserves independent title ownership.
+## Chapter planning and source changes
 
 ```mermaid
 sequenceDiagram
-  actor Editor
-  participant Workspace
-  participant Application
-  participant Storage
-  Editor->>Workspace: Edit content or composition
-  opt Adjust a photograph
-    Workspace-->>Editor: Preview locally
-    Editor->>Workspace: Complete adjustment
-  end
-  Workspace->>Application: Request mutation
-  opt Existing placements need confirmation
-    Application-->>Workspace: Report occupied spread
-    Workspace-->>Editor: Explain impact and request confirmation
-    Editor->>Workspace: Confirm
-    Workspace->>Application: Repeat with confirmation
-  end
-  Application->>Storage: Commit validated change atomically
-  Application-->>Workspace: Saved result
-  opt Collection or structure changed
-    Workspace->>Application: Reload affected authoritative views
+  participant Caller
+  participant Metadata as Chapter metadata usecase
+  participant Planning as Chapter planning
+  participant Saved as Repository ports<br/>SQLite
+  participant Import as Import coordinator
+  Caller->>Metadata: Create or update chapter
+  Note over Metadata,Saved: Shared mutation coordination
+  Metadata->>Saved: Read album year, chapters<br/>and interior count
+  Metadata->>Planning: Validate metadata<br/>Plan chronological order<br/>and opening
+  alt Invalid plan or unavailable state
+    Metadata-->>Caller: Rejected / missing / failed<br/>No planned write
+  else Valid plan
+    Metadata->>Saved: Commit chapter and order
+    opt Replacing source
+      Note over Metadata,Saved: Same transaction:<br/>record retirements and remove old photo references
+    end
+    Saved-->>Metadata: Commit outcome
+    opt Update acknowledgement fails
+      Metadata->>Saved: Resolve against current<br/>metadata and order
+    end
+    break Unresolved source-change commit
+      Metadata->>Import: Suspend chapter import
+      Metadata-->>Caller: Failed
+    end
+    break Failed / missing commit
+      Metadata-->>Caller: Failed / missing<br/>No new work launched
+    end
+    opt New or changed source
+      Metadata->>Import: Prepare current<br/>source generation
+    end
+    Note over Metadata,Import: Launch after metadata coordination ends
+    opt New or changed source
+      Metadata->>Import: Clean retirements<br/>Attempt prepared work
+    end
+    Metadata-->>Caller: Created / updated<br/>+ scheduling outcome
   end
 ```
 
-Local previews stay responsive while completed adjustments save in order. Failed saves retain an explicitly unsaved preview for recovery.
+[Chapter metadata](../backend/src/main/scala/photography/usecases/chapter/ChapterMetadataManager.scala) and [planning](../backend/src/main/scala/photography/usecases/chapter/ChapterPlanning.scala).
 
-Cancellation preserves saved state, and rejected saves retain the draft with recoverable feedback. Validated mutations commit within their owning boundary, preserving unrelated content and composition.
+**Invariants**
 
-Saving and delivering the saved result are distinct outcomes: once a write is acknowledged, recovery retries authoritative reads rather than replaying the mutation. Uncertain outcomes are reconciled before another write attempt; unavailable state remains an explicit failure rather than successful empty content.
+- Scheduling failure does not undo a committed chapter. An unchanged source schedules no import; Refresh requests processing without rewriting chapter metadata.
+- Chapter metadata and gear selection have separate commits; a partial save preserves the completed owner.
+- Reordering compares the observed order with current membership before replacing it; stale observations cannot overwrite newer order.
+- Template changes and deletion of occupied photo spreads require confirmation before releasing placements.
 
-An editor spanning several owners does not imply an all-or-nothing transaction. Chapter metadata resolves before gear commits separately; partial-save recovery preserves the saved portion and retries only unresolved work.
-
-Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent without retaining editing authority; album exit, reload or unexpected access loss ends its lifetime.
-
-Reversal uses ordinary authoritative commands and current ownership, preserving unrelated work rather than restoring whole-album snapshots. Visible composition can be restored with regenerated identities, which retained history follows.
-
-Compensation is best effort, not an atomic restoration transaction: interrupted work retains progress, and a blocked or uncertain newest action stops traversal. Chapter creation and source-photo replacement establish explicit history boundaries; shared-catalog changes remain independently owned.
-
-Editing keeps book content primary and preserves the user's spatial context through saves. Temporary guards prevent conflicting actions without hiding controls or shifting the layout; their reasons are accessible, while errors and recovery actions remain visible.
-
-Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
-
-## Browser editing ownership
-
-A browser profile remembers its identity and automatically chosen, editable alias. Aliases identify editors, not authenticated users.
-
-Each document establishes a backend-bound tab connection before opening the application. Only one application tab per profile is admitted; additional tabs remain blocked until the previous binding is released.
-
-One session may own one interior spread or the full exterior Cover. Other profiles retain saved-state viewing and Reader, see the owner's alias, and acquire only after release or expiry without forced takeover.
-
-Target ownership protects composition, placed-photo captions, synopsis, chapter-opening descriptions, template changes and spread deletion. Chapter name, countries, dates, source, gear/catalog edits, author selection and nondestructive insertion/reordering remain independent of target locks.
-
-Description writes resolve the chapter's current opening under the same coordination as ownership admission and persistence. A view-only canvas presents photographs, captions and opening text without editing affordances; independent chapter details and Reader remain available, and existing drafts remain recoverable.
-
-Album title and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
-
-Tab binding, session liveness and target grants have separate lifetimes. Stream closure releases only the exact tab connection; a still-live session and grant can resume after reload, while releasing a target keeps its session.
-
-Selecting another spread or Cover releases the previous grant, then acquires the destination or presents it view-only. Entering Reader or leaving the album releases target ownership.
-
-Ownership invalidations let waiting viewers attempt acquisition once local work is resolved. A successful acquisition reconciles saved content before editing; a notification alone never grants access.
-
-Connection or ownership uncertainty blocks editing and retains drafts, with backend loss making the whole application unavailable. Reconnection or reacquisition requires authoritative reconciliation and explicit draft review, never automatic replay.
-
-## Photo processing and live views
-
-Chapter saves commit independently of background photo processing. Creation, a changed source folder or an explicit Refresh initiates reconciliation; opening an album reads saved state.
-
-The backend processes one chapter source at a time; other requested chapters remain queued. Superseded work releases that capacity without publishing stale photos.
+## Protected mutation admission
 
 ```mermaid
 sequenceDiagram
-  participant Editor
-  participant Application
-  participant Worker
-  participant Originals
-  participant Storage
-  participant Browser
-  Editor->>Application: Save chapter or request Refresh
-  opt Saving chapter details
-    Application->>Storage: Commit chapter
+  participant Caller
+  participant Access as Editing admission
+  participant Authority as Sessions and grants
+  participant Owner as Owning usecase
+  participant Saved as Repository / SQLite
+  Caller->>Access: Target-bound command<br/>+ connection / grant
+  Note over Access,Saved: Shared mutex spans admission / operation<br/>Every outcome releases it
+  Access->>Authority: Validate live connection
+  break Invalid connection
+    Access-->>Caller: Reject<br/>Do not invoke mutation
   end
-  Application->>Worker: Schedule chapter reconciliation
-  par Report scheduling outcome
-    Application-->>Editor: Saved or scheduled result
-  and Reconcile in background
-    Worker->>Originals: Read current source photographs
-    loop Each complete photo
-      Worker->>Storage: Publish thumbnail and metadata safely
-      Worker-->>Browser: Invalidate chapter inventory
-      Browser->>Application: Read current inventory
+  opt Target follows current opening or placed photo
+    Access->>Saved: Read current affected relationships
+    break Missing relationship or read failure
+      Access-->>Caller: Missing / failed<br/>Do not invoke mutation
+    end
+  end
+  Access->>Authority: Check caller grant<br/>and conflicting ownership
+  alt Stale grant or another owner
+    Access-->>Caller: Reject<br/>Do not invoke mutation
+  else Admitted
+    Access->>Owner: Apply business operation
+    Owner->>Saved: Commit validated<br/>owned change
+    Saved-->>Owner: Result / commit uncertainty
+    Owner-->>Access: Operation outcome
+    Access-->>Caller: Outcome
+  end
+```
+
+[Editing admission](../backend/src/main/scala/photography/usecases/editing/EditingAccess.scala) and [session authority](../backend/src/main/scala/photography/usecases/editing/EditorSessionManager.scala).
+
+**Invariants**
+
+- One browser profile binds one application tab; one session owns at most one interior spread or the full Cover. Other sessions retain saved-state reads and cannot force takeover.
+- Session liveness, exact-generation tab binding and target grants have separate lifetimes. Unbinding does not end a live session/grant; target release does not end the session.
+- Accepted heartbeats renew the session lease; accepted target renewals renew the grant lease. Rejected requests extend neither.
+- Backend restart clears volatile authority, not saved books or remembered browser identity.
+- Synopsis, chapter-opening description, placed-photo caption, composition, template change and spread deletion require their current target's authority. Album title, chapter name/countries/dates/source, gear/catalogs, authors and nondestructive insertion/reordering remain independent of target locks.
+- Failed relationship acquisition is a failure, never an empty affected set. A write admitted while authority is live may finish across expiry; later acquisition observes its completion.
+- Original-file reading and image generation stay outside the shared mutation interval.
+
+## Photo processing
+
+```mermaid
+flowchart TD
+  Request["New source or Refresh"] --> Active{"Same chapter/source already active?"}
+  Active -->|Yes| Reuse["Reuse current request; no duplicate worker"]
+  Active -->|No| Queue["Queue a new source generation"]
+  Queue --> Permit["Acquire the single processing permit"]
+  Permit --> Discover{"Original discovery complete?"}
+  Discover -->|No| Failure["Report issues; retain saved inventory"]
+  Discover -->|Yes| Reconcile["Read originals, generate previews<br/>and publish complete photos"]
+  Reconcile --> Retire["Retire absent photos<br/>Record intent and remove references atomically"]
+  Retire --> Finished["Finish with processing / cleanup outcomes"]
+  Failure & Finished --> Release["Release acquired processing permit"]
+  Reconcile & Retire -.-> Events["Invalidate chapter inventory"]
+  Events --> Read["Consumers read authoritative inventory"]
+  Superseded["Source superseded"] --> Fence["Fence old generation's database mutations; cancel old work"]
+  Fence --> Release
+```
+
+[Import coordinator](../backend/src/main/scala/photography/usecases/photo/ChapterPhotoImport.scala) and [photo reconciliation](../backend/src/main/scala/photography/usecases/photo/PhotoManager.scala).
+
+**Invariants**
+
+- Only the current source generation can publish a coordinated database mutation.
+- Refresh preserves photo identity and authored caption when replacing that photo's metadata/thumbnail; individual read or generation failures retain the previous usable photo.
+- An unchanged photo hash and selected thumbnail quality reuse the current thumbnail.
+
+## Thumbnail publication and recovery
+
+```mermaid
+sequenceDiagram
+  participant Photos as Photo<br/>reconciliation
+  participant Saved as Photo repository<br/>SQLite
+  participant Media as Thumbnail storage
+  participant Recovery as Write recovery
+  Photos->>Saved: Record publication intent<br/>before writing media
+  alt Evidence cannot be recorded
+    Saved-->>Photos: Fail without<br/>writing thumbnail
+  else Durable intent exists
+    Photos->>Media: Store thumbnail at fresh location
+    alt Thumbnail stored
+      Photos->>Saved: Publish photo metadata<br/>and new thumbnail reference
+    else Storage failed
+      Note over Photos,Saved: Retain old committed photo reference
+    end
+    Photos->>Recovery: Resolve intent after success or failure
+    Recovery->>Saved: Read actual committed thumbnail references
+    alt Reference read fails
+      Recovery-->>Photos: Report issue and retain unfinished intent
+    else References acquired
+      Recovery->>Media: Remove unreferenced new<br/>and previous locations
+      alt Cleanup fails
+        Recovery-->>Photos: Report issue and retain unfinished intent
+      else Cleanup succeeds
+        Recovery->>Saved: Attempt intent completion<br/>Retain evidence on failure
+      end
+    end
+  end
+  Note over Saved,Recovery: Retirement uses the same reference-based cleanup
+```
+
+[Write recovery](../backend/src/main/scala/photography/usecases/photo/PhotoWriteRecovery.scala); [operator recovery](operational.md#recovery-and-maintenance).
+
+## Saved-book export
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Export as Book export
+  participant Saved as Saved owners
+  participant Schema as Handoff schema
+  participant InDesign
+  Caller->>Export: Export album
+  Export->>Saved: Read album/chapter metadata<br/>composition / Cover<br/>gear / photo records
+  Saved-->>Export: Saved facts
+  break Missing or incoherent owners / opening order
+    Export-->>Caller: Not found / failed<br/>No partial handoff
+  end
+  Export->>Export: Keep referenced photos<br/>Check readiness<br/>Project saved content / frames
+  break Invalid projection
+    Export-->>Caller: Failed<br/>No partial handoff
+  end
+  alt Blocking issues
+    Export-->>Caller: Located issues<br/>No artifact
+  else No blocking issues
+    Export->>Schema: Validate projected JSON<br/>including warnings
+    alt Invalid schema
+      Export-->>Caller: Failed<br/>No artifact
+    else Valid schema
+      Export-->>Caller: Ready JSON handoff
+      Caller->>InDesign: Open handoff with local originals
+      InDesign->>InDesign: Compose print output
     end
   end
 ```
 
-Complete photos become visible progressively, retaining existing usable data during replacement or recoverable processing failure. Source reconciliation preserves authored captions independently of updated metadata and thumbnails.
+[Book export](../backend/src/main/scala/photography/usecases/album/BookExport.scala); [handoff definition](contracts.md#provided-boundaries).
 
-Durable write intents bridge database and filesystem updates so restart recovery can finish interrupted publication and cleanup.
+**Invariants**
 
-The browser treats inventory and ownership events as invalidations, not a second database. Ordinary saved edits are read on navigation, editing acquisition and reconnect rather than streamed into an already-open view.
+- Empty Synopsis, chapter descriptions or photo slots block export; empty photo captions are valid.
+- Effective resolution below 300 DPI is a warning, not a blocker.
+- Export reads saved facts without reading original files and assumes editing has stopped; original availability and final print fidelity are checked in InDesign.
 
-Workspace acquisition assembles authoritative content, structure, composition and photo inventories. Resources must agree on identities, chapter blocks and opening order; incoherent acquisition is retried at most twice, then reports failure while retaining the last usable view.
+## Presentation at the backend boundary
 
-Each saved spread supplies geometry and placements together for editing and Reader. Selecting an interior spread or Cover reconciles current saved state without discarding pending adjustments or uncertain-write feedback.
+```mermaid
+flowchart LR
+  Backend["Edits / Undo / Redo<br/>via existing backend commands"] --> Outcome{"Write outcome"}
+  Outcome -->|Acknowledged| Read["Read affected saved state"]
+  Read -->|Available| Views["Catalog, editor and Reader projections"]
+  Read -->|Unavailable| Retry["Retry reads, not the mutation"]
+  Outcome -->|Rejected| Draft["Retain recoverable draft"]
+  Outcome -->|Uncertain| Reconcile["Reconcile before another write attempt"]
+  Invalidations["Inventory / ownership invalidations"] --> Read
+```
 
-Acknowledged saved state takes precedence over older in-flight reads. Workspace views reconcile authoritative state before publication so background acquisition cannot undo a successful edit.
+**Invariants**
 
-## Architectural decisions
-
-Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
-
-Print export reads saved facts from their existing owners and assembles the book for print readiness and handoff. Export assumes editing has stopped; InDesign owns local resources and final composition.
-
-One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
-
-A write admitted while ownership is live may finish atomically across expiry; competing acquisition waits and observes that result. Expired or superseded credentials cannot authorize a later admission.
-
-Shared protected writes prove caller-owned grants and reject atomically when any affected target belongs to another session. Failed relationship reads remain errors rather than an empty affected set.
-
-Routes declare access requirements; application operations decide ownership while content managers retain business validation. HTTP adapters translate credentials, and SQLite commits supplied decisions atomically; slow source and image work stays outside the critical section.
-
-Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Catalog and album metadata writes use lightweight saved facts; chapter planning returns complete ordered decisions from chapter metadata and the actual interior spread count.
-
-The browser composes workspace reads from the same saved-composition acquisition used by editing, adding chapter membership separately; the application assembles the album for print export. SQLite validates and persists owned representations; application operations select Cover dimensions from the saved sizing catalog and classify photo-processing outcomes.
-
-Original-photo discovery and reading are independent of managed-thumbnail storage. Application operations compose these capabilities and own contextual failure diagnostics, while boundaries retain causes and commit uncertainty.
-
-Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving; [contracts](contracts.md) identify authoritative representations and [operations](operational.md) owns deployment and recovery.
+- Older in-flight reads cannot replace acknowledged saved state. Ownership/reconnection events never grant authority or replay drafts automatically.
+- Navigation and Reader retain browser history; album exit, reload or unexpected access loss ends it.
+- Compensation preserves unrelated saved work and follows regenerated identities. Interrupted compensation retains progress; a blocked or uncertain newest action stops traversal.
+- Chapter creation and source replacement establish history boundaries; shared-catalog changes remain outside book history.
