@@ -51,16 +51,6 @@ Compare runtime identity/mount modes with the template and Dockerfile; expect he
 
 Keep the browser origin stable for remembered identity and local drafts. Apply the service [network/proxy requirements](../specs/operational.md#run-on-the-nas) before exposing the listener.
 
-## Adopt an existing photography installation
-
-Publish a new timestamped release to `ghcr.io/cosminci/album-layout-studio` and verify public visibility and anonymous pulls before changing the NAS installation.
-
-Pause replacement and stop `photography`, then take the service [paired checkpoint](../specs/operational.md#recovery-and-maintenance), including its saved template. Keep the old container stopped throughout adoption; never run both containers against the same database.
-
-Install the renamed template with the new published version and preserve every existing mount, environment override, UID/GID, network and port. The appdata paths intentionally remain under `/mnt/user/appdata/photography`; the SQLite filename and application configuration names are unchanged. Do not move data, recreate directories or reseed.
-
-Apply `album-layout-studio`, then verify health, saved albums and thumbnail delivery. Keep the browser origin unchanged. After verification, remove only the stopped old container and retire its saved template; retain the checkpoint and all mounted data. Retarget any container-name-specific WUD or backup configuration to `album-layout-studio` before reenabling replacement.
-
 ## One-time album population
 
 Populate albums **after** the new app is running and its mounts/health are verified. Seeding is an explicitly authorized, one-time operator action, never startup, a release gate or an update hook.
