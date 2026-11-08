@@ -2,5 +2,4 @@
 applyTo: "**"
 ---
 
-- Follow repository `AGENTS.md` and the shared SDD router.
-- Read local guidance before changing deployment, storage or original photographs.
+Start at [AGENTS.md](../../AGENTS.md) for repository context and the shared workflow. For deployment, storage or original-photo work, load its safety pointers before acting.
