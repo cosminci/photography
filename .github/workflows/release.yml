@@ -6,12 +6,12 @@ on:
 permissions: {}
 
 concurrency:
-  group: publish-photography
+  group: publish-album-layout-studio
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: Verify and publish photography image
+    name: Verify and publish album-layout-studio image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -63,14 +63,14 @@ jobs:
               exit 1
             fi
           fi
-          package_url=https://api.github.com/users/cosminci/packages/container/photography
+          package_url=https://api.github.com/users/cosminci/packages/container/album-layout-studio
           package_status=$(curl -sS -o "$RUNNER_TEMP/package.json" -w '%{http_code}' \
             -H "Authorization: Bearer $GITHUB_TOKEN" "$package_url")
           case "$package_status" in
             404) ;;
             200)
               if ! jq -e '.visibility == "public"' "$RUNNER_TEMP/package.json" >/dev/null; then
-                echo "Set the existing photography GHCR package to public before publishing" >&2
+                echo "Set the existing album-layout-studio GHCR package to public before publishing" >&2
                 exit 1
               fi
               ;;
@@ -78,12 +78,12 @@ jobs:
           esac
           if [[ "$package_status" == 200 ]]; then
             registry_token=$(curl -fsS -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -G \
-              --data-urlencode 'scope=repository:cosminci/photography:pull' \
+              --data-urlencode 'scope=repository:cosminci/album-layout-studio:pull' \
               --data-urlencode 'service=ghcr.io' https://ghcr.io/token | jq -er '.token | select(length > 0)')
             status=$(curl -sS -o /dev/null -w '%{http_code}' -I \
               -H "Authorization: Bearer $registry_token" \
               -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-              "https://ghcr.io/v2/cosminci/photography/manifests/$tag")
+              "https://ghcr.io/v2/cosminci/album-layout-studio/manifests/$tag")
             case "$status" in
               404) ;;
               200) echo "Version $tag is already published" >&2; exit 1 ;;
@@ -97,15 +97,15 @@ jobs:
             exit 1
           fi
           anonymous_token=$(curl -fsS -G \
-            --data-urlencode 'scope=repository:cosminci/photography:pull' \
+            --data-urlencode 'scope=repository:cosminci/album-layout-studio:pull' \
             --data-urlencode 'service=ghcr.io' https://ghcr.io/token | jq -er '.token | select(length > 0)')
           curl -fsS -o /dev/null -I \
             -H "Authorization: Bearer $anonymous_token" \
             -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-            "https://ghcr.io/v2/cosminci/photography/manifests/$tag"
+            "https://ghcr.io/v2/cosminci/album-layout-studio/manifests/$tag"
           git -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            tag -a "v$tag" -m "Photography $tag"
+            tag -a "v$tag" -m "Album Layout Studio $tag"
           credential=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
           GIT_CONFIG_COUNT=1 \
             GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \

@@ -28,7 +28,7 @@ flowchart TB
   Maintainer["Maintainer"] -->|Dispatch from main| GitHub["GitHub Actions<br/>Dagger verification + image build"]
   Repository["GitHub repository"] -->|Main source| GitHub
   GitHub -->|Publish verified image| GHCR["GHCR: versioned application image"]
-  Repository -->|Copy photography.xml| Template
+  Repository -->|Copy album-layout-studio.xml| Template
   subgraph NAS["NAS / Unraid"]
     Template["Unraid user template"]
     Template -->|Network, listener and mounts| Backend["One non-root backend<br/>Packaged browser app + API"]
@@ -42,7 +42,7 @@ flowchart TB
   Browser["Trusted LAN / Tailscale browser"] <-->|HTTP and editing SSE| Backend
 ```
 
-The [Unraid template](../unraid/photography.xml) owns concrete ports, host paths, mount modes and WUD labels; the [runtime Dockerfile](../containers/photography/Dockerfile) owns the process identity and image defaults. Follow the [operator runbook](../unraid/README.md) to publish, install or update.
+The [Unraid template](../unraid/album-layout-studio.xml) owns concrete ports, host paths, mount modes and WUD labels; the [runtime Dockerfile](../containers/photography/Dockerfile) owns the process identity and image defaults. Follow the [operator runbook](../unraid/README.md) to publish, install or update.
 
 Keep the listener on a trusted network or behind an authenticated reverse proxy; the application does not provide user authentication.
 

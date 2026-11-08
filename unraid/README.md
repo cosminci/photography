@@ -1,4 +1,4 @@
-# Photography on Unraid
+# Album Layout Studio on Unraid
 
 Use this runbook for authorized publication and Unraid installation/update actions. [Service operations](../specs/operational.md#run-on-the-nas) owns the deployment diagram, network/storage policy and recovery procedure.
 
@@ -10,7 +10,7 @@ The workflow verifies the source, publishes a timestamped image and creates its 
 
 The GHCR package must be **public** for anonymous NAS and WUD pulls. GitHub repository visibility does not establish package visibility: new GHCR packages initially default to private.
 
-On the first dispatch, publication can succeed while public-visibility verification stops release tagging. Open the photography package settings in GitHub and change its visibility to public; verify anonymous pulls, then recover the matching Git tag as below without republishing or replacing the existing image version.
+On the first dispatch, publication can succeed while public-visibility verification stops release tagging. Open the album-layout-studio package settings in GitHub and change its visibility to public; verify anonymous pulls, then recover the matching Git tag as below without republishing or replacing the existing image version.
 
 An existing non-public package or duplicate image/Git tag stops publication. Registry lookup errors also stop the workflow; a successful release requires both public-package visibility and an anonymous manifest read.
 
@@ -20,7 +20,7 @@ Set `VERSION` to that published timestamped version and `VERIFIED_REVISION` to i
 
 ```sh
 git fetch origin main --tags
-git tag -a "v$VERSION" "$VERIFIED_REVISION" -m "Photography $VERSION"
+git tag -a "v$VERSION" "$VERIFIED_REVISION" -m "Album Layout Studio $VERSION"
 git push origin "refs/tags/v$VERSION"
 ```
 
@@ -28,7 +28,7 @@ Use the configured personal signing identity. These commands are operator action
 
 ## First installation
 
-Read the [template](photography.xml) before installation; it owns network, listener, runtime mounts and WUD settings. Preserve the existing `layout-tool`, its retained albums and originals.
+Read the [template](album-layout-studio.xml) before installation; it owns network, listener, runtime mounts and WUD settings. Preserve the existing `layout-tool`, its retained albums and originals.
 
 Before production installation, obtain authorization for an isolated NAS smoke deployment. Use a temporary container name and disposable data/thumbnail directories, keeping the original-photo mount read-only; disable WUD monitoring for that temporary container.
 
@@ -37,19 +37,29 @@ Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnai
 1. Obtain explicit installation authorization. Create only the approved photography data/thumbnail directories, granting the Dockerfile's runtime identity write/traverse access; preserve permissions on originals and existing appdata.
 2. Verify that identity can read/traverse the selected originals and all chapter subdirectories. NAS user-share ACL inheritance alone does not prove container access; resolve any access issue with narrowly scoped permissions.
 3. Confirm the published version is anonymously pullable from GHCR. Public images need no Docker login or WUD registry credentials; remove neither existing NAS credentials nor other applications' private GHCR configuration.
-4. Copy `unraid/photography.xml` to `/boot/config/plugins/dockerMan/templates-user/my-photography.xml` on the approved NAS. In the Docker page, replace `REPLACE_WITH_PUBLISHED_VERSION` with an existing timestamped version; confirm network, port, read-only originals and both writable mounts before Apply.
+4. Copy `unraid/album-layout-studio.xml` to `/boot/config/plugins/dockerMan/templates-user/my-album-layout-studio.xml` on the approved NAS. In the Docker page, replace `REPLACE_WITH_PUBLISHED_VERSION` with an existing timestamped version; confirm network, port, read-only originals and both writable mounts before Apply.
 5. Confirm the saved template retains its restart policy, bounded logs and WUD labels. Arrange [stopped-state checkpoints](../specs/operational.md#recovery-and-maintenance) before allowing unattended replacement; labels do not create backups.
 6. Apply once, inspect startup logs, and check the application from both LAN and Tailscale. Inspect the actual runtime UID/GID and mounts before any seeding.
 
 ```sh
-ssh root@192.168.1.3 'docker exec photography id'
-ssh root@192.168.1.3 'docker inspect photography --format "{{json .Mounts}}"'
+ssh root@192.168.1.3 'docker exec album-layout-studio id'
+ssh root@192.168.1.3 'docker inspect album-layout-studio --format "{{json .Mounts}}"'
 curl -fsS http://192.168.1.3:10002/health
 ```
 
 Compare runtime identity/mount modes with the template and Dockerfile; expect health JSON `{"status":"ok"}`. Open the UI and verify saved album navigation, photo processing and thumbnail delivery from LAN and Tailscale.
 
 Keep the browser origin stable for remembered identity and local drafts. Apply the service [network/proxy requirements](../specs/operational.md#run-on-the-nas) before exposing the listener.
+
+## Adopt an existing photography installation
+
+Publish a new timestamped release to `ghcr.io/cosminci/album-layout-studio` and verify public visibility and anonymous pulls before changing the NAS installation.
+
+Pause replacement and stop `photography`, then take the service [paired checkpoint](../specs/operational.md#recovery-and-maintenance), including its saved template. Keep the old container stopped throughout adoption; never run both containers against the same database.
+
+Install the renamed template with the new published version and preserve every existing mount, environment override, UID/GID, network and port. The appdata paths intentionally remain under `/mnt/user/appdata/photography`; the SQLite filename and application configuration names are unchanged. Do not move data, recreate directories or reseed.
+
+Apply `album-layout-studio`, then verify health, saved albums and thumbnail delivery. Keep the browser origin unchanged. After verification, remove only the stopped old container and retire its saved template; retain the checkpoint and all mounted data. Retarget any container-name-specific WUD or backup configuration to `album-layout-studio` before reenabling replacement.
 
 ## One-time album population
 
@@ -67,16 +77,16 @@ Preserve the private inputs and journals outside Git and the production image. A
 
 The template's labels opt into the existing WUD watcher and restrict eligible versions. WUD's Docker trigger owns replacement timing; confirm it also retains the chosen version in the saved Unraid template so a later Apply does not revert it.
 
-WUD tag discovery and Docker image pulls are independent. Both can be anonymous for the verified public photography package; other private applications still require their own credentials.
+WUD tag discovery and Docker image pulls are independent. Both can be anonymous for the verified public album-layout-studio package; other private applications still require their own credentials.
 
-Before each update, complete the service [backup procedure](../specs/operational.md#recovery-and-maintenance). If unattended backup coordination is unavailable, keep photography replacement paused until the operator completes that checkpoint.
+Before each update, complete the service [backup procedure](../specs/operational.md#recovery-and-maintenance). If unattended backup coordination is unavailable, keep album-layout-studio replacement paused until the operator completes that checkpoint.
 
 After replacement, rerun the installation runtime/health checks and verify saved albums/chapters and thumbnail delivery on LAN and Tailscale. Follow [editing recovery](../specs/operational.md#editing-access-and-recovery) for open browsers.
 
 ## Diagnose or recover
 
 ```sh
-ssh root@192.168.1.3 'docker logs --tail 200 photography'
+ssh root@192.168.1.3 'docker logs --tail 200 album-layout-studio'
 ```
 
 Retain this output with the installed image version and runtime inspection. Use [service recovery](../specs/operational.md#recovery-and-maintenance) for state restoration; preserve private seed journals alongside the matching checkpoint.
