@@ -1,20 +1,21 @@
 # Photography operations
 
-> Standard: Agentic Engineering Standards v1.2.0
-
 ## Run locally
 
-Install the pinned toolchain as described in [Contributing](../CONTRIBUTING.md), then run from the repository root:
+Install the [contributor toolchain](../CONTRIBUTING.md#setup). Before startup, choose an isolated SQLite path, a writable thumbnail directory and a read-only original-photo root; the launcher changes only the database default, not the two media paths.
+
+Run from the repository root, replacing the example paths with the approved locations:
 
 ```sh
+export PHOTOGRAPHY_SQLITE_PATH="$PWD/.local/photography.db"
+export PHOTOGRAPHY_THUMBNAIL_ROOT="$PWD/.local/thumbnails"
+export PHOTOGRAPHY_PHOTO_ROOT="/absolute/path/to/originals"
 python3 scripts/local.py
 ```
 
-The launcher builds frontend assets and starts the backend plus development server, reporting their URLs after readiness. Defaults are `127.0.0.1:8080` and `127.0.0.1:5173`; local SQLite state lives under `.local/`.
+Wait for the launcher to report both ready URLs before opening the workspace. [The launcher](../scripts/local.py) owns default ports, its database location and readiness timeout; set `PHOTOGRAPHY_PORT` and `PHOTOGRAPHY_FRONTEND_PORT` before startup when another service occupies those ports.
 
-For isolated work, set `PHOTOGRAPHY_SQLITE_PATH`, `PHOTOGRAPHY_PHOTO_ROOT` and `PHOTOGRAPHY_THUMBNAIL_ROOT` to disposable development locations. The launcher overrides the database default only; explicitly choose a writable thumbnail directory. `PHOTOGRAPHY_PORT` and `PHOTOGRAPHY_FRONTEND_PORT` allow separate verification ports.
-
-Stop with Ctrl+C. The launcher stops its owned process groups, including descendants whose parent has already exited; preserve unrelated services and retained data.
+Stop with Ctrl+C; the launcher stops its own process groups. For startup failure, inspect the reported prerequisite, port or backend error rather than stopping unrelated processes or deleting retained state.
 
 ## Frontend configuration
 
@@ -22,33 +23,38 @@ Browser-local history capacity is frontend configuration, fixed at development-s
 
 ## Run on the NAS
 
-Use one backend instance with durable SQLite and thumbnail storage, and mount original photo directories read-only. The backend serves the built application and API together; the frontend development server is unnecessary on the NAS.
+```mermaid
+flowchart TB
+  Maintainer["Maintainer"] -->|Dispatch from main| GitHub["GitHub Actions<br/>Dagger verification + image build"]
+  Repository["GitHub repository"] -->|Main source| GitHub
+  GitHub -->|Publish verified image| GHCR["GHCR: versioned application image"]
+  Repository -->|Copy photography.xml| Template
+  subgraph NAS["NAS / Unraid"]
+    Template["Unraid user template"]
+    Template -->|Network, listener and mounts| Backend["One non-root backend<br/>Packaged browser app + API"]
+    WUD["Existing WUD watcher + Docker trigger"] -->|Select release and replace| Backend
+    Backend -->|Read/write| Database[("SQLite data mount")]
+    Backend -->|Read/write| Thumbnails[("Thumbnail mount")]
+    Originals[("Original-photo mount")] -->|Read only| Backend
+  end
+  GHCR -->|Anonymous image pull| Backend
+  GHCR -->|Release discovery| WUD
+  Browser["Trusted LAN / Tailscale browser"] <-->|HTTP and editing SSE| Backend
+```
 
-Deploy a versioned, non-root application image with anonymous registry access. The [operator runbook](../unraid/README.md) owns installation, updates and recovery procedures.
+The [Unraid template](../unraid/photography.xml) owns concrete ports, host paths, mount modes and WUD labels; the [runtime Dockerfile](../containers/photography/Dockerfile) owns the process identity and image defaults. Follow the [operator runbook](../unraid/README.md) to publish, install or update.
 
 Keep the listener on a trusted network or behind an authenticated reverse proxy; the application does not provide user authentication.
 
-| Storage | Ownership and operating requirement |
-| --- | --- |
-| SQLite | Writable, persistent application state; run only one backend against it. |
-| Managed thumbnails | Writable derived media, backed up consistently with database references. |
-| Original photographs | Independently owned, read-only source material; saved chapter paths must be visible to the backend. |
-
 [Application configuration](../backend/src/main/resources/application.conf) owns environment settings and defaults. Set `PHOTOGRAPHY_HOST`/`PHOTOGRAPHY_PORT` for the listener and `PHOTOGRAPHY_THUMBNAIL_QUALITY` for preview quality; invalid configuration stops startup.
 
-Trusted-network HTTP supports browser editing coordination. Preserve private headers and unbuffered, uncached Server-Sent Events through proxies; transport keepalives detect disconnected tabs without renewing editing leases.
-
-Preserve immutable thumbnail caching independently of API and event responses. [OpenAPI](http-api.openapi.json) owns credential, lease and transport details.
+Before putting a proxy in front of the listener, apply the [API transport requirements](contracts.md#provided-boundaries). Keep event connections alive without treating transport keepalives as editor heartbeats.
 
 ## Editing access and recovery
 
-The single backend keeps session and target authority in memory. Restart invalidates old credentials and grants while preserving saved albums and remembered browser identity and alias.
+For a blocked extra tab, close the active tab and allow automatic binding retry; after a browser crash, wait for access expiry. Do not clear remembered browser identity as a substitute for releasing the binding.
 
-Accepted session heartbeats and target renewals extend separate leases. Expiry releases abandoned access after a crash or network loss; a failed heartbeat attempt extends nothing.
-
-For a blocked extra tab, close the active tab and allow automatic binding retry; an unresponsive browser releases access on expiry. Remembered browser identity is separate from the temporary connection and should be retained.
-
-When access becomes unconfirmed, reconnect and reconcile saved state before resubmitting retained drafts. Backend loss blocks the application; after restart or grant loss, review drafts explicitly because reacquisition never replays them.
+After backend restart or access loss, reconnect, reload saved state and review retained drafts before resubmitting. [Editing ownership](design.md#browser-editing-ownership) explains which authority expires and which browser state survives.
 
 ## Readiness, logs and metrics
 
@@ -56,16 +62,26 @@ Probe `GET /health` for HTTP readiness. Startup migrates SQLite and reconciles u
 
 The backend writes startup and failure diagnostics through SLF4J to process output. Capture stdout/stderr with the local terminal or NAS supervisor; retain application errors alongside migration and database-pool diagnostics when investigating failures.
 
-Current observability comprises the health endpoint, logs and chapter inventory/processing feedback. Dedicated metrics export, dashboards and alert rules are not configured. Monitor process availability, health responses and free space for the database and thumbnail volume at the host level; these are operating recommendations, not existing application metrics.
+Chapter processing feedback identifies queued, progressing and failed work in the workspace. No metrics exporter, dashboard or alert rules are configured; arrange host checks for process availability, health responses and free space on the data/thumbnail volumes.
 
 ## Recovery and maintenance
 
-Take a consistent backup of SQLite and its referenced thumbnail storage, preferably while the backend is stopped, and restore them together. Retain the independent originals backup. Preserve failed startup data and logs before changing files or retrying recovery.
+1. Pause automatic replacement and stop the sole backend; confirm no process still uses its database.
+2. Back up both the data directory, including SQLite sidecars, and referenced thumbnails in one stopped-state checkpoint. Include image version/digest and deployment configuration; retain originals through their independent backup.
+3. Verify both directories are present before restarting or updating.
 
-Pause automatic replacement while taking the paired checkpoint. An older image does not reverse migrations; recovery requires compatible image/state, and restoring an earlier checkpoint can lose subsequent edits.
+For failed startup, preserve logs and the failed database/thumbnail pair before intervention. Migration, configuration and permission failures do not authorize deleting state or reseeding.
 
-After restart, unfinished thumbnail publication/cleanup is reconciled from durable intents. Source enumeration is explicit: use Refresh to resume interrupted photo processing. A failed scheduling attempt does not undo a saved chapter.
+To restore, keep the backend stopped and replacement paused, select a compatible image and matching checkpoint, restore both directories and verify runtime access. Start that version, check health, saved albums and thumbnail delivery, then reenable replacement.
 
-One chapter source is processed at a time to bound NAS image-processing load; other requests remain queued while saved-state viewing and editing stay available.
+An older image does not reverse migrations. Restoring an earlier checkpoint can lose later edits; obtain authorization for that loss and never combine it with journals that claim newer saved work.
+
+Use Refresh to resume interrupted source enumeration after restart. For a scheduling failure after a chapter save, retry processing rather than recreating the saved chapter.
 
 For checksum-incompatible disposable development databases, select a fresh database path or recreate only the explicitly identified disposable database. Retained spike data, NAS state and original photographs require their owner's authorization before replacement.
+
+Before first deployment, schema/data evolution can update the initial migrations with migrated repository-seam evidence. Once deployed, preserve applied migrations and add versioned changes with upgrade evidence; retained spike data is not disposable merely because production has not started.
+
+## Print handoff
+
+Export the saved book after editing stops. Open the empty Saal InDesign template, then run [place-spreads.jsx](../scripts/indesign/place-spreads.jsx) or [place-cover.jsx](../scripts/indesign/place-cover.jsx) against the same exported JSON; InDesign resolves local print resources.

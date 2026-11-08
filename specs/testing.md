@@ -1,44 +1,39 @@
 # Photography testing
 
-> Standard: Agentic Engineering Standards v1.2.0
+## Test boundaries
 
-## Confidence model
-
-Tests follow responsibility boundaries. Most behavior is proved through domain and application components; adapters are proved against the real external representation or resource they translate. A smaller set of browser journeys checks that those boundaries compose into a usable editor.
-
-| Layer | What it establishes |
+| Type | What to exercise |
 | --- | --- |
-| Domain and application components | Business rules, state transitions and orchestration through public operations, substituting effectful collaborators. |
-| Adapter seams | Faithful translation and failure behavior against real HTTP, SQLite, files, image codecs or configuration. |
-| Browser components | User-observable interaction, reactive state, accessibility and focus through rendered controls. |
-| Local application journeys | Integration, visual hierarchy and native browser behavior that isolated components cannot establish. |
-| Native publishing | InDesign and final-output inspection establish print fidelity; automated handoff and script checks establish representation and orchestration. |
-| Architecture and build gates | Dependency direction, type safety and reproducible delivery across supported components. |
+| Component | Domain rules and usecase decisions through public operations, with collaborating ports substituted. Browser suites render their owner, substitute collaborators and use accessible controls and real events. |
+| Seam integration | An adapter's real external exchange: HTTP requests with the usecase substituted, migrated SQLite, actual files, image codecs or configuration parsing. |
+| Architecture | Enforced package/dependency direction, separate from behavioral scenarios. |
+| Browser journey | Native text selection, scrolling/focus, tab/profile isolation and proxy/socket behavior that a simulated DOM cannot establish. |
+| Print inspection | Run the exported book through InDesign and inspect the composed output; schema/script tests do not prove print fidelity. |
 
-Transactional, concurrency and recovery guarantees need evidence where state is actually committed. Cross-resource photo publication also needs real storage and restart-oriented verification; mocked collaboration alone cannot establish those guarantees.
+## Service risks
 
-Each component suite exercises its owner and substitutes its collaborators, including child UI components. Substitutes supply independently arranged responses and record requests and effects separately; saved-state evidence comes from arranged reads at component boundaries and actual committed state at persistence seams.
+For ownership changes, test separate session and target expiry, stale connection generations and a write racing acquisition. Component tests own the admission decision; HTTP seams prove credential translation and stream finalization, while SQLite seams prove commit/rollback.
 
-Recovery confidence requires evidence for both the persisted commit and the client's knowledge of its outcome. Partial saves, lost acknowledgements and stale reads must be exercised across those boundaries to establish that recovery preserves successful work.
+For source reconciliation, use actual original/thumbnail files and migrated SQLite to prove interrupted publication and restart cleanup. A mocked storage response cannot prove that database references and thumbnail files remain consistent.
 
-Reversible editing needs cross-owner journeys to establish chronological intent and history lifetime. Component tests prove compensation and retained progress; real persistence and access boundaries establish saved round trips and interference handling, including identity changes during restoration.
+For saves and Undo/Redo, distinguish rejected writes, acknowledged writes followed by failed reads and uncertain write outcomes. Prove partial-save recovery preserves completed work, stale reads cannot replace acknowledged state and compensation follows regenerated identities without undoing unrelated edits.
 
-Native text entry, selection and spatial/focus continuity require actual-browser checks through pending and failed saves. Component assertions establish interaction logic but cannot alone prove browser-native behavior or stable presentation.
+For browser recovery, isolate profiles and tabs, drop departure requests and close real event connections. Check that ownership loss retains drafts and blocks writes, reacquisition reloads saved state, and neither reconnect nor Reader replays drafts automatically.
 
-Exclusive access needs component proof at its authority: connection/grant fencing, independent lease expiry, current affected relationships and admitted mutation completion must serialize with competing acquisition.
-
-HTTP seams prove credential translation and exact-generation stream finalization; SQLite seams prove persistence and rollback rather than recreating lock policy. Browser components establish retained drafts and fail-closed editing across ownership loss.
-
-Actual socket cancellation and multiple browser engines establish close/reload recovery when departure requests are dropped. Native journeys isolate profiles and tabs, include the local proxy, and check authoritative refresh without replaying retained drafts.
+For export, exercise missing resources and invalid saved composition as well as a valid book. Native inspection remains necessary for page geometry, captions and Cover/spine placement.
 
 ## Nomenclature
 
 Name domain and application suites `<Boundary>ComponentTest` and adapter suites `<Adapter>SeamIntegrationTest`; TypeScript uses the corresponding `.componentTest` and `.seamIntegrationTest` suffixes. A seam test crosses the adapter's real external boundary; substituting a network call establishes component behavior instead.
 
+Every usecase or port trait must have exactly one owning test suite. Group its operation scenarios in that suite; do not split ownership by feature, helper or result type.
+
+Keep architecture rules in one `ArchitectureTest` suite with one test.
+
 Case descriptions start with `should` and name the observable guarantee in domain vocabulary. Keep runner-required prefixes, such as Python's `test_`, before that description.
 
 ## Change validation
 
-Project acceptance criteria into the owning suites and retain traceability with the change evidence. Exercise the complete local journey before archival, with isolated data and read-only access to original photographs.
+Map changed guarantees to their owning scenarios and retain results with change evidence. Use isolated application state and read-only originals for browser or print checks.
 
-Coverage is an enforcing guardrail, not a substitute for boundary evidence or a reason to duplicate tests. Build configuration owns thresholds and exclusions; [Contributing](../CONTRIBUTING.md) owns conventions and gate commands, and [pipeline testing](../ci/specs/testing.md) owns verification infrastructure.
+The [backend build](../backend/build.sbt) and [frontend test configuration](../frontend/vitest.config.ts) own coverage thresholds/exclusions. [Contributing](../CONTRIBUTING.md#validation) owns gate commands; [Dagger testing](../ci/specs/testing.md) explains verification infrastructure evidence.

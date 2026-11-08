@@ -1,209 +1,128 @@
 # Photography design
 
-> Standard: Agentic Engineering Standards v1.2.0
+## Book ownership
 
-## Purpose and system boundary
-
-Album Layout Studio turns a year's chapter-organized photographs into a persisted book for browser presentation and InDesign print composition. The browser combines a photo collection, a spread editor and a distraction-free Reader; one backend serves the application and owns saved state.
-
-```mermaid
-flowchart LR
-  Editor --> Browser["Album catalog and workspace"]
-  Browser <-->|Commands and reads| Backend["Application services"]
-  Backend --> Database[("Albums and composition")]
-  Originals["Original photographs"] -->|Read only| Backend
-  Backend --> Thumbnails[("Managed thumbnails")]
-  Backend -->|Inventory and ownership invalidations| Browser
-```
-
-Original photographs remain independently owned. The application stores editorial decisions and derived previews, rather than becoming the authoritative photo archive.
-
-## Album model
+Album Layout Studio stores editorial decisions and composition, not the authoritative original-photo archive.
 
 ```mermaid
 flowchart TD
-  Album --> Synopsis["Album opening: Synopsis"]
-  Album --> Cover
-  Album --> Chapters["Chronological chapters"]
+  Album --> Synopsis["Synopsis: first interior spread"]
+  Album --> Cover["Cover: exterior"]
+  Album --> Chapters["Chronological chapters; Home last"]
   Chapters --> Opening["Chapter opening"]
   Chapters --> Spreads["Ordered photo spreads"]
   Chapters --> Photos["Chapter photo collection"]
-  Synopsis & Opening & Spreads --> Template["Context-specific layout"]
-  Synopsis & Opening & Spreads & Cover --> Placements
-  Placements --> Photos
+  Synopsis & Opening & Spreads --> Layout["Context-specific template and placements"]
+  Cover --> Exterior["Cover frames and placements"]
+  Layout & Exterior --> Photos
 ```
 
-An album has a unique, immutable year and an editable title. Chapters describe destinations and visit periods; Home represents the whole year and remains last. The interior starts with Synopsis, followed by chapter blocks whose openings stay ahead of their photo spreads.
+An album has a unique immutable year and independently editable title. Chapters describe destinations and visit periods; Home covers the whole year, and each chapter opening precedes its photo spreads.
 
-Editorial content belongs to the book's domain owners, independently of layout:
-
-| Owner | Content and relationship |
+| Owner | Saved facts and constraints |
 | --- | --- |
-| Album | Synopsis and a nonempty author selection from which Cover credits derive. |
-| Chapter | Plain-text description and ordered gear selection, separate from destination and visit-period metadata. |
-| Photo | Caption retained independently of placement. |
-| Interior placement | Caption position within the layout, separate from photo-owned text. |
+| Album | Synopsis and a nonempty author selection; Cover credits derive from those authors. |
+| Chapter | Destination/date/source metadata, plain-text description and ordered gear selection. |
+| Photo | Caption and source metadata, independently of whether the photo is placed. |
+| Interior placement | Frame transform and caption position; it references photo-owned text. |
+| Cover | Exterior composition, saved spine owner and print specifications. Frames derive from actual interior page count; the spine owner's photo frame includes the spine. |
+| Shared gear catalogs | Cameras and lenses have independent lifecycles. Chapter selections must remain compatible with current catalog entries; a lens can serve several bodies. |
 
-Cameras and lenses have independent, shared catalog lifecycles; chapters select compatible equipment rather than owning catalog entries. A lens can serve several bodies, so changing or deleting one entry must preserve the validity of every saved selection that references it.
+The book allows at most 65 interior spreads, excluding Cover. Templates supply context-specific geometry from reference catalogs rather than separate editor/Reader rules.
 
-Gear compatibility is a pure catalog-relative domain rule; application operations acquire current catalog state before applying it, while database constraints preserve references and atomic persistence. [Contracts](contracts.md) link the authoritative selection rules and representations.
+Chapter spreads use photos from that chapter; Synopsis and Cover can use the album collection. Collection membership survives removal of a spread, which releases placements rather than deleting photographs.
 
-Book presentation preserves editorial text and derives headings and supporting information from structured data. Editing, navigation and Reader share presentation policy over saved composition, keeping content and catalog identities with their existing owners.
+## Saved edits and recovery
 
-Composition is bounded by the physical book: at most 65 interior spreads, excluding Cover. Templates provide layout geometry for their context; reference catalogs remain data, not duplicated application policy.
+The workspace keeps the selected book part addressable across navigation and reload. Catalog cards show both Cover faces and actual page count, refreshing on catalog reentry; editor and Reader share saved composition and presentation policy.
 
-Cover artwork dimensions derive from the actual interior page count and persisted print specifications. The saved spine owner includes the spine in its photograph's frame; catalog, editor and Reader share those authoritative frames and saved transforms.
-
-Photos belong to chapter collections independently of their use in layouts. Chapter spreads use their chapter's photos; Synopsis and Cover can use the album collection. Removing a spread releases its placements rather than deleting its photographs.
-
-## Editing journey
-
-```mermaid
-stateDiagram-v2
-  [*] --> Catalog
-  Catalog --> Workspace: Create or open album
-  Workspace --> Workspace: Edit structure, content and photo composition
-  Workspace --> Reader: Enter Reader
-  Reader --> Workspace: Resume editing
-  Workspace --> Catalog: Return to catalog
-```
-
-The workspace keeps the selected part addressable and restores it across navigation and reloads. Structural editing owns chapter-bound command and history reconciliation, while the workspace owns navigation, focus and context-specific template controls.
-
-Photo editing persists placements and transforms for interior layouts and Cover; collection availability is derived from saved placements. Reader presents the same saved book content and composition without editing chrome.
-
-Bleed selects one spread-wide mode: full-height outer photos bleed top, bottom and outward, leaving an opposite stack inset; without a full-height outer photo, outer stacks bleed outward together. Inner slots remain inset, and imported and newly created spreads use the same rule without changing template geometry or placement identities.
-
-The command box starts the metadata row and groups bleed with chapter editing. Mixed saved directions remain readable without mutation and have an explained disabled toggle; standard directions can be enabled or cleared through the existing spread save and ownership boundary.
-
-Album cards display both saved cover faces and the actual interior page count, refreshing when the catalog is re-entered. Album renaming belongs to the Synopsis command box and preserves independent title ownership.
+Reader removes editing controls, not book content.
 
 ```mermaid
 sequenceDiagram
   actor Editor
   participant Workspace
-  participant Application
+  participant Backend
   participant Storage
-  Editor->>Workspace: Edit content or composition
-  opt Adjust a photograph
-    Workspace-->>Editor: Preview locally
-    Editor->>Workspace: Complete adjustment
-  end
-  Workspace->>Application: Request mutation
-  opt Existing placements need confirmation
-    Application-->>Workspace: Report occupied spread
-    Workspace-->>Editor: Explain impact and request confirmation
+  Editor->>Workspace: Edit a draft or preview a photo adjustment
+  Workspace->>Backend: Submit completed intent
+  alt Existing placements require confirmation
+    Backend-->>Workspace: Occupied-spread result
+    Workspace-->>Editor: Explain impact
     Editor->>Workspace: Confirm
-    Workspace->>Application: Repeat with confirmation
+    Workspace->>Backend: Submit confirmed change
   end
-  Application->>Storage: Commit validated change atomically
-  Application-->>Workspace: Saved result
-  opt Collection or structure changed
-    Workspace->>Application: Reload affected authoritative views
-  end
+  Backend->>Storage: Commit validated change
+  Backend-->>Workspace: Acknowledge saved result
+  Workspace->>Backend: Reconcile affected saved views
 ```
 
-Local previews stay responsive while completed adjustments save in order. Failed saves retain an explicitly unsaved preview for recovery.
+Completed photo adjustments save in order while previews remain local. Cancellation leaves saved state unchanged; rejection or failed saves retain recoverable drafts instead of presenting them as saved.
 
-Cancellation preserves saved state, and rejected saves retain the draft with recoverable feedback. Validated mutations commit within their owning boundary, preserving unrelated content and composition.
+An acknowledged write followed by failed acquisition needs another read, not another mutation. An uncertain write outcome must be reconciled before retrying; stale in-flight reads cannot replace acknowledged saved state.
 
-Saving and delivering the saved result are distinct outcomes: once a write is acknowledged, recovery retries authoritative reads rather than replaying the mutation. Uncertain outcomes are reconciled before another write attempt; unavailable state remains an explicit failure rather than successful empty content.
+One editor can span separately saved owners: chapter metadata saves before gear, so recovery preserves the committed portion and retries only unresolved work. Unrelated content and composition remain unchanged.
 
-An editor spanning several owners does not imply an all-or-nothing transaction. Chapter metadata resolves before gear commits separately; partial-save recovery preserves the saved portion and retries only unresolved work.
+Navigation resolves pending edits and uncertain saves before leaving. Focus remains with the owning edit or recovery surface; temporary guards explain their reason without moving controls or hiding failures.
 
-Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent without retaining editing authority; album exit, reload or unexpected access loss ends its lifetime.
+Album renaming belongs to Synopsis but does not change its content ownership. Spread-wide bleed preserves template geometry: full-height outer photos bleed vertically and outward while an opposite stack stays inset; otherwise outer stacks bleed outward together, with inner slots inset.
 
-Reversal uses ordinary authoritative commands and current ownership, preserving unrelated work rather than restoring whole-album snapshots. Visible composition can be restored with regenerated identities, which retained history follows.
+Mixed saved bleed directions remain readable and are not normalized on load. The disabled toggle explains that state; standard directions can be enabled or cleared through the normal protected save.
 
-Compensation is best effort, not an atomic restoration transaction: interrupted work retains progress, and a blocked or uncertain newest action stops traversal. Chapter creation and source-photo replacement establish explicit history boundaries; shared-catalog changes remain independently owned.
+## Undo/Redo
 
-Editing keeps book content primary and preserves the user's spatial context through saves. Temporary guards prevent conflicting actions without hiding controls or shifting the layout; their reasons are accessible, while errors and recovery actions remain visible.
+Completed user intent forms one browser-local chronology, including edits spanning content owners. Navigation and Reader retain it; album exit, reload or unexpected access loss ends it.
 
-Navigation resolves pending edits and uncertain saves before leaving. Focus follows the owning edit or its recovery surface without stealing unrelated focus or scrolling the workspace.
+Undo/Redo uses ordinary authoritative commands with current ownership, not whole-album snapshots. Restored composition can receive new identities, which retained history follows without reverting unrelated edits.
+
+Compensation is best effort: interrupted actions retain progress, and a blocked or uncertain newest action stops traversal. Chapter creation and source-photo replacement establish history boundaries; shared-catalog changes remain outside book history.
 
 ## Browser editing ownership
 
-A browser profile remembers its identity and automatically chosen, editable alias. Aliases identify editors, not authenticated users.
+A browser profile remembers an identity and editable alias. A tab establishes a backend-bound connection before entering the application; only one tab per profile is admitted, and additional tabs wait for release or expiry.
 
-Each document establishes a backend-bound tab connection before opening the application. Only one application tab per profile is admitted; additional tabs remain blocked until the previous binding is released.
+One session can own one interior spread or the whole Cover. Other profiles can view saved state and use Reader, see the owner's alias and acquire after release/expiry; there is no forced takeover.
 
-One session may own one interior spread or the full exterior Cover. Other profiles retain saved-state viewing and Reader, see the owner's alias, and acquire only after release or expiry without forced takeover.
+| Requires target ownership | Independently writable |
+| --- | --- |
+| Composition, placed-photo captions, Synopsis, chapter-opening description, template changes and spread deletion | Album title, chapter name/countries/dates/source, gear and catalog edits, author selection, nondestructive insertion/reordering and photo-source processing |
 
-Target ownership protects composition, placed-photo captions, synopsis, chapter-opening descriptions, template changes and spread deletion. Chapter name, countries, dates, source, gear/catalog edits, author selection and nondestructive insertion/reordering remain independent of target locks.
+Chapter-description writes resolve the current opening under the same coordination as ownership admission and persistence. A view-only target hides editing affordances while preserving independent chapter details and recoverable drafts.
 
-Description writes resolve the chapter's current opening under the same coordination as ownership admission and persistence. A view-only canvas presents photographs, captions and opening text without editing affordances; independent chapter details and Reader remain available, and existing drafts remain recoverable.
+Tab binding, session liveness and target grants have separate lifetimes. Closing a stream releases only its exact tab binding; a live session/grant can resume after reload, while releasing a target retains the session.
 
-Album title and photo-source processing remain independently writable. Editing grants coordinate access without changing which domain owner holds the content.
+Selecting another spread or Cover releases the old grant before acquiring the new target or showing it view-only. Reader and album exit release target ownership.
 
-Tab binding, session liveness and target grants have separate lifetimes. Stream closure releases only the exact tab connection; a still-live session and grant can resume after reload, while releasing a target keeps its session.
+An ownership event is an invalidation, not a grant. Waiting viewers attempt acquisition only after local work resolves; successful acquisition reloads authoritative saved state before enabling edits.
 
-Selecting another spread or Cover releases the previous grant, then acquires the destination or presents it view-only. Entering Reader or leaving the album releases target ownership.
+Connection/ownership uncertainty blocks editing and retains drafts; backend loss blocks the whole application. Reconnection/reacquisition requires saved-state reconciliation and explicit draft review, never automatic replay.
 
-Ownership invalidations let waiting viewers attempt acquisition once local work is resolved. A successful acquisition reconciles saved content before editing; a notification alone never grants access.
+The backend keeps this authority in memory, so restart invalidates temporary credentials/grants but preserves saved albums and remembered browser identity. Session heartbeats and target renewals extend separate leases; failed attempts extend neither.
 
-Connection or ownership uncertainty blocks editing and retains drafts, with backend loss making the whole application unavailable. Reconnection or reacquisition requires authoritative reconciliation and explicit draft review, never automatic replay.
+## Photo reconciliation and live reads
 
-## Photo processing and live views
+Saving a chapter commits independently of background processing. Creation, source-folder replacement or Refresh schedules reconciliation; opening an album reads saved state without rescanning originals.
 
-Chapter saves commit independently of background photo processing. Creation, a changed source folder or an explicit Refresh initiates reconciliation; opening an album reads saved state.
+Only one chapter source processes at a time; other requests queue. Superseding work releases that capacity without publishing stale photos.
 
-The backend processes one chapter source at a time; other requested chapters remain queued. Superseded work releases that capacity without publishing stale photos.
+Complete photos appear progressively through inventory invalidations. Replacement or recoverable failure retains existing usable photos, and refreshed metadata/thumbnails preserve authored captions.
 
-```mermaid
-sequenceDiagram
-  participant Editor
-  participant Application
-  participant Worker
-  participant Originals
-  participant Storage
-  participant Browser
-  Editor->>Application: Save chapter or request Refresh
-  opt Saving chapter details
-    Application->>Storage: Commit chapter
-  end
-  Application->>Worker: Schedule chapter reconciliation
-  par Report scheduling outcome
-    Application-->>Editor: Saved or scheduled result
-  and Reconcile in background
-    Worker->>Originals: Read current source photographs
-    loop Each complete photo
-      Worker->>Storage: Publish thumbnail and metadata safely
-      Worker-->>Browser: Invalidate chapter inventory
-      Browser->>Application: Read current inventory
-    end
-  end
-```
+Durable write intents bridge database and thumbnail-file publication/cleanup. Runtime recovery finishes interrupted intents before serving, while source enumeration remains explicitly requested.
 
-Complete photos become visible progressively, retaining existing usable data during replacement or recoverable processing failure. Source reconciliation preserves authored captions independently of updated metadata and thumbnails.
+Inventory and ownership events tell the browser to reread; they do not form a second database. Ordinary saved edits are reconciled on navigation, acquisition and reconnect rather than streamed into an already-open view.
 
-Durable write intents bridge database and filesystem updates so restart recovery can finish interrupted publication and cleanup.
+Workspace acquisition combines content, chapter structure, saved composition and inventories. Their identities, chapter blocks and opening order must agree; incoherent acquisition retries at most twice, then reports failure while retaining the last usable view.
 
-The browser treats inventory and ownership events as invalidations, not a second database. Ordinary saved edits are read on navigation, editing acquisition and reconnect rather than streamed into an already-open view.
+Each saved spread supplies geometry with placements for both editor and Reader. Acquisition retains pending adjustments and uncertain-write feedback instead of silently discarding them.
 
-Workspace acquisition assembles authoritative content, structure, composition and photo inventories. Resources must agree on identities, chapter blocks and opening order; incoherent acquisition is retried at most twice, then reports failure while retaining the last usable view.
+## Mutation coordination and print assembly
 
-Each saved spread supplies geometry and placements together for editing and Reader. Selecting an interior spread or Cover reconciles current saved state without discarding pending adjustments or uncertain-write feedback.
+Application operations decide business changes through ports; adapters translate external representations and persist supplied decisions. The [engineering principles](../DESIGN-PRINCIPLES.md) govern that separation, and [contracts](contracts.md) identify the boundaries.
 
-Acknowledged saved state takes precedence over older in-flight reads. Workspace views reconcile authoritative state before publication so background acquisition cannot undo a successful edit.
+Protected writes validate live session, connection, grants and current affected relationships in the same coordinated interval as completion. A write admitted while ownership is live may finish across expiry; competing acquisition waits and observes its committed result.
 
-## Architectural decisions
+Shared protected writes reject atomically when another session owns any affected target. Relationship-read failures remain failures, not an empty affected set; slow original-photo/image work stays outside this critical section.
 
-Domain and application policy stay independent of HTTP, SQLite and image/filesystem adapters, following [Design principles](../DESIGN-PRINCIPLES.md). The composition root supplies concrete infrastructure.
+Placement, structural editing and photo reconciliation share mutation coordination to preserve collection membership and exclusive photo use across interior and Cover. SQLite enforces relational validity and atomic persistence; application operations own the preceding decisions.
 
-Print export reads saved facts from their existing owners and assembles the book for print readiness and handoff. Export assumes editing has stopped; InDesign owns local resources and final composition.
-
-One backend owns volatile browser access and shared mutation coordination. Protected mutations check current relationships and live session, connection and grant authority in the same interval as completion.
-
-A write admitted while ownership is live may finish atomically across expiry; competing acquisition waits and observes that result. Expired or superseded credentials cannot authorize a later admission.
-
-Shared protected writes prove caller-owned grants and reject atomically when any affected target belongs to another session. Failed relationship reads remain errors rather than an empty affected set.
-
-Routes declare access requirements; application operations decide ownership while content managers retain business validation. HTTP adapters translate credentials, and SQLite commits supplied decisions atomically; slow source and image work stays outside the critical section.
-
-Browser photo editing mutates placement resources; the interior composition owner also decides observed-order replacement, preserving the opening and membership atomically. Catalog and album metadata writes use lightweight saved facts; chapter planning returns complete ordered decisions from chapter metadata and the actual interior spread count.
-
-The browser composes workspace reads from the same saved-composition acquisition used by editing, adding chapter membership separately; the application assembles the album for print export. SQLite validates and persists owned representations; application operations select Cover dimensions from the saved sizing catalog and classify photo-processing outcomes.
-
-Original-photo discovery and reading are independent of managed-thumbnail storage. Application operations compose these capabilities and own contextual failure diagnostics, while boundaries retain causes and commit uncertainty.
-
-Placement, structural editing and photo reconciliation share mutation coordination, preserving collection ownership and exclusive photo use across interior and Cover. The runtime owns resource acquisition and release, with recovery completed before serving; [contracts](contracts.md) identify authoritative representations and [operations](operational.md) owns deployment and recovery.
+Print export assembles saved facts from their existing owners and validates print readiness after editing stops. InDesign owns local resources and final composition; [operations](operational.md#print-handoff) describes the handoff.

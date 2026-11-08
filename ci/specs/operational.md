@@ -1,34 +1,33 @@
-# Pipeline operations
+# Dagger operations
 
-> Standard: Agentic Engineering Standards v1.2.0
+Run from the repository root with the [contributor toolchain](../../CONTRIBUTING.md#setup) installed and Docker available. Checks use isolated container state; the service and NAS need not be running.
 
-## Workflows
+## Select and check
 
-Pull-request CI uses the shared verification entrypoint against the target branch. The manually dispatched main-branch workflow runs every component. [Workflow definitions](../../.github/workflows/) own triggers and toolchain pins.
-
-Releases are manually authorized from main after all verification gates pass. Each immutable image version has a matching Git tag; release completion requires verified anonymous registry access.
-
-Install the pinned toolchain from [Contributing](../../CONTRIBUTING.md) and make Docker available. Component verification requires no application credentials.
-
-## Local push verification
-
-Enable the hook per clone with `git config core.hooksPath .githooks` from the repository root. It uses `mise exec` when available and calls the same `scripts/verify` entrypoint as pull-request CI; Docker and the pinned toolchain are required.
-
-For a manual shared run, fetch the target branch and supply its reference:
+Commit the candidate and fetch the comparison branch before selective verification. Selection compares committed HEAD with the merge-base, not local edits.
 
 ```sh
 git fetch origin main
-bash scripts/verify origin/main
+dagger call changed --base=origin/main
+dagger call verify --base=origin/main
 ```
 
-Verify the committed checkout: the hook requires the outgoing revision to be HEAD and the tracked/non-ignored tree to be clean. Ignored build outputs and `.agent-work/` evidence remain allowed.
+Use `dagger call verify --all` to check all components without Git selection. For a single gate, use `dagger call backend-check`, `dagger call frontend-check` or `dagger call pipeline-check`; [design](design.md#selection-and-execution) explains their different scope.
 
-Feature pushes compare with the fetched remote main; updates to an existing remote main compare with its previous revision. Missing ancestry is a checkout problem to resolve before retrying verification.
+These commands do not replace the shared host checks required for publication; use [contribution validation](../../CONTRIBUTING.md#validation) for that entrypoint.
 
-Use `dagger call verify --all` when selection is uncertain or when validating the whole system. Gate commands are listed in Contributing.
+## Build without publishing
 
-## Diagnostics
+```sh
+dagger call build --version=dev export --path=.agent-work/photography-dev.tar
+```
 
-Local verification writes stage output to the terminal; hosted runs expose it in GitHub Actions logs. Dagger reports container execution and cache reuse. Identify the failing stage and preserve its output before retrying against the same candidate and baseline.
+The result is a Docker-loadable image archive. [Image assembly](../../.dagger/src/hooks/image.ts) and the [runtime Dockerfile](../../containers/photography/Dockerfile) own its packaging; [delivery ownership](design.md#image-delivery) explains the prerequisites.
 
-Failures in source checkout, module validation and application delivery have different owners. Repair the failing boundary rather than bypassing the hook or changing gate settings; pipeline operation does not require the application or NAS photo services to be running.
+## Diagnose failures
+
+Keep the failing stage's output and candidate/baseline revisions. Dagger logs distinguish tool failures from engine/container setup failures; fix that boundary without bypassing the gate.
+
+For unexpected selection, inspect `git merge-base origin/main HEAD` and `git diff --name-only origin/main...HEAD` before blaming the mapping. Missing ancestry can trigger the direct Git adapter's fallback; fetch the intended baseline and rerun.
+
+If container Git commands cannot resolve a linked worktree's external metadata, use a full clone containing the same committed candidate and baseline. Keep the original worktree intact; changing the source container does not authorize skipping verification.

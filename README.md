@@ -1,25 +1,20 @@
 # Photography
 
-Album Layout Studio organizes chapter photo collections and edits persisted album compositions, with a SolidJS browser workspace and a Scala 3 backend.
+Album Layout Studio turns chapter-organized photographs into a saved book: compose it in the browser, read it without editing controls and export it for InDesign print composition.
 
-- [DESIGN-PRINCIPLES.md](DESIGN-PRINCIPLES.md) — architecture and engineering principles.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — toolchain, workflow, conventions, and definition of done.
-- [AGENTS.md](AGENTS.md) — operational guardrails for coding agents.
-- [.agents/skills/sdd/SKILL.md](.agents/skills/sdd/SKILL.md) — spec-driven development workflow.
-- [backend/](backend/) — Scala 3 backend and HTTP API built with sbt.
-- [frontend/](frontend/) — application frontend.
-- [InDesign scripts](scripts/indesign/) — open the empty Saal template, then run `place-spreads.jsx` or `place-cover.jsx` against the same exported JSON.
-- [.dagger/](.dagger/) — affected-component CI checks used by GitHub Actions.
-- [specs/](specs/) — living product design, contracts, testing, and operations context.
-- [ci/specs/](ci/specs/) — living documentation for the CI pipeline.
-- [Unraid deployment](unraid/README.md) — publication, installation, updates and recovery.
-- [LICENSE](LICENSE) — MIT.
+The [SolidJS frontend](frontend/) and [Scala backend](backend/) ship together as one application image. [Dagger](.dagger/) checks and packages them.
 
-**Frontend UI work only:** read [UX patterns](frontend/UX-PATTERNS.md) before changing layout, controls, navigation, keyboard interaction or user-facing copy.
+## Engineering context
 
-## System context
+| Read when | Document |
+| --- | --- |
+| Understanding book ownership and editing/processing lifecycles | [Service design](specs/design.md) |
+| Integrating API, print or infrastructure boundaries | [Service contracts](specs/contracts.md) |
+| Choosing test boundaries and suite ownership | [Service testing](specs/testing.md) |
+| Starting, diagnosing or recovering the service | [Service operations](specs/operational.md) |
+| Publishing or installing on Unraid | [NAS runbook](unraid/README.md) |
+| Changing or running Dagger | [Dagger context](ci/specs/design.md), [contracts](ci/specs/contracts.md), [testing](ci/specs/testing.md), [operations](ci/specs/operational.md) |
+| Contributing | [Setup and validation](CONTRIBUTING.md), [engineering principles](DESIGN-PRINCIPLES.md) |
+| Working as a coding agent | [Agent entrypoints](AGENTS.md) |
 
-- [Design](specs/design.md) — album model, editing journey, photo processing and architectural decisions.
-- [Contracts](specs/contracts.md) — authoritative APIs, persistence and dependency boundaries.
-- [Testing](specs/testing.md) — confidence strategy and test nomenclature.
-- [Operations](specs/operational.md) — running locally/on the NAS, storage, recovery and observability.
+[License: MIT](LICENSE).
