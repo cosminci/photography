@@ -30,6 +30,12 @@ Use the configured personal signing identity and obtain authorization for the re
 
 ## First installation
 
+Set the approved NAS connection before running the following procedures:
+
+```sh
+NAS_SSH=root@192.168.1.3
+```
+
 Recheck the [template](photography.xml) immediately before installation.
 
 Keep photography's installation separate from the existing `layout-tool` and its retained albums.
@@ -37,7 +43,7 @@ Keep photography's installation separate from the existing `layout-tool` and its
 ### Isolated smoke deployment
 
 1. Obtain authorization for an isolated smoke deployment before production installation.
-2. Follow the production directory-preparation and template-Apply procedure below with a temporary container name and disposable data/thumbnail paths; preserve the template's original-photo access. Disable WUD monitoring for that container.
+2. Use the directory-preparation and template-Apply steps below with a temporary container name and disposable data/thumbnail paths. Disable WUD monitoring for that container.
 3. Check runtime UID/GID, mounts and permissions on the NAS.
 4. Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnail delivery. Restart and confirm saved state remains available.
 5. Remove only the temporary container and its identified disposable state.
@@ -45,14 +51,13 @@ Keep photography's installation separate from the existing `layout-tool` and its
 ### Install the production container
 
 1. Obtain installation authorization and complete [state-directory preparation](#prepare-state-directories) before Apply.
-2. Verify that identity can read/traverse the selected originals and every chapter subdirectory. NAS user-share ACL inheritance alone does not prove container access; resolve issues with narrowly scoped permissions.
+2. Verify the image identity can read/traverse the selected originals and every chapter subdirectory. NAS user-share ACL inheritance alone does not prove container access; resolve issues with narrowly scoped permissions.
 3. Verify the selected release meets the registry contract. Preserve existing NAS credentials and other applications' private-registry configuration.
 4. Copy `unraid/photography.xml` to `/boot/config/plugins/dockerMan/templates-user/my-photography.xml` on the approved NAS. Select a published version in the Docker page and compare every setting with the source template before Apply.
 5. Arrange the [update checkpoint procedure](#updates) before enabling unattended replacement.
 6. Apply once and inspect startup logs. Set `APP_URL` to the configured WebUI origin, then inspect runtime identity/mounts and check readiness:
 
 ```sh
-NAS_SSH=root@192.168.1.3
 ssh "$NAS_SSH" 'docker exec photography id'
 ssh "$NAS_SSH" 'docker inspect photography --format "{{json .Mounts}}"'
 curl -fsS "$APP_URL/health"
@@ -62,16 +67,16 @@ Compare runtime identity and mount permissions with the template and [runtime im
 
 ### Prepare state directories
 
-The image runs as UID/GID `1000:1000`. Unraid can create missing bind-mount directories as `99:100` with mode `755`; those directories are not writable by the application, and SQLite startup fails with `SQLITE_CANTOPEN`.
+Unraid can create missing bind-mount directories as `99:100`, excluding the image user from writes. Prepare them explicitly to avoid SQLite startup failing with `SQLITE_CANTOPEN`.
 
-For an authorized first installation, confirm both state directories are absent or empty, then create them with the required ownership before applying the template:
+For an authorized first installation, confirm both state directories are absent or empty. Set `DATA_DIR` and `THUMBNAIL_DIR` from the approved template, and `APP_UID`/`APP_GID` from the runtime image.
 
 ```sh
-ssh root@192.168.1.3 'install -d -m 0755 -o 1000 -g 1000 /mnt/user/appdata/photography/data /mnt/user/appdata/photography/thumbnails'
-ssh root@192.168.1.3 'stat -c "%a %u:%g %n" /mnt/user/appdata/photography/data /mnt/user/appdata/photography/thumbnails'
+ssh "$NAS_SSH" "install -d -m 0755 -o '$APP_UID' -g '$APP_GID' '$DATA_DIR' '$THUMBNAIL_DIR'"
+ssh "$NAS_SSH" "stat -c '%a %u:%g %n' '$DATA_DIR' '$THUMBNAIL_DIR'"
 ```
 
-Expect `755 1000:1000` for both directories. The commands affect only the named directories; retained state requires separate authorization, and originals keep their existing ownership and read-only mount.
+Verify both directories have the requested ownership and mode before Apply. Limit these commands to the identified empty/new state directories; retained state follows local safety.
 
 ### Access boundary
 
