@@ -18,7 +18,7 @@ With maintainer authorization, dispatch [publish](../.github/workflows/release.y
 
 Inspect the image's `org.opencontainers.image.revision` label and confirm it equals the built main revision. Preserve the immutable version under the [partial-publication lifecycle](../ci/specs/design.md#release-boundary).
 
-After confirming public visibility, anonymous pulls and an absent Git tag, annotate **that exact commit**:
+Set `VERSION` to the published image tag and `VERIFIED_REVISION` to its verified commit. After confirming public visibility, anonymous pulls and an absent Git tag, annotate **that exact commit**:
 
 ```sh
 git fetch origin main --tags
@@ -37,14 +37,14 @@ Keep photography's installation separate from the existing `layout-tool` and its
 ### Isolated smoke deployment
 
 1. Obtain authorization for an isolated smoke deployment before production installation.
-2. Use a temporary container name and disposable data/thumbnail directories; preserve the template's original-photo access. Disable WUD monitoring for that container.
+2. Follow the production directory-preparation and template-Apply procedure below with a temporary container name and disposable data/thumbnail paths; preserve the template's original-photo access. Disable WUD monitoring for that container.
 3. Check runtime UID/GID, mounts and permissions on the NAS.
 4. Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnail delivery. Restart and confirm saved state remains available.
 5. Remove only the temporary container and its identified disposable state.
 
 ### Install the production container
 
-1. Obtain installation authorization. Create only the approved state directories and grant the template/image identity the required access, following local safety.
+1. Obtain installation authorization and complete [state-directory preparation](#prepare-state-directories) before Apply.
 2. Verify that identity can read/traverse the selected originals and every chapter subdirectory. NAS user-share ACL inheritance alone does not prove container access; resolve issues with narrowly scoped permissions.
 3. Verify the selected release meets the registry contract. Preserve existing NAS credentials and other applications' private-registry configuration.
 4. Copy `unraid/photography.xml` to `/boot/config/plugins/dockerMan/templates-user/my-photography.xml` on the approved NAS. Select a published version in the Docker page and compare every setting with the source template before Apply.
@@ -59,6 +59,19 @@ curl -fsS "$APP_URL/health"
 ```
 
 Compare runtime identity and mount permissions with the template and [runtime image](../containers/photography/Dockerfile). Open the configured application from LAN and Tailscale and confirm API-backed navigation before seeding; [readiness interpretation](../specs/operational.md#readiness-logs-and-metrics) belongs to application operations.
+
+### Prepare state directories
+
+The image runs as UID/GID `1000:1000`. Unraid can create missing bind-mount directories as `99:100` with mode `755`; those directories are not writable by the application, and SQLite startup fails with `SQLITE_CANTOPEN`.
+
+For an authorized first installation, confirm both state directories are absent or empty, then create them with the required ownership before applying the template:
+
+```sh
+ssh root@192.168.1.3 'install -d -m 0755 -o 1000 -g 1000 /mnt/user/appdata/photography/data /mnt/user/appdata/photography/thumbnails'
+ssh root@192.168.1.3 'stat -c "%a %u:%g %n" /mnt/user/appdata/photography/data /mnt/user/appdata/photography/thumbnails'
+```
+
+Expect `755 1000:1000` for both directories. The commands affect only the named directories; retained state requires separate authorization, and originals keep their existing ownership and read-only mount.
 
 ### Access boundary
 
