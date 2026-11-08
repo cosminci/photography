@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>photography</Name>
+  <Repository>ghcr.io/cosminci/photography:REPLACE_WITH_PUBLISHED_VERSION</Repository>
+  <Registry>https://ghcr.io/cosminci/photography</Registry>
+  <Network>br_docker</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/cosminci/photography/issues</Support>
+  <Project>https://github.com/cosminci/photography</Project>
+  <Overview>Album Layout Studio. Public GHCR image; no pull credentials. Runs as UID/GID 1000:1000. Original photographs are read-only. One backend; LAN/Tailscale only. WUD watches timestamped releases; arrange consistent database/thumbnail backups before updates.</Overview>
+  <Category>MediaApp:Photos</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/cosminci/photography/main/unraid/photography.xml</TemplateURL>
+  <ExtraParams>--restart=unless-stopped --log-opt max-size=10m --log-opt max-file=5 -l wud.watch=true -l 'wud.tag.include=^\d{4}\.\d{1,2}\.\d{1,2}-T\d{6}$'</ExtraParams>
+  <Config Name="SQLite data" Target="/data" Default="/mnt/user/appdata/photography/data" Mode="rw" Description="Persistent SQLite state. Writable by UID/GID 1000:1000; back up stopped together with thumbnails." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/photography/data</Config>
+  <Config Name="Managed thumbnails" Target="/thumbnails" Default="/mnt/user/appdata/photography/thumbnails" Mode="rw" Description="Writable by UID/GID 1000:1000. Back up and restore with the matching SQLite checkpoint." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/photography/thumbnails</Config>
+  <Config Name="Original photographs" Target="/photos" Default="/mnt/user/media/photos/Travel" Mode="ro" Description="Independent original-photo collection. Read/traverse access for UID/GID 1000:1000; never writable by this application." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/photos/Travel</Config>
+  <Config Name="WebUI port" Target="8080" Default="10002" Mode="tcp" Description="LAN/Tailscale only; do not forward publicly. Preserve browser origin for remembered identity and drafts." Type="Port" Display="always" Required="true" Mask="false">10002</Config>
+</Container>

@@ -11,6 +11,8 @@ Pipeline confidence has two independent parts: selecting the correct work and pr
 | Selection policy | Component tests prove changed-path interpretation and ownership independently of containers. |
 | Git and shell orchestration | Process-seam tests exercise real temporary repositories and scripts, substituting expensive build commands. |
 | Component delivery | Pinned containers run the actual backend, frontend and pipeline gates. |
+| Release policy and failure ordering | Verification proves immutable release identity, gate ordering, duplicate protection and anonymous registry access before release completion. |
+| Packaged runtime delivery | Isolated verification proves application delivery, photo processing, restart persistence and read-only originals. |
 | Hosted integration | Pull-request CI and explicit all-component verification establish that the same entrypoints work outside local development. |
 
 The host-side module checks validate the verification code itself. They run even when an application rebuild is unnecessary.

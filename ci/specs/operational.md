@@ -6,6 +6,8 @@
 
 Pull-request CI uses the shared verification entrypoint against the target branch. The manually dispatched main-branch workflow runs every component. [Workflow definitions](../../.github/workflows/) own triggers and toolchain pins.
 
+Releases are manually authorized from main after all verification gates pass. Each immutable image version has a matching Git tag; release completion requires verified anonymous registry access.
+
 Install the pinned toolchain from [Contributing](../../CONTRIBUTING.md) and make Docker available. Component verification requires no application credentials.
 
 ## Local push verification
@@ -24,6 +26,8 @@ Verify the committed checkout: the hook requires the outgoing revision to be HEA
 Feature pushes compare with the fetched remote main; updates to an existing remote main compare with its previous revision. Missing ancestry is a checkout problem to resolve before retrying verification.
 
 Use `dagger call verify --all` when selection is uncertain or when validating the whole system. Gate commands are listed in Contributing.
+
+Application and pipeline verification includes the packaged runtime boundary, using disposable state independently of publication and retained NAS data.
 
 ## Diagnostics
 

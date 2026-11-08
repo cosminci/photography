@@ -24,20 +24,9 @@ Browser-local history capacity is frontend configuration, fixed at development-s
 
 Use one backend instance with durable SQLite and thumbnail storage, and mount original photo directories read-only. The backend serves the built application and API together; the frontend development server is unnecessary on the NAS.
 
-The repository currently supports source-based JVM startup, not a packaged NAS service or deployment manifest. With the pinned toolchain installed and `/data`, `/photos` and `/thumbnails` mapped to the intended NAS locations, build and run from the repository root:
+Deploy a versioned, non-root application image with anonymous registry access. The [operator runbook](../unraid/README.md) owns installation, updates and recovery procedures.
 
-```sh
-npm ci --prefix frontend
-npm --prefix frontend run build
-cd backend
-PHOTOGRAPHY_HOST=0.0.0.0 \
-PHOTOGRAPHY_SQLITE_PATH=/data/photography.db \
-PHOTOGRAPHY_PHOTO_ROOT=/photos \
-PHOTOGRAPHY_THUMBNAIL_ROOT=/thumbnails \
-sbt -batch run
-```
-
-Run under a NAS process supervisor that captures output and restarts failed processes. Keep the listener on a trusted network or behind an authenticated reverse proxy; the application does not provide user authentication.
+Keep the listener on a trusted network or behind an authenticated reverse proxy; the application does not provide user authentication.
 
 | Storage | Ownership and operating requirement |
 | --- | --- |
@@ -72,6 +61,8 @@ Current observability comprises the health endpoint, logs and chapter inventory/
 ## Recovery and maintenance
 
 Take a consistent backup of SQLite and its referenced thumbnail storage, preferably while the backend is stopped, and restore them together. Retain the independent originals backup. Preserve failed startup data and logs before changing files or retrying recovery.
+
+Pause automatic replacement while taking the paired checkpoint. An older image does not reverse migrations; recovery requires compatible image/state, and restoring an earlier checkpoint can lose subsequent edits.
 
 After restart, unfinished thumbnail publication/cleanup is reconciled from durable intents. Source enumeration is explicit: use Refresh to resume interrupted photo processing. A failed scheduling attempt does not undo a saved chapter.
 

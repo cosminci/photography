@@ -1,6 +1,8 @@
 import type * as Dagger from "@dagger.io/dagger";
 import { argument, func, object } from "@dagger.io/dagger";
-import { WORKSPACE_IGNORE } from "./buildEnv";
+import { GHCR_REPOSITORY, GHCR_USER, WORKSPACE_IGNORE } from "./buildEnv";
+import { checkImage, runtimeImage } from "./hooks/image";
+import { assertReleaseVersion, releaseVersion } from "./version";
 import { checkBackend } from "./hooks/backend";
 import { checkFrontend } from "./hooks/frontend";
 import { checkLocalSetup, checkPipeline } from "./hooks/pipeline";
@@ -51,6 +53,10 @@ export class Photography {
       await checkLocalSetup(source).stdout();
       done.push("pipeline");
     }
+    if (components.length > 0) {
+      await this.imageCheck(source);
+      done.push("image");
+    }
     return done.length === 0 ? "verify: nothing affected" : `verify: ${done.join(", ")} ok`;
   }
 
@@ -73,5 +79,42 @@ export class Photography {
     @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
   ): Promise<string> {
     return checkPipeline(source).stdout();
+  }
+
+  @func()
+  async build(
+    @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
+    version = "dev",
+  ): Promise<Dagger.Container> {
+    return runtimeImage(source, {
+      version,
+      revision: (await Git.readHeadSha(source)).trim(),
+      created: new Date().toISOString(),
+    });
+  }
+
+  @func({ cache: "never" })
+  releaseVersion(): string {
+    return releaseVersion(new Date());
+  }
+
+  @func()
+  async imageCheck(
+    @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
+  ): Promise<string> {
+    return checkImage(source, await this.build(source));
+  }
+
+  @func({ cache: "never" })
+  async publish(
+    @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
+    tag: string,
+    token: Dagger.Secret,
+    registryUser = GHCR_USER,
+  ): Promise<string> {
+    assertReleaseVersion(tag);
+    return (await this.build(source, tag))
+      .withRegistryAuth("ghcr.io", registryUser, token)
+      .publish(`${GHCR_REPOSITORY}:${tag}`);
   }
 }
