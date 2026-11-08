@@ -1,0 +1,113 @@
+name: publish
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-photography
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish photography image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require main
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Publish must be dispatched from main" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Install Dagger
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=0.21.11 sh
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Verify and publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          npm ci --prefix .dagger --no-audit --no-fund
+          dagger develop
+          npm --prefix .dagger run verify
+          dagger call verify --all
+          tag=$(dagger call release-version)
+          if git show-ref --verify --quiet "refs/tags/v$tag"; then
+            echo "Git tag v$tag already exists" >&2
+            exit 1
+          else
+            git_status=$?
+            if [[ "$git_status" != 1 ]]; then
+              echo "Git tag lookup failed: exit $git_status" >&2
+              exit 1
+            fi
+          fi
+          package_url=https://api.github.com/users/cosminci/packages/container/photography
+          package_status=$(curl -sS -o "$RUNNER_TEMP/package.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $GITHUB_TOKEN" "$package_url")
+          case "$package_status" in
+            404) ;;
+            200)
+              if ! jq -e '.visibility == "public"' "$RUNNER_TEMP/package.json" >/dev/null; then
+                echo "Set the existing photography GHCR package to public before publishing" >&2
+                exit 1
+              fi
+              ;;
+            *) echo "Package lookup failed: HTTP $package_status" >&2; exit 1 ;;
+          esac
+          if [[ "$package_status" == 200 ]]; then
+            registry_token=$(curl -fsS -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -G \
+              --data-urlencode 'scope=repository:cosminci/photography:pull' \
+              --data-urlencode 'service=ghcr.io' https://ghcr.io/token | jq -er '.token | select(length > 0)')
+            status=$(curl -sS -o /dev/null -w '%{http_code}' -I \
+              -H "Authorization: Bearer $registry_token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/cosminci/photography/manifests/$tag")
+            case "$status" in
+              404) ;;
+              200) echo "Version $tag is already published" >&2; exit 1 ;;
+              *) echo "GHCR lookup failed: HTTP $status" >&2; exit 1 ;;
+            esac
+          fi
+          dagger call publish --tag="$tag" --token=env:GITHUB_TOKEN --registry-user="$GITHUB_ACTOR"
+          if ! curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" "$package_url" | \
+            jq -e '.visibility == "public"' >/dev/null; then
+            echo "Image published, but not public. Set GHCR visibility to public, verify anonymous pulls and recover the matching Git tag; do not replace this image tag." >&2
+            exit 1
+          fi
+          anonymous_token=$(curl -fsS -G \
+            --data-urlencode 'scope=repository:cosminci/photography:pull' \
+            --data-urlencode 'service=ghcr.io' https://ghcr.io/token | jq -er '.token | select(length > 0)')
+          curl -fsS -o /dev/null -I \
+            -H "Authorization: Bearer $anonymous_token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/cosminci/photography/manifests/$tag"
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            tag -a "v$tag" -m "Photography $tag"
+          credential=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential" \
+            git push origin "refs/tags/v$tag"

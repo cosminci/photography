@@ -11,6 +11,8 @@ Pipeline confidence has two independent parts: selecting the correct work and pr
 | Selection policy | Component tests prove changed-path interpretation and ownership independently of containers. |
 | Git and shell orchestration | Process-seam tests exercise real temporary repositories and scripts, substituting expensive build commands. |
 | Component delivery | Pinned containers run the actual backend, frontend and pipeline gates. |
+| Release identity | Component tests prove timestamp generation and validation; the release workflow checks registry access and duplicate versions before completing publication. |
+| NAS integration | An authorized smoke deployment proves the image, Unraid configuration, storage permissions and application work together, using disposable state and read-only originals. |
 | Hosted integration | Pull-request CI and explicit all-component verification establish that the same entrypoints work outside local development. |
 
 The host-side module checks validate the verification code itself. They run even when an application rebuild is unnecessary.

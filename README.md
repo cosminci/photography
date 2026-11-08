@@ -12,6 +12,7 @@ Album Layout Studio organizes chapter photo collections and edits persisted albu
 - [.dagger/](.dagger/) — affected-component CI checks used by GitHub Actions.
 - [specs/](specs/) — living product design, contracts, testing, and operations context.
 - [ci/specs/](ci/specs/) — living documentation for the CI pipeline.
+- [Unraid deployment](unraid/README.md) — publication, installation, updates and recovery.
 - [LICENSE](LICENSE) — MIT.
 
 **Frontend UI work only:** read [UX patterns](frontend/UX-PATTERNS.md) before changing layout, controls, navigation, keyboard interaction or user-facing copy.

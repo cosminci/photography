@@ -16,7 +16,9 @@ export function findComponentsForPath(path: string): readonly Component[] {
     path === "scripts/verify" ||
     path.startsWith(".dagger/") ||
     path.startsWith(".githooks/") ||
-    path.startsWith(".github/")
+    path.startsWith(".github/") ||
+    path.startsWith("containers/") ||
+    path.startsWith("unraid/")
   )
     return ALL_COMPONENTS;
   if (path.startsWith("backend/")) return ["backend"];

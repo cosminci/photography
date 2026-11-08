@@ -1,10 +1,17 @@
+import com.typesafe.sbt.packager.universal.UniversalPlugin.autoImport.{stagingDirectory => packagingStagingDirectory}
+
 ThisBuild / scalaVersion := "3.10.0"
 ThisBuild / organization := "com.cosminci"
 ThisBuild / version      := "0.1.0"
 
 lazy val root = (project in file("."))
+  .enablePlugins(JavaAppPackaging)
   .settings(
-    name := "photography-backend",
+    name                                   := "photography-backend",
+    Compile / mainClass                    := Some("photography.app.runtime.Main"),
+    Compile / doc / sources                := Seq.empty,
+    Compile / packageDoc / publishArtifact := false,
+    Universal / packagingStagingDirectory  := baseDirectory.value / "target" / "universal" / "stage",
     Compile / resourceGenerators += Def.task {
       val frontend = baseDirectory.value.getParentFile / "frontend" / "dist"
       val packaged = (Compile / resourceManaged).value / "frontend"

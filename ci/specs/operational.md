@@ -6,6 +6,8 @@
 
 Pull-request CI uses the shared verification entrypoint against the target branch. The manually dispatched main-branch workflow runs every component. [Workflow definitions](../../.github/workflows/) own triggers and toolchain pins.
 
+Releases are manually authorized from main after all verification gates pass. Each immutable image version has a matching Git tag; release completion requires verified anonymous registry access.
+
 Install the pinned toolchain from [Contributing](../../CONTRIBUTING.md) and make Docker available. Component verification requires no application credentials.
 
 ## Local push verification
