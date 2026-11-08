@@ -7,8 +7,6 @@ export function checkPipeline(source: Directory): Container {
     .from(NODE_IMAGE)
     .withMountedCache("/root/.npm", dag.cacheVolume("photography-npm"))
     .withDirectory("/ci", source.directory(".dagger"))
-    .withDirectory("/.github/workflows", source.directory(".github/workflows"))
-    .withDirectory("/unraid", source.directory("unraid"))
     .withWorkdir("/ci")
     .withExec(["npm", "ci", "--no-audit", "--no-fund"])
     .withExec(["npx", "vitest", "run", "--coverage"]);

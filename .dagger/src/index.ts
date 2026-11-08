@@ -1,7 +1,7 @@
 import type * as Dagger from "@dagger.io/dagger";
 import { argument, func, object } from "@dagger.io/dagger";
 import { GHCR_REPOSITORY, GHCR_USER, WORKSPACE_IGNORE } from "./buildEnv";
-import { checkImage, runtimeImage } from "./hooks/image";
+import { runtimeImage } from "./hooks/image";
 import { assertReleaseVersion, releaseVersion } from "./version";
 import { checkBackend } from "./hooks/backend";
 import { checkFrontend } from "./hooks/frontend";
@@ -53,10 +53,6 @@ export class Photography {
       await checkLocalSetup(source).stdout();
       done.push("pipeline");
     }
-    if (components.length > 0) {
-      await this.imageCheck(source);
-      done.push("image");
-    }
     return done.length === 0 ? "verify: nothing affected" : `verify: ${done.join(", ")} ok`;
   }
 
@@ -96,13 +92,6 @@ export class Photography {
   @func({ cache: "never" })
   releaseVersion(): string {
     return releaseVersion(new Date());
-  }
-
-  @func()
-  async imageCheck(
-    @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
-  ): Promise<string> {
-    return checkImage(source, await this.build(source));
   }
 
   @func({ cache: "never" })

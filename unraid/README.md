@@ -4,11 +4,11 @@ One non-root backend serves the packaged browser application and API. The produc
 
 ## Publish
 
-After the deployment PR is merged, explicitly dispatch [publish](../.github/workflows/release.yml) from **main**. Only trusted maintainers should dispatch it: publishing runs repository code with `contents: write` and `packages: write`; credentials are the ephemeral Actions token, never NAS configuration.
+Explicitly dispatch [publish](../.github/workflows/release.yml) from **main**. Only trusted maintainers should dispatch it: publishing runs repository code with `contents: write` and `packages: write`; credentials are the ephemeral Actions token, never NAS configuration.
 
-The workflow runs module validation and every Dagger gate, including the isolated final-image smoke. It publishes `linux/amd64` with a UTC version such as `2026.11.8-T010203`, OCI version/commit/creation/source labels, and the matching annotated Git tag `v2026.11.8-T010203`; there is no mutable `latest`.
+The workflow runs module validation and every existing application/pipeline gate, then Dagger builds and publishes the image. It publishes `linux/amd64` with a UTC version such as `2026.11.8-T010203`, OCI version/commit/creation/source labels, and the matching annotated Git tag `v2026.11.8-T010203`; there is no mutable `latest`.
 
-The GHCR package is intended to be **public**, as approved for this deployment. GitHub repository visibility does not establish package visibility: new GHCR packages initially default to private.
+The GHCR package must be **public** for anonymous NAS and WUD pulls. GitHub repository visibility does not establish package visibility: new GHCR packages initially default to private.
 
 On the first dispatch, publication can succeed while public-visibility verification stops release tagging. Open the photography package settings in GitHub and change its visibility to public; verify anonymous pulls, then recover the matching Git tag as below without republishing or replacing the existing image version.
 
@@ -26,7 +26,7 @@ Use the configured personal signing identity. These commands are operator action
 
 ## First installation
 
-The [template](photography.xml) contains the maintainer-approved host settings below. Read-only inspection found `br_docker` and the original collection on `root@192.168.1.3`; port `10002` was free and photography appdata did not yet exist.
+The [template](photography.xml) configures these settings on `root@192.168.1.3`.
 
 | Host setting | Container setting |
 | --- | --- |
@@ -37,6 +37,10 @@ The [template](photography.xml) contains the maintainer-approved host settings b
 | `/mnt/user/media/photos/Travel` | Read-only `/photos` |
 
 Recheck these settings immediately before installing. Preserve the existing `layout-tool`, its retained albums and all originals; installation must not replace its state.
+
+Before production installation, obtain authorization for an isolated NAS smoke deployment. Use a temporary container name and disposable data/thumbnail directories, keeping the original-photo mount read-only; disable WUD monitoring for that temporary container.
+
+Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnail delivery, then restart and confirm saved state remains available. Check runtime UID/GID, mounts and access permissions on the NAS; remove only the temporary container and its disposable state afterward.
 
 1. Obtain explicit installation authorization. Create only the approved photography data/thumbnail directories, granting UID/GID `1000:1000` write/traverse access; do not recursively change ownership or permissions on originals or existing appdata.
 2. Verify UID/GID `1000:1000` can read/traverse the selected originals and all chapter subdirectories. NAS user-share ACL inheritance alone does not prove container access; resolve any access issue with narrowly scoped permissions.
@@ -71,7 +75,7 @@ Preserve the private inputs and journals outside Git and the production image. A
 
 ## Updates and authentication
 
-`wud.watch=true` and `wud.tag.include=^\d{4}\.\d{1,2}\.\d{1,2}-T\d{6}$` select timestamped releases. Read-only NAS inspection found the local WUD watcher scheduled at 04:00 with watch-by-default disabled; the photography label explicitly opts in.
+`wud.watch=true` opts into WUD monitoring; `wud.tag.include=^\d{4}\.\d{1,2}\.\d{1,2}-T\d{6}$` selects timestamped releases. The existing WUD watcher and Docker trigger own the update schedule.
 
 WUD tag discovery and Docker image pulls are independent. Both can be anonymous for the verified public photography package; other private applications still require their own credentials.
 

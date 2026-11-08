@@ -27,8 +27,6 @@ Feature pushes compare with the fetched remote main; updates to an existing remo
 
 Use `dagger call verify --all` when selection is uncertain or when validating the whole system. Gate commands are listed in Contributing.
 
-Application and pipeline verification includes the packaged runtime boundary, using disposable state independently of publication and retained NAS data.
-
 ## Diagnostics
 
 Local verification writes stage output to the terminal; hosted runs expose it in GitHub Actions logs. Dagger reports container execution and cache reuse. Identify the failing stage and preserve its output before retrying against the same candidate and baseline.
