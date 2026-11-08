@@ -1,26 +1,19 @@
 # Pipeline testing
 
-> Standard: Agentic Engineering Standards v1.2.0
-
 ## Confidence model
-
-Pipeline confidence has two independent parts: selecting the correct work and proving that work builds. Pure policy tests establish selection; execution against real tools establishes delivery.
 
 | Boundary | Strategy |
 | --- | --- |
 | Selection policy | Component tests prove changed-path interpretation and ownership independently of containers. |
+| Module validity | Host-side compiler, analysis and formatting checks exercise the verification module itself. |
 | Git and shell orchestration | Process-seam tests exercise real temporary repositories and scripts, substituting expensive build commands. |
 | Component delivery | Pinned containers run the actual backend, frontend and pipeline gates. |
-| Release identity and access | Component tests prove timestamp generation and validation; the workflow rejects duplicate versions and requires public visibility plus an anonymous manifest read before release completion. |
-| NAS integration | An authorized smoke deployment proves the image, Unraid configuration, storage permissions and application work together, using disposable state and read-only originals. |
+| Release identity and access | Component tests exercise version generation/validation; workflow checks exercise the [registry contracts](contracts.md#consumed-contracts). |
+| NAS integration | The [smoke procedure](../../unraid/README.md#isolated-smoke-deployment) establishes image/template/storage integration. |
 | Hosted integration | Pull-request CI and explicit all-component verification establish that the same entrypoints work outside local development. |
-
-The host-side module checks validate the verification code itself. They run even when an application rebuild is unnecessary.
-
-The NAS smoke deployment is an authorized operator check, not a release gate or startup action. Its scope and completion checks belong to the [runbook](../../unraid/README.md#first-installation).
 
 ## Nomenclature and scope
 
 Use the [application testing nomenclature](../../specs/testing.md#nomenclature) for component and seam suites. The boundary actually crossed determines the category, not whether the subject happens to launch another tool.
 
-Keep scenario inventories and execution results with their tests and change evidence. Passing selection tests does not establish a successful application build; conversely, an all-component build cannot prove that selective verification is sound.
+Selection and delivery need independent evidence: an all-component build bypasses the selection policy.

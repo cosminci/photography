@@ -2,13 +2,11 @@
 
 ## Start and validate
 
-Run application commands from the repository root. Follow [Contributing](../../../CONTRIBUTING.md) for setup and gates, and [operations](../../../specs/operational.md#run-locally) for the local launcher; it installs locked frontend dependencies and reports ready URLs.
+Run application commands from the repository root. [Contributing](../../../CONTRIBUTING.md) owns setup and gate commands; [operations](../../../specs/operational.md#run-locally) owns the local launcher.
 
-Keep scope, the workflow revision, loaded sources and check evidence in ignored `.agent-work/<slug>`. Current specs own product knowledge; executable schemas, migrations, configuration and ports own precise definitions.
+Run Dagger verification for every change, using the owning component gates and all components when shared impact is uncertain.
 
-Check changed backend, frontend and pipeline boundaries with their Dagger component gates. Every change runs `dagger call verify`; use `--all` when shared impact is uncertain.
-
-Pipeline-module changes also run `npm ci --prefix .dagger && dagger develop && npm --prefix .dagger run verify`. Pre-push/CI uses `bash scripts/verify <base>`; enable `.githooks` and follow [pipeline operations](../../../ci/specs/operational.md#local-push-verification) for candidate and baseline requirements.
+Pipeline-module changes also require locked dependency installation, Dagger module development and host-side module validation. Enable the pre-push hook and follow [pipeline operations](../../../ci/specs/operational.md#local-push-verification) for shared verification and revision requirements.
 
 ## Storage and deployment safety
 
@@ -20,9 +18,9 @@ Preserve originals and retained spike/NAS state. Replacement requires explicit o
 | --- | --- |
 | Before the first NAS deployment | Evolve V1 schema/V2 data with ordinary migrated repository seam tests; retained spike data requires authorization. |
 | After deployment | Preserve applied migrations and introduce versioned changes with upgrade evidence. |
-| Running and recovering | Use one backend; preserve SQLite and referenced thumbnails consistently. |
+| Running and recovering | Follow the supported topology and recovery procedure in the linked operations/runbook. |
 
-Read [operations](../../../specs/operational.md) before startup or recovery changes, and the [NAS runbook](../../../unraid/README.md) before publication, installation, updates or seeding. Historical approvals do not authorize a new production action.
+Read [operations](../../../specs/operational.md) before startup or recovery changes, and the [NAS runbook](../../../unraid/README.md) before publication, installation, updates or seeding.
 
 ## Source precedents
 
@@ -40,4 +38,4 @@ Use the resolved writing skill with STE as a language basis, not blanket STE com
 | Strategic/context docs | Short explanations of responsibilities, interactions and guarantees; document ownership determines which details belong. |
 | Change specs | Clear actors, conditions, outcomes and failures; preserve required, proposed and unresolved distinctions. |
 
-Use diagrams for component relationships and lifecycles, and tables for comparisons. Link exact schemas, settings and source definitions rather than copy their inventories.
+Give each fact one owner and link to it from other contexts. Use Mermaid or D2 for relationships and lifecycles; PNGs are not documentation diagrams. The verbatim principles in DESIGN-PRINCIPLES.md are the sole permitted content duplication.

@@ -1,7 +1,5 @@
 # Pipeline design
 
-> Standard: Agentic Engineering Standards v1.2.0
-
 ## Purpose
 
 The pipeline verifies candidate revisions and publishes authorized releases. Local pushes and pull requests use one verification entrypoint; affected-component selection avoids rebuilding unrelated application components.
@@ -24,21 +22,21 @@ Changes to shared verification infrastructure or its environment select every co
 
 ## Verification boundary
 
-Git ancestry defines the change under review. The pre-push hook verifies the actual outgoing checkout, while pull-request CI compares the candidate with its target branch. A failed stage stops verification rather than producing a partial success.
+The pre-push hook and pull-request CI converge on shared verification. [Operations](operational.md#local-push-verification) owns candidate/baseline selection; a failed stage stops the pipeline.
 
 | Owner | Responsibility |
 | --- | --- |
 | Shared verification entrypoint | Markdown checks, pipeline-module validation and selected component execution. |
 | Pipeline module | Path-selection policy and component gates. |
-| Pre-push hook | Verify the outgoing HEAD from a clean checkout against the appropriate remote baseline. |
+| Pre-push hook | Validate the outgoing checkout before invoking shared verification. |
 | GitHub workflows | Invoke verification for pull requests, all-component main checks and authorized publication. |
 
-Direct Dagger verification runs component gates; it does not replace the shared entrypoint's Markdown and host-side module checks. [Contracts](contracts.md) links the definitions; [operations](operational.md) owns invocation.
+[Contracts](contracts.md) defines verification completion; [operations](operational.md) owns invocation and baseline selection.
 
 ## Release boundary
 
-A maintainer dispatches publication from main. Host-side module validation and every component gate must pass before the pipeline builds and publishes an immutable, versioned image.
+Publication follows host-side module validation and every component gate, then builds and publishes the application image. [Release contracts](contracts.md) owns version identity and registry requirements.
 
-Release completion requires public GHCR visibility, a verified anonymous manifest read and a matching Git tag. Publication and tagging are separate outcomes: an image published before a later failure retains its version and must be recovered without replacement.
+Publication and release completion are separate outcomes. An image published before a later access-check or tagging failure retains its immutable version; recovery completes that release rather than replaces the image.
 
-The NAS consumes published images independently of CI. The [deployment topology](../../specs/operational.md#run-on-the-nas) explains the template, container and storage relationships; the [operator runbook](../../unraid/README.md) owns installation and recovery.
+The [deployment topology](../../specs/operational.md#run-on-the-nas) owns downstream container/storage relationships; the [operator runbook](../../unraid/README.md) owns publication and installation actions.

@@ -1,18 +1,10 @@
 # Pipeline operations
 
-> Standard: Agentic Engineering Standards v1.2.0
-
 ## Workflows
 
-| Invocation | What runs |
-| --- | --- |
-| Pull request | Shared verification against the target branch. |
-| Manual verification from main | Host-side module validation and every component gate. |
-| Manual publication from main | Host-side module validation, every component gate, image publication, public/anonymous access checks and matching Git tag. |
+Use the [workflow definitions](../../.github/workflows/) to select a hosted run or inspect its dispatch settings. [Pipeline design](design.md) owns stage responsibilities; [contracts](contracts.md) owns provided and consumed boundaries.
 
-[Workflow definitions](../../.github/workflows/) own triggers, permissions and toolchain pins. [Pipeline design](design.md) explains responsibility boundaries and completion.
-
-For local checks, install the pinned toolchain from [Contributing](../../CONTRIBUTING.md) and make Docker available. Component verification requires no application credentials.
+For local checks, follow [Contributing](../../CONTRIBUTING.md#setup). Component verification requires no application credentials.
 
 ## Local push verification
 
@@ -33,15 +25,11 @@ bash scripts/verify origin/main
 
 Feature pushes compare with the fetched remote main; updates to an existing remote main compare with its previous revision. Missing ancestry is a checkout problem to resolve before retrying verification.
 
-Use `dagger call verify --all` when component selection is uncertain or when validating the whole system. This command runs component gates, not the shared Markdown and host-side module checks; [Contributing](../../CONTRIBUTING.md#verification) lists both.
+For direct component checks, use the [contribution commands](../../CONTRIBUTING.md#verification). Direct Dagger verification omits shared Markdown and host-side module checks, and selection ignores uncommitted edits.
 
 ## Publication and NAS handoff
 
-Dispatch publication only with maintainer authorization from main. Record the published image version, digest and revision; each immutable version must have its matching Git tag.
-
-If publication succeeds but visibility verification or tagging fails, preserve the existing image. Follow [publication recovery](../../unraid/README.md#publish) to verify anonymous access and recover the tag at the exact built revision.
-
-Use the [Unraid runbook](../../unraid/README.md) for installation and replacement. Publishing an image does not authorize a NAS deployment.
+Follow the [Unraid runbook](../../unraid/README.md#publish) for publication, partial-release recovery and NAS handoff. It owns operator actions and their authorizations.
 
 ## Diagnostics
 

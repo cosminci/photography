@@ -1,18 +1,14 @@
 # Photography on Unraid
 
-Use one non-root backend to serve the packaged browser application and API. The production image contains Java and application libraries; the [deployment diagram](../specs/operational.md#run-on-the-nas) shows publication, the container and its mounts.
+Follow this runbook for authorized publication, installation, updates and recovery. [Operations](../specs/operational.md#run-on-the-nas) owns deployment topology; [local safety](../.agents/skills/sdd/local.md#storage-and-deployment-safety) owns retained-state and original-photo protection.
 
 ## Publish
 
-Dispatch [publish](../.github/workflows/release.yml) from **main** only with maintainer authorization. Publication runs repository code with `contents: write` and `packages: write`; it uses the ephemeral Actions token rather than NAS credentials.
-
-The workflow runs module validation and every existing application/pipeline gate, then Dagger builds and publishes the image. It publishes `linux/amd64` with a UTC version such as `2026.11.8-T010203`, OCI version/commit/creation/source labels, and the matching annotated Git tag `v2026.11.8-T010203`; there is no mutable `latest`.
-
-Require **public** GHCR package visibility for anonymous NAS and WUD pulls. New packages default to private, independently of GitHub repository visibility.
+With maintainer authorization, dispatch [publish](../.github/workflows/release.yml) from main. Use [release contracts](../ci/specs/contracts.md) to interpret image identity and registry access.
 
 | Result | Action |
 | --- | --- |
-| All gates, anonymous manifest read and Git tagging succeed | Record the exact image version, digest and revision from the workflow. |
+| Release completes | Record the image version, digest and revision from the workflow. |
 | First publication succeeds, public-visibility verification fails | Set the photography package to public in GitHub package settings, verify anonymous pulls, then recover the matching Git tag below. Preserve the published image version. |
 | Existing package is private | Set it to public and verify access before another authorized dispatch. |
 | Duplicate image/Git tag or registry lookup error | Inspect the failure; the workflow stops rather than replace an existing version or assume absence. |
@@ -20,7 +16,7 @@ Require **public** GHCR package visibility for anonymous NAS and WUD pulls. New 
 
 ### Recover a partial release
 
-Preserve the published version; do not republish or replace it. Inspect the image's `org.opencontainers.image.revision` label and confirm it equals the built main revision.
+Inspect the image's `org.opencontainers.image.revision` label and confirm it equals the built main revision. Preserve the immutable version under the [partial-publication lifecycle](../ci/specs/design.md#release-boundary).
 
 After confirming public visibility, anonymous pulls and an absent Git tag, annotate **that exact commit**:
 
@@ -30,48 +26,51 @@ git tag -a "v$VERSION" "$VERIFIED_REVISION" -m "Photography $VERSION"
 git push origin "refs/tags/v$VERSION"
 ```
 
-Use the configured personal signing identity. These commands require operator authorization; a successful image publication does not itself authorize recovery writes or NAS installation.
+Use the configured personal signing identity and obtain authorization for the recovery writes.
 
 ## First installation
 
-Use the [template](photography.xml) for the configured NAS at `root@192.168.1.3`. It owns exact image, network, port and host-path settings; recheck them immediately before installation.
+Recheck the [template](photography.xml) immediately before installation.
 
-Preserve the existing `layout-tool`, its retained albums and all originals. Install photography into its approved independent state directories.
+Keep photography's installation separate from the existing `layout-tool` and its retained albums.
 
 ### Isolated smoke deployment
 
-Before production installation, obtain authorization for an isolated NAS smoke deployment. Use a temporary container name, disposable data/thumbnail directories and a read-only original-photo mount; disable WUD monitoring for that container.
-
-Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnail delivery, then restart and confirm saved state remains available. Check runtime UID/GID, mounts and access permissions on the NAS; remove only the temporary container and its disposable state afterward.
+1. Obtain authorization for an isolated smoke deployment before production installation.
+2. Use a temporary container name and disposable data/thumbnail directories; preserve the template's original-photo access. Disable WUD monitoring for that container.
+3. Check runtime UID/GID, mounts and permissions on the NAS.
+4. Confirm frontend/API delivery, editing SSE, actual photo processing and thumbnail delivery. Restart and confirm saved state remains available.
+5. Remove only the temporary container and its identified disposable state.
 
 ### Install the production container
 
-1. Obtain explicit installation authorization. Create only the approved photography data/thumbnail directories, granting UID/GID `1000:1000` write/traverse access; do not recursively change ownership or permissions on originals or existing appdata.
-2. Verify UID/GID `1000:1000` can read/traverse the selected originals and all chapter subdirectories. NAS user-share ACL inheritance alone does not prove container access; resolve any access issue with narrowly scoped permissions.
-3. Confirm the published version is anonymously pullable from GHCR. Public images need no Docker login or WUD registry credentials; remove neither existing NAS credentials nor other applications' private GHCR configuration.
-4. Copy `unraid/photography.xml` to `/boot/config/plugins/dockerMan/templates-user/my-photography.xml` on the approved NAS. In the Docker page, replace `REPLACE_WITH_PUBLISHED_VERSION` with an existing timestamped version; confirm network, port, read-only originals and both writable mounts before Apply.
-5. Confirm the saved template retains `--restart=unless-stopped`, bounded logs and both WUD labels. Arrange backup/update coordination before allowing unattended updates; WUD labels enable monitoring, not backups.
-6. Apply once, inspect startup logs, and check the application from both LAN and Tailscale. Inspect the actual runtime UID/GID and mounts before any seeding.
+1. Obtain installation authorization. Create only the approved state directories and grant the template/image identity the required access, following local safety.
+2. Verify that identity can read/traverse the selected originals and every chapter subdirectory. NAS user-share ACL inheritance alone does not prove container access; resolve issues with narrowly scoped permissions.
+3. Verify the selected release meets the registry contract. Preserve existing NAS credentials and other applications' private-registry configuration.
+4. Copy `unraid/photography.xml` to `/boot/config/plugins/dockerMan/templates-user/my-photography.xml` on the approved NAS. Select a published version in the Docker page and compare every setting with the source template before Apply.
+5. Arrange the [update checkpoint procedure](#updates) before enabling unattended replacement.
+6. Apply once and inspect startup logs. Set `APP_URL` to the configured WebUI origin, then inspect runtime identity/mounts and check readiness:
 
 ```sh
-ssh root@192.168.1.3 'docker exec photography id'
-ssh root@192.168.1.3 'docker inspect photography --format "{{json .Mounts}}"'
-curl -fsS http://192.168.1.3:10002/health
+NAS_SSH=root@192.168.1.3
+ssh "$NAS_SSH" 'docker exec photography id'
+ssh "$NAS_SSH" 'docker inspect photography --format "{{json .Mounts}}"'
+curl -fsS "$APP_URL/health"
 ```
 
-Expect UID/GID `1000:1000`, `/photos` with `RW: false`, and health JSON `{"status":"ok"}`. Open the browser UI and confirm API-backed navigation; health establishes startup completion/reachability, not ongoing database/storage health.
+Compare runtime identity and mount permissions with the template and [runtime image](../containers/photography/Dockerfile). Open the configured application from LAN and Tailscale and confirm API-backed navigation before seeding; [readiness interpretation](../specs/operational.md#readiness-logs-and-metrics) belongs to application operations.
 
 ### Access boundary
 
-Limit access at the NAS/network boundary to trusted LAN and Tailscale clients. The application is unauthenticated: do not forward it publicly, and do not treat Docker port publication as an access restriction.
+Restrict the unauthenticated application to trusted LAN and Tailscale clients at the NAS/network boundary. Docker port publication is not an access restriction; do not forward the application publicly.
 
-Keep the browser origin stable for remembered identity and local drafts. If a proxy is used, preserve `X-Editor-*` request/response headers, disable event-stream buffering/caching/compression, honor `X-Accel-Buffering: no`, and allow long-lived connections with transport keepalives; preserve immutable thumbnail caching separately.
+Keep the browser origin stable for browser-local state. If a proxy is used, configure it to preserve the [API/event transport contract](../specs/http-api.openapi.json), including private headers and separate media caching; disable event-stream buffering, caching and compression and allow long-lived connections.
 
 ## One-time album population
 
 Populate albums **after** the new app is running and its mounts/health are verified. Obtain explicit authorization for this one-time operator action; keep seeding separate from startup, release gates and update hooks.
 
-The saved seed client and its **2020–2026** extension are private local delivery artifacts, outside the reviewed repository and release gates. Preserve the client, inputs and journals independently of Git and the production image.
+The seed client and its extensions are private local artifacts outside the reviewed repository and release gates. Preserve the client, inputs and journals independently of Git and the production image.
 
 | Before execution | Required condition |
 | --- | --- |
@@ -80,18 +79,16 @@ The saved seed client and its **2020–2026** extension are private local delive
 | Approve source access | Confirm exact mounts and input plans; the runtime resolves read-only originals at `/photos`. |
 | Run an offline stage | Obtain separate runtime authorization; stop the backend and use an accessible local SQLite mount with the same read-only originals. Never operate live SQLite over a network filesystem. |
 
-## Updates and authentication
+## Updates
 
-The template's WUD labels opt into monitoring and select timestamped releases. The existing WUD watcher and Docker trigger own the update schedule.
-
-WUD tag discovery and Docker image pulls are independent. Both can be anonymous for the verified public photography package; other private applications still require their own credentials.
+The host's WUD watcher and Docker trigger own replacement timing; monitoring labels alone establish neither an update schedule nor backups.
 
 1. Confirm the host Docker trigger is configured; labels alone do not establish replacement or backup scheduling.
 2. Before each update, pause photography replacement, stop its sole backend and take the [paired checkpoint](#backup-and-recovery). Allow replacement only after backup completes; arrange unattended backup coordination before leaving automatic updates enabled.
 3. After replacement, confirm the trigger and saved Unraid template retain the selected version so a later Apply does not revert it.
 4. Check logs, `/health`, frontend assets, saved albums/chapters and thumbnail delivery on LAN and Tailscale.
 
-Restart invalidates editing credentials and grants, while saved albums remain. Reconnect clients and reconcile drafts explicitly.
+Follow [editing-access recovery](../specs/operational.md#editing-access-and-recovery) after replacement.
 
 ## Backup and recovery
 
@@ -105,7 +102,7 @@ SQLite and referenced thumbnails form one recovery unit. Keep independent origin
 
 For failed startup, preserve logs and the failed database/thumbnail pair before intervention. Investigate migration, configuration and permission errors; they do not authorize data deletion or reseeding.
 
-1. Stop the backend and pause replacement.
+1. Pause replacement, then stop the backend.
 2. Choose a compatible published image **and its matching database/thumbnail checkpoint**.
 3. Restore both directories while stopped, verify ownership, then apply that image version.
 4. Check health, saved content and thumbnail delivery before reenabling replacement.

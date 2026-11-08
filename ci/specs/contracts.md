@@ -1,22 +1,26 @@
 # Pipeline contracts
 
-> Standard: Agentic Engineering Standards v1.2.0
-
-## Contract inventory
+## Provided contracts
 
 | Surface | Authoritative source |
 | --- | --- |
 | Public Dagger functions and component gates | [Dagger module](../../.dagger/src/index.ts) |
 | Path-to-component ownership | [Selection policy](../../.dagger/src/selection.ts) |
 | Shared verification and outgoing-revision validation | [Verification entrypoint](../../scripts/verify) and [pre-push hook](../../.githooks/pre-push) |
-| Hosted invocation and toolchain pins | [GitHub workflows](../../.github/workflows/) |
 | Release version and image identity | [Version rules](../../.dagger/src/version.ts), [image assembly](../../.dagger/src/hooks/image.ts) and [publication workflow](../../.github/workflows/release.yml) |
-| NAS container settings | [Unraid template](../../unraid/photography.xml) |
 
-## Completion semantics
+## Consumed contracts
 
-Successful verification means every required stage completed successfully. Selecting no application component still requires the shared Markdown and pipeline-module checks; an explicit all-component run bypasses selection, not the component gates.
+| Dependency | Required contract | Authoritative definitions |
+| --- | --- | --- |
+| Git | Candidate and baseline revisions with available ancestry. | [Git boundary](../../.dagger/src/hooks/git.ts), [pre-push hook](../../.githooks/pre-push) |
+| GitHub Actions and Packages API | Workflow dispatch, job permissions and package visibility lookup. | [Hosted workflows](../../.github/workflows/), [Packages API](https://docs.github.com/en/rest/packages/packages) |
+| GHCR | OCI image publication and manifest reads; completed releases require public visibility and verified anonymous access. | [Publication workflow](../../.github/workflows/release.yml), [GHCR documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) |
+| Dagger and Docker | Container execution, image assembly and registry delivery. | [Dagger module](../../.dagger/src/index.ts), [runtime Dockerfile](../../containers/photography/Dockerfile), [build environment](../../.dagger/src/buildEnv.ts) |
+| Unraid and WUD | Container template application, release discovery and host-triggered replacement. | [Unraid template](../../unraid/photography.xml), [operator runbook](../../unraid/README.md) |
 
-Dagger change selection compares committed revisions. Uncommitted edits are not evidence of an affected component; the pre-push hook requires a clean checkout so the checked candidate matches the outgoing revision.
+## Completion
 
-Release completion includes anonymous registry access and the matching Git tag. [Pipeline design](design.md#release-boundary) explains partial publication; the [runbook](../../unraid/README.md#publish) owns recovery.
+Verification succeeds when every required stage completes. [Pipeline design](design.md#verification-boundary) owns stage responsibilities; [operations](operational.md#local-push-verification) owns committed-checkout and baseline requirements.
+
+A release completes only when its matching Git tag is recorded after registry access verification. [Pipeline design](design.md#release-boundary) owns partial-publication semantics; the [runbook](../../unraid/README.md#recover-a-partial-release) owns recovery actions.
