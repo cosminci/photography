@@ -14,7 +14,7 @@ Enable the hook once per clone from the repository root:
 git config core.hooksPath .githooks
 ```
 
-The hook uses `mise exec` when available and calls the same `scripts/verify` entrypoint as pull-request CI. Verify a committed, clean checkout so the checked files match the outgoing HEAD; ignored build outputs and `.agent-work/` evidence remain allowed.
+The hook uses `mise exec` when available. Verify a committed, clean checkout so the checked files match the outgoing HEAD; ignored build outputs and `.agent-work/` evidence remain allowed.
 
 For a manual shared run, fetch the target branch and supply its reference:
 

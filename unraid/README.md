@@ -94,12 +94,10 @@ The seed client and its extensions are private local artifacts outside the revie
 | --- | --- |
 | Approve destination writes | Revalidate client compatibility with the installed API and schema; historical local approvals do not authorize the NAS destination. |
 | Prepare plans and journals | Use fresh NAS destination plans, identities and receipts; preserve the rehearsal database independently rather than copy it. |
-| Approve source access | Confirm exact mounts and input plans; the runtime resolves read-only originals at `/photos`. |
+| Approve source access | Confirm the selected original-photo mount and input plans against the [template](photography.xml). |
 | Run an offline stage | Obtain separate runtime authorization; stop the backend and use an accessible local SQLite mount with the same read-only originals. Never operate live SQLite over a network filesystem. |
 
 ## Updates
-
-The host's WUD watcher and Docker trigger own replacement timing; monitoring labels alone establish neither an update schedule nor backups.
 
 1. Confirm the host Docker trigger is configured; labels alone do not establish replacement or backup scheduling.
 2. Before each update, pause photography replacement, stop its sole backend and take the [paired checkpoint](#backup-and-recovery). Allow replacement only after backup completes; arrange unattended backup coordination before leaving automatic updates enabled.
@@ -129,6 +127,6 @@ For failed startup, preserve logs and the failed database/thumbnail pair before 
 
 ## Monitor
 
-Monitor process availability, logs and free space at the NAS. Inspect `docker logs photography` for startup, migration and native-library failures; the template owns bounded log rotation.
+Inspect `docker logs photography` for startup, migration and native-library failures; the [template](photography.xml) owns log-rotation settings.
 
-[Application operations](../specs/operational.md#readiness-logs-and-metrics) explains health and processing feedback. This deployment adds no metrics service or automatic recovery.
+Follow [application monitoring](../specs/operational.md#readiness-logs-and-metrics) for health, processing feedback and host checks.

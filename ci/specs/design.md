@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The pipeline verifies candidate revisions and publishes authorized releases. Local pushes and pull requests use one verification entrypoint; affected-component selection avoids rebuilding unrelated application components.
+The pipeline verifies candidate revisions and publishes authorized releases.
 
 ```mermaid
 flowchart TD
@@ -16,17 +16,16 @@ flowchart TD
   All["Explicit all-component verification"] --> Backend & Frontend & Pipeline
 ```
 
-Backend, frontend and pipeline gates own independent build boundaries in pinned environments. Selection follows path ownership, not file type: frontend-owned changes select the frontend gate; standalone living-doc changes retain shared checks without selecting an application component.
+Backend, frontend and pipeline gates own independent build boundaries. Selection follows path ownership, not file type; [selection policy](contracts.md#provided-contracts) owns the mappings.
 
-Changes to shared verification infrastructure or its environment select every component. The gates exercise actual application builds as well as selection policy.
+Changes to shared verification infrastructure or its environment select every component.
 
 ## Verification boundary
 
-The pre-push hook and pull-request CI converge on shared verification. [Operations](operational.md#local-push-verification) owns candidate/baseline selection; a failed stage stops the pipeline.
+A failed stage stops the pipeline.
 
 | Owner | Responsibility |
 | --- | --- |
-| Shared verification entrypoint | Markdown checks, pipeline-module validation and selected component execution. |
 | Pipeline module | Path-selection policy and component gates. |
 | Pre-push hook | Validate the outgoing checkout before invoking shared verification. |
 | GitHub workflows | Invoke verification for pull requests, all-component main checks and authorized publication. |

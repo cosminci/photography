@@ -2,7 +2,7 @@
 
 ## Purpose and system boundary
 
-Album Layout Studio turns a year's chapter-organized photographs into a saved book for browser presentation and InDesign print composition. The browser combines a photo collection, a spread editor and Reader; the backend owns saved state.
+Album Layout Studio turns a year's chapter-organized photographs into a saved book for browser presentation and InDesign print composition.
 
 ```mermaid
 flowchart LR
@@ -116,7 +116,7 @@ Each validated mutation commits within its owning boundary and preserves unrelat
 
 ### Undo/Redo and navigation
 
-Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent without retaining editing authority; album exit, reload or unexpected access loss ends its lifetime.
+Book editing has one browser-local Undo/Redo chronology over completed user intent, including edits spanning several content owners. Navigation and Reader retain that intent; album exit, reload or unexpected access loss ends its lifetime.
 
 Reversal uses ordinary commands and current ownership to preserve unrelated work. It restores visible composition rather than whole-album snapshots; retained history follows regenerated identities.
 
@@ -157,7 +157,7 @@ stateDiagram-v2
 
 Leaving the album releases target ownership. View-only presentation retains photographs, captions and opening text, independent chapter details, Reader and recoverable drafts.
 
-Ownership events let waiting viewers attempt acquisition after resolving local work. Only successful acquisition and saved-state reconciliation enable editing; notifications do not grant access.
+Ownership events let waiting viewers attempt acquisition after resolving local work. Notifications do not grant access.
 
 Connection or ownership uncertainty retains drafts; backend loss makes the application unavailable. Reacquisition never replays drafts automatically.
 
@@ -202,7 +202,7 @@ Inventory and ownership events invalidate views; they are not a second database.
 
 | Boundary | Guarantee |
 | --- | --- |
-| Workspace acquisition | Assembles content, structure, composition and photo inventories that agree on identities, chapter blocks and opening order. Retries incoherent acquisition at most twice, then reports failure while retaining the last usable view. |
+| Workspace acquisition | Assembles content, structure, composition and photo inventories that agree on identities, chapter blocks and opening order. Retries incoherent acquisition at most twice, then follows [save and recovery](#save-and-recovery) for unavailable authoritative state. |
 | Selected spread or Cover | Supplies saved geometry and placements together for editing and Reader; reconciliation preserves pending adjustments and uncertain-write feedback. |
 | View publication | Acknowledged saved state takes precedence over older in-flight reads; background acquisition cannot undo a successful edit. |
 
