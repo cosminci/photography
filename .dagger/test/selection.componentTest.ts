@@ -39,7 +39,7 @@ describe("findComponentsForPath", () => {
     ".github/workflows/build.yml",
     ".github/workflows/verify-main.yml",
     ".githooks/pre-push",
-    "unraid/photography.xml",
+    "unraid/album-layout-studio.xml",
     "containers/photography/Dockerfile",
   ])("should run every component when shared verification changes at %s", (path) => {
     expect(Selection.selectAffected([path])).toEqual({ kind: "all" });

@@ -3,7 +3,7 @@ export const JDK_IMAGE = "sbtscala/scala-sbt:eclipse-temurin-25.0.4_7_1.13.0_3.8
 export const NODE_IMAGE = "node:24-slim";
 export const PYTHON_IMAGE = "python:3.14-slim";
 export const TARGET_PLATFORM = "linux/amd64";
-export const GHCR_REPOSITORY = "ghcr.io/cosminci/photography";
+export const GHCR_REPOSITORY = "ghcr.io/cosminci/album-layout-studio";
 export const GHCR_USER = "cosminci";
 export const SOURCE_URL = "https://github.com/cosminci/photography";
 
