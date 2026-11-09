@@ -6,8 +6,6 @@ Before changing deployment, read the [NAS runbook](../../../unraid/README.md). D
 
 ## Living documentation
 
-Living docs complement code discovery: explain responsibilities, interactions, guarantees and rationale. Code and suite discovery belong to Scout; links to implementation classes, modules or test sources are prohibited.
-
-Contracts identify each external boundary by its protocol or format and concrete resource paths or callable commands. Link authoritative OpenAPI, schemas, migrations and configuration where they own exact definitions; keep operator commands and runbook entrypoints in operations.
-
-Before finishing a living-doc edit, review all current service and pipeline docs for implementation pointers and duplicated definitions, preserving recovery, safety and boundary interpretation.
+- Complement Scout with responsibilities, interactions, lifecycles, guarantees and rationale; omit implementation and test-source links.
+- Use protocol/path/definition tables for contracts. Link OpenAPI, schemas, migrations and configuration; add only missing interpretation.
+- Review current service and pipeline docs together. Remove repeated definitions; preserve operator entrypoints, recovery and safety instructions.
