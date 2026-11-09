@@ -22,7 +22,7 @@ These commands do not replace the shared host checks required for publication; u
 dagger call build --version=dev export --path=.agent-work/photography-dev.tar
 ```
 
-The result is a Docker-loadable image archive. [Image assembly](../../.dagger/src/hooks/image.ts) and the [runtime Dockerfile](../../containers/photography/Dockerfile) own its packaging; [delivery ownership](design.md#image-delivery) explains the prerequisites.
+The result is a Docker-loadable image archive. The [runtime Dockerfile](../../containers/photography/Dockerfile) owns its packaging; [delivery ownership](design.md#image-delivery) explains the prerequisites.
 
 ## Diagnose failures
 

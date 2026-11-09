@@ -31,7 +31,7 @@ flowchart TB
   Media --> Thumbnails[("Derived thumbnails")]
 ```
 
-[Backend composition](../backend/src/main/scala/photography/app/runtime/ProgramsBuilder.scala); [boundary definitions](contracts.md).
+[External protocols and formats](contracts.md).
 
 ## Book model
 
@@ -74,8 +74,6 @@ flowchart TD
   Full -->|No| Stacks["Outer stacks bleed outward together"]
   Three & Stacks --> Inner["Inner slots remain inset"]
 ```
-
-[Layout domain](../backend/src/main/scala/photography/domain/layout/).
 
 **Invariants**
 
@@ -124,8 +122,6 @@ sequenceDiagram
   end
 ```
 
-[Chapter metadata](../backend/src/main/scala/photography/usecases/chapter/ChapterMetadataManager.scala) and [planning](../backend/src/main/scala/photography/usecases/chapter/ChapterPlanning.scala).
-
 **Invariants**
 
 - Scheduling failure does not undo a committed chapter. An unchanged source schedules no import; Refresh requests processing without rewriting chapter metadata.
@@ -166,8 +162,6 @@ sequenceDiagram
   end
 ```
 
-[Editing admission](../backend/src/main/scala/photography/usecases/editing/EditingAccess.scala) and [session authority](../backend/src/main/scala/photography/usecases/editing/EditorSessionManager.scala).
-
 **Invariants**
 
 - One browser profile binds one application tab; one session owns at most one interior spread or the full Cover. Other sessions retain saved-state reads and cannot force takeover.
@@ -197,8 +191,6 @@ flowchart TD
   Superseded["Source superseded"] --> Fence["Fence old generation's database mutations; cancel old work"]
   Fence --> Release
 ```
-
-[Import coordinator](../backend/src/main/scala/photography/usecases/photo/ChapterPhotoImport.scala) and [photo reconciliation](../backend/src/main/scala/photography/usecases/photo/PhotoManager.scala).
 
 **Invariants**
 
@@ -240,7 +232,7 @@ sequenceDiagram
   Note over Saved,Recovery: Retirement uses the same reference-based cleanup
 ```
 
-[Write recovery](../backend/src/main/scala/photography/usecases/photo/PhotoWriteRecovery.scala); [operator recovery](operational.md#recovery-and-maintenance).
+[Operator recovery](operational.md#recovery-and-maintenance).
 
 ## Saved-book export
 
@@ -275,7 +267,7 @@ sequenceDiagram
   end
 ```
 
-[Book export](../backend/src/main/scala/photography/usecases/album/BookExport.scala); [handoff definition](contracts.md#provided-boundaries).
+[Handoff contract](contracts.md#provided-boundaries).
 
 **Invariants**
 

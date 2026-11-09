@@ -6,7 +6,7 @@ Use this runbook for authorized publication and Unraid installation/update actio
 
 Explicitly dispatch [publish](../.github/workflows/release.yml) from **main**. Only trusted maintainers should dispatch it: publishing runs repository code with `contents: write` and `packages: write`; credentials are the ephemeral Actions token, never NAS configuration.
 
-The workflow verifies the source, publishes a timestamped image and creates its matching annotated `v` Git tag. [Release workflow](../.github/workflows/release.yml) owns exact gates, registry checks and tagging; [Dagger build environment](../.dagger/src/buildEnv.ts) owns the target platform.
+The workflow verifies the source, publishes a timestamped image and creates its matching annotated `v` Git tag. [Release workflow](../.github/workflows/release.yml) owns exact gates, registry checks and tagging; [image contracts](../ci/specs/contracts.md#consumed-boundaries) define the target platform.
 
 The GHCR package must be **public** for anonymous NAS and WUD pulls. GitHub repository visibility does not establish package visibility: new GHCR packages initially default to private.
 

@@ -31,9 +31,13 @@ export function checkBackend(source: Dagger.Directory): Dagger.Container {
     .withDirectory("/work", source.directory("backend"))
     .withWorkdir("/work")
     .withExec([
-      "sbt",
-      "-batch",
-      "-Dsbt.color=false",
-      "coverage; test; coverageReport; scalafixAll --check; scalafmtCheckAll; scalafmtSbtCheck",
+      "sh",
+      "-c",
+      `sbt -batch -Dsbt.color=false 'coverage; test; coverageReport; scalafixAll --check; scalafmtCheckAll; scalafmtSbtCheck'
+status=$?
+if [ "$status" -ne 0 ]; then
+  find target -name scoverage.xml -exec grep 'invocation-count="0"' {} +
+fi
+exit "$status"`,
     ]);
 }

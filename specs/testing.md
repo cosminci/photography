@@ -22,10 +22,10 @@ flowchart LR
 
 ## Backend evidence requirements
 
-- Prove admission, fencing and lease races in [session](../backend/src/test/scala/photography/usecases/editing/EditorSessionManagerComponentTest.scala) and [editing-access](../backend/src/test/scala/photography/usecases/editing/EditingAccessComponentTest.scala) suites. Prove credential translation and stream finalization at HTTP seams, and actual commit/rollback at SQLite seams.
-- Prove source-generation scheduling in [import](../backend/src/test/scala/photography/usecases/photo/ChapterPhotoImportComponentTest.scala), publication ordering in [photo reconciliation](../backend/src/test/scala/photography/usecases/photo/PhotoManagerComponentTest.scala), and committed-reference cleanup in [write recovery](../backend/src/test/scala/photography/usecases/photo/PhotoWriteRecoveryComponentTest.scala). Use real repository/file seams for durable evidence and filesystem guarantees.
+- Session-authority and editing-admission component tests prove admission, fencing and lease races. HTTP seams prove credential translation and stream finalization; SQLite seams prove actual commit/rollback.
+- Import coordination, photo reconciliation and write-recovery component tests prove source-generation scheduling, publication ordering and committed-reference cleanup respectively. Real repository/file seams establish durable evidence and filesystem guarantees.
 - Arrange failed, missing, rejected and uncertain outcomes separately; observe complete results and requested effects. An acknowledged write followed by a failed read needs a different scenario from a write whose commit outcome is unknown.
-- Prove saved-book acquisition, blocking issues, warnings and schema validity in [export](../backend/src/test/scala/photography/usecases/album/BookExportComponentTest.scala). Export component tests use saved records; they do not establish local original-file availability or print fidelity.
+- Saved-book export component tests prove acquisition, blocking issues, warnings and schema validity. They use saved records; local original-file availability and print fidelity require the consumer checks below.
 
 ## Nomenclature
 

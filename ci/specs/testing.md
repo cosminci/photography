@@ -2,11 +2,11 @@
 
 ## What the automated tests prove
 
-[Selection tests](../../.dagger/test/selection.componentTest.ts) prove path parsing, owner mappings, shared-infrastructure expansion, unrelated-path exclusion and canonical component order. Change these tests with the mapping: an all-component build cannot detect a path that selective verification wrongly ignores.
+Selection component tests prove path parsing, owner mappings, shared-infrastructure expansion, unrelated-path exclusion and canonical component order. Change these tests with the mapping: an all-component build cannot detect a path that selective verification wrongly ignores.
 
-[Version tests](../../.dagger/test/version.componentTest.ts) prove UTC generation, valid calendar dates and the release format. They reject mutable tags, padded date components, invalid times and trailing newlines; they do not prove registry publication.
+Version component tests prove UTC generation, valid calendar dates and the [release format](contracts.md#callable-interface). They reject mutable tags, padded date components, invalid times and trailing newlines; they do not prove registry publication.
 
-[Verification-wrapper tests](../../scripts/test_verification.py) exercise real temporary Git repositories and subprocesses, substituting expensive build commands. They prove that host checks run for docs, stage failure stops execution and the pre-push hook rejects a different outgoing revision or dirty checkout; they do not execute the Dagger engine.
+Verification-wrapper tests exercise real temporary Git repositories and subprocesses, substituting expensive build commands. They prove that host checks run for docs, stage failure stops execution and the pre-push hook rejects a different outgoing revision or dirty checkout; they do not execute the Dagger engine.
 
 ## Evidence limits
 
