@@ -17,7 +17,7 @@ flowchart TD
 
 ## Selection and execution
 
-Selection follows path ownership, not extension. An ordinary product-doc change selects nothing; a Markdown change under shared infrastructure can select all components. [Selection policy](../../.dagger/src/selection.ts) owns the complete mapping.
+Selection follows path ownership, not extension. An ordinary product-doc change selects nothing; a Markdown change under shared infrastructure can select all components.
 
 Selected components execute in backend, frontend, pipeline order. Failure stops the run; selecting pipeline also checks the local launcher and verification scripts, whereas the direct pipeline check runs only Dagger policy tests.
 

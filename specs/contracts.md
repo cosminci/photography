@@ -2,23 +2,26 @@
 
 ## Provided boundaries
 
-| Consumer | Authoritative definition and interpretation |
-| --- | --- |
-| Browser and API clients | [OpenAPI](http-api.openapi.json) owns paths, payloads, status codes, editor credentials, leases and event transport. Aliases/credentials coordinate editing; they are not authentication. |
-| Browser navigation and static assets | [Static-site adapter](../backend/src/main/scala/photography/adapters/http/StaticSite.scala) serves the built app on the API origin; navigation fallback remains separate from API/media errors. |
-| InDesign | [Export JSON Schema](../backend/src/main/resources/indesign-book.schema.json) owns the saved-book handoff. [Consumer scripts](../scripts/indesign/) resolve original-photo resources on the operator's machine; deployment thumbnail paths are not print resources. |
+| Consumer | Protocol / resource | Contract |
+| --- | --- | --- |
+| Browser and API clients | HTTP REST under `/api/`; JSON (`application/json`) | [OpenAPI](http-api.openapi.json) owns resource paths, methods, payloads, status codes, caching and editing credentials. Aliases and credentials coordinate editing; they are not user authentication. |
+| Editing browser | HTTP SSE: `GET /api/editor-session/events` (`text/event-stream`) | [OpenAPI](http-api.openapi.json) owns required headers, binding events and connection termination. Binding requires the `bound` event, not just HTTP 200; notifications require reconciliation rather than granting authority. |
+| Album workspace | HTTP SSE: `GET /api/albums/{id}/photo-events` (`text/event-stream`) | [OpenAPI](http-api.openapi.json) owns subscription and inventory invalidations. Consumers subscribe before acquiring saved state; events carry neither images nor saved edits. |
+| Thumbnail consumers | HTTP `GET` / `HEAD /thumbnails/{location}/{version}.jpg`; JPEG (`image/jpeg`) | [OpenAPI](http-api.openapi.json) owns versioned URLs and immutable caching. Clients use the supplied URL rather than constructing filesystem paths. |
+| Browser navigation and static assets | Same-origin HTTP `GET` / `HEAD` for `/`, navigation routes and `/assets/...` | Navigation serves the packaged browser app; missing API routes and media/assets remain errors rather than returning the navigation entrypoint. |
+| Readiness probes | HTTP `GET /health`; JSON `{"status":"ok"}` | [Readiness interpretation](operational.md#readiness-logs-and-metrics) defines what a successful probe establishes. |
+| InDesign | JSON file from `GET /api/albums/{id}/indesign-export` | [Export JSON Schema](../backend/src/main/resources/indesign-book.schema.json) owns the saved-book handoff. [Print handoff](operational.md#print-handoff) requires originals available on the operator's machine; deployment thumbnail paths are not print resources. |
 
-API successes and failures use `Cache-Control: no-store`; versioned thumbnails and static assets have separate caching policies. A proxy must preserve the OpenAPI editor-header and event-stream contract without applying API caching rules to immutable media.
+A reverse proxy must preserve editing headers and unbuffered SSE, including transport heartbeat comments, and keep API and immutable-media caching policies separate.
 
 ## Consumed boundaries
 
-| Dependency | Authoritative definition and interpretation |
-| --- | --- |
-| SQLite and Flyway | [Migrations](../backend/src/main/resources/db/) own persisted representation and seeded catalogs; [connection](../backend/src/main/scala/photography/adapters/sqlite/SqliteConnection.scala) enables foreign keys, and [migrator](../backend/src/main/scala/photography/adapters/sqlite/FlywayMigrator.scala) owns schema history. Runtime/state compatibility and recovery belong to [operations](operational.md#recovery-and-maintenance). |
-| Original-photo filesystem | [PhotoStorage](../backend/src/main/scala/photography/ports/photo/PhotoStorage.scala) distinguishes discovery, unreadable/unstable sources and failed reads; [filesystem adapter](../backend/src/main/scala/photography/adapters/filesystem/FilePhotoStorage.scala) discovers JPEGs in the selected directory. Source paths refer to the backend-visible filesystem, not the browser's filesystem. |
-| Managed-thumbnail filesystem | [ThumbnailStorage](../backend/src/main/scala/photography/ports/photo/ThumbnailStorage.scala) and [adapter](../backend/src/main/scala/photography/adapters/filesystem/FileThumbnailStorage.scala) own storage/version lookup. |
-| JPEG decoding, EXIF and encoding | [Generator port](../backend/src/main/scala/photography/ports/photo/PhotoThumbnailGenerator.scala) and [ImageIO adapter](../backend/src/main/scala/photography/adapters/imageio/ImageIoPhotoThumbnailGenerator.scala) define generated-preview outcomes. |
-| Browser storage and event transport | [Browser identity](../frontend/src/features/editing/BrowserIdentity.ts) requires IndexedDB; [session owner](../frontend/src/features/editing/EditorSession.ts) uses origin-local storage, and [browser composition](../frontend/src/main.tsx) binds those capabilities and EventSource. Identification-storage failure blocks entry instead of silently assigning another identity. |
-| Runtime configuration | [Application configuration](../backend/src/main/resources/application.conf) and [typed reader](../backend/src/main/scala/photography/app/config/AppConfig.scala) own backend settings and validation; [browser configuration](../frontend/src/app/AppConfig.ts) owns build-time history capacity. |
+| Dependency | Protocol / format | Contract |
+| --- | --- | --- |
+| SQLite | SQL against an embedded local database; Flyway versioned SQL migrations | [Migrations](../backend/src/main/resources/db/) own persisted representation and seeded catalogs. Runtime connections enforce foreign keys; Flyway retains applied-schema history. [Operations](operational.md#recovery-and-maintenance) owns compatible restore and migration procedures. |
+| Original-photo archive | Read-only local filesystem; JPEG files in the selected chapter directory | Sources refer to backend-visible paths, not the browser's filesystem. Enumeration reads that directory's files; unreadable, undecodable or changing originals produce processing failures rather than usable photos. |
+| Managed thumbnails | Writable local filesystem with atomic rename and durable file/directory writes; JPEG content versions | The volume must support those operations. Reads must match the requested content version; [publication and recovery](design.md#thumbnail-publication-and-recovery) owns coordination with saved references. |
+| Photo representation | JPEG with EXIF metadata | Import interprets EXIF orientation for displayed dimensions and generates orientation-correct JPEG previews. Preview generation does not modify originals. |
+| Browser profile storage | IndexedDB and Web Storage (`localStorage`), scoped to the browser origin | IndexedDB retains browser identity; localStorage remembers session details. Identification-storage failure blocks entry rather than assigning a replacement identity. |
 
-[Application ports](../backend/src/main/scala/photography/ports/); [backend dependencies](../backend/build.sbt); [browser dependencies](../frontend/package-lock.json).
+Runtime settings and deployment mounts belong to [operations](operational.md).

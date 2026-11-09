@@ -2,8 +2,6 @@
 
 Album Layout Studio organizes chapter photo collections into persisted books and produces validated InDesign print handoffs.
 
-Code lives in the [Scala backend](backend/), [SolidJS presentation layer](frontend/) and [Dagger module](.dagger/).
-
 ## Engineering context
 
 | Read when | Document |

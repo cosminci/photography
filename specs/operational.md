@@ -19,7 +19,7 @@ Stop with Ctrl+C; the launcher stops its own process groups. For startup failure
 
 ## Frontend configuration
 
-Browser-local history capacity is frontend configuration, fixed at development-server startup or asset build time. `VITE_BOOK_HISTORY_LIMIT` selects that capacity; the [frontend configuration](../frontend/src/app/AppConfig.ts) owns its default and validation, and deployment changes require rebuilding the assets.
+Browser-local history capacity is fixed at development-server startup or asset build time. Set `VITE_BOOK_HISTORY_LIMIT` to a positive safe integer to override it; deployment changes require rebuilding the assets.
 
 ## Run on the NAS
 
@@ -66,7 +66,7 @@ flowchart LR
   Recover -->|Success| Serve["Serve HTTP"]
 ```
 
-[Startup implementation](../backend/src/main/scala/photography/app/runtime/Main.scala); [write recovery](design.md#thumbnail-publication-and-recovery).
+[Write recovery](design.md#thumbnail-publication-and-recovery).
 
 Probe `GET /health` for HTTP readiness. This establishes startup completion and reachability, not continuous database or storage health.
 
