@@ -19,7 +19,7 @@ cd "$TOP"
 
 git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD -- '*.md' |
   while IFS= read -r -d '' file; do
-    python3 .agents/skills/sdd/scripts/check_markdown_wrapping.py "$file"
+    python3 .agents/skills/agentic-engineering/scripts/check_markdown_wrapping.py "$file"
   done
 
 if [ -z "${_EXPERIMENTAL_DAGGER_RUNNER_HOST:-}" ]; then

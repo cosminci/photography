@@ -1,5 +1,5 @@
 ## Summary
 
-## Change spec
+## Review basis
 
-Link the change spec this PR implements (see `CONTRIBUTING.md` §Pull requests for the Spec → Implementation → Archive sequence).
+Link the proposal for spec-backed work; for direct implementation, state settled intent, approved scope and governing engineering rules.

@@ -24,7 +24,7 @@ export function findComponentsForPath(path: string): readonly Component[] {
   if (path.startsWith("backend/")) return ["backend"];
   if (path.startsWith("frontend/")) return ["frontend"];
   if (path.startsWith("scripts/indesign/")) return ["frontend"];
-  if (path.startsWith("scripts/") || path.startsWith(".agents/skills/sdd/scripts/"))
+  if (path.startsWith("scripts/") || path.startsWith(".agents/skills/agentic-engineering/scripts/"))
     return ["pipeline"];
   return [];
 }

@@ -20,7 +20,10 @@ describe("findComponentsForPath", () => {
   });
 
   it("should map pipeline paths to the pipeline component", () => {
-    const paths = ["scripts/local.py", ".agents/skills/sdd/scripts/check_markdown_wrapping.py"];
+    const paths = [
+      "scripts/local.py",
+      ".agents/skills/agentic-engineering/scripts/check_markdown_wrapping.py",
+    ];
 
     for (const path of paths) {
       expect(Selection.findComponentsForPath(path), path).toEqual(["pipeline"]);

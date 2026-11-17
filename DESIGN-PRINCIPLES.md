@@ -1,6 +1,6 @@
 # Fundamental engineering rules
 
-These eight principles are mandatory for all work in every consuming repository, independent of language or stack. SDD, profiles, local guidance, implementation choices and reviews must enforce them. They cannot grant exceptions or weaken these obligations. More specific rules may strengthen them.
+These eight principles are mandatory for all work in every consuming repository, independent of language or stack. agentic engineering, profiles, local guidance, implementation choices and reviews must enforce them. They cannot grant exceptions or weaken these obligations. More specific rules may strengthen them.
 
 Authority: Cosmin Ciobanu's engineering guidelines, V1 (20 March 2025), revised V2 (2 October 2026).
 

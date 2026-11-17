@@ -22,8 +22,8 @@ export function checkLocalSetup(source: Directory): Container {
     .withDirectory("/work/.githooks", source.directory(".githooks"))
     .withDirectory("/work/.github/workflows", source.directory(".github/workflows"))
     .withDirectory(
-      "/work/.agents/skills/sdd/scripts",
-      source.directory(".agents/skills/sdd/scripts"),
+      "/work/.agents/skills/agentic-engineering/scripts",
+      source.directory(".agents/skills/agentic-engineering/scripts"),
     )
     .withWorkdir("/work")
     .withExec(["python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]);
