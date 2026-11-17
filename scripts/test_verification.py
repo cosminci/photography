@@ -186,7 +186,7 @@ class VerificationSeamIntegrationTest(unittest.TestCase):
         repository = Path(temporary_directory.name)
         for path in (
             ".githooks/pre-push",
-            ".agents/skills/sdd/scripts/check_markdown_wrapping.py",
+            ".agents/skills/agentic-engineering/scripts/check_markdown_wrapping.py",
             "scripts/verify",
         ):
             target = repository / path
