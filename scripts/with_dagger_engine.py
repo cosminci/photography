@@ -32,6 +32,9 @@ def docker(*arguments, **options):
 
 
 def start(version, invocation, size_gib):
+    cpus = int(docker("info", "--format", "{{.NCPU}}", check=True, stdout=subprocess.PIPE).stdout)
+    if cpus < 1:
+        raise RuntimeError("Docker reported no available CPUs.")
     docker("volume", "create", "--label", LABEL, VOLUME, check=True, stdout=subprocess.PIPE)
     owner = docker(
         "volume", "inspect", "--format", '{{index .Labels "io.cosminci.photography"}}',
@@ -40,7 +43,7 @@ def start(version, invocation, size_gib):
     if owner != "bounded-dagger":
         raise RuntimeError(f"Refusing a volume not owned by bounded-dagger: {VOLUME}")
     docker(
-        "create", "--name", NAME, "--privileged", "--cpus=4", "--memory=6g",
+        "create", "--name", NAME, "--privileged", f"--cpus={min(4, cpus)}", "--memory=6g",
         "--label", f"{INVOCATION_LABEL}={invocation}",
         "--log-driver=local", "--log-opt=max-size=10m", "--log-opt=max-file=2",
         "--mount", f"type=volume,source={VOLUME},target=/state",

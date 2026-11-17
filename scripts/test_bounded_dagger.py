@@ -100,7 +100,17 @@ class BoundedDaggerComponentTest(unittest.TestCase):
                 self.assertIn(shell, source)
                 self.assertLess(source.index("sudo rm -rf -- /usr/local/lib/android"), source.index("dagger develop"))
 
-    def build_docker(self, calls, conflict=False, interrupt=False):
+    def test_should_fit_cpu_limits_to_two_cpu_hosted_runners(self):
+        calls = []
+
+        with patch.object(engine.subprocess, "run", side_effect=self.build_docker(calls, cpus=2)):
+            result = engine.run(["dagger", "call", "verify"], "v0.21.11")
+
+        creation = next(command for command in calls if command[:2] == ["docker", "create"])
+        self.assertEqual(result, 0)
+        self.assertIn("--cpus=2", creation)
+
+    def build_docker(self, calls, conflict=False, interrupt=False, cpus=4):
         created = False
 
         def execute(command, **options):
@@ -112,7 +122,10 @@ class BoundedDaggerComponentTest(unittest.TestCase):
                 created = True
                 if interrupt:
                     raise KeyboardInterrupt
-            output = f"{engine.NAME}\n" if command[1] == "ps" and created else "bounded-dagger\n"
+            if command[1] == "info":
+                output = str(cpus)
+            else:
+                output = f"{engine.NAME}\n" if command[1] == "ps" and created else "bounded-dagger\n"
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         return execute
