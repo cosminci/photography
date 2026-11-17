@@ -27,6 +27,21 @@ jobs:
             exit 1
           fi
 
+      - name: Select cache generation
+        id: cache-generation
+        env:
+          FINGERPRINT: ${{ hashFiles('dagger.lock', 'dagger.json', '.dagger/src/buildEnv.ts', '.dagger/src/hooks/cache.ts', 'backend/build.sbt', 'backend/.jvmopts', 'backend/.sbtopts', 'backend/project/**/*.sbt', 'backend/project/**/*.scala', 'backend/project/**/*.properties', 'frontend/package-lock.json') }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/photography-build-cache"
+          echo "prefix=photography-build-v1-$RUNNER_OS-$RUNNER_ARCH-$(date -u +%Y-%m)-$FINGERPRINT-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore trusted build cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ runner.temp }}/photography-build-cache
+          key: ${{ steps.cache-generation.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.cache-generation.outputs.prefix }}
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -43,4 +58,4 @@ jobs:
           npm ci --prefix .dagger --no-audit --no-fund
           dagger develop
           npm --prefix .dagger run verify
-          dagger call verify --all
+          dagger call verify-cached --state="$RUNNER_TEMP/photography-build-cache" --all id

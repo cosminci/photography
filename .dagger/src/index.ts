@@ -8,10 +8,23 @@ import { checkFrontend } from "./hooks/frontend";
 import { checkLocalSetup, checkPipeline } from "./hooks/pipeline";
 import * as Git from "./hooks/git";
 import * as Selection from "./selection";
+import { cacheSnapshot, restoreCache } from "./hooks/cache";
 
 /** Affected-component CI for the photography repository. */
 @object()
 export class Photography {
+  @func({ cache: "never" })
+  async verifyCached(
+    @argument({ defaultPath: "/", ignore: WORKSPACE_IGNORE }) source: Dagger.Directory,
+    state: Dagger.Directory,
+    base = "",
+    all = false,
+  ): Promise<Dagger.Directory> {
+    await restoreCache(state);
+    await this.verify(source, base, all);
+    return cacheSnapshot();
+  }
+
   /** Maps changed paths relative to `base` (default: the merge-base with origin/main). */
   @func()
   async changed(
