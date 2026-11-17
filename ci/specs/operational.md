@@ -20,20 +20,15 @@ These commands do not replace the shared host checks required for publication; u
 
 ```mermaid
 flowchart LR
-  Entry["Verification / release entrypoint"] --> Space["Reserve 5 GiB of initial host free space"]
-  Space --> Disk["Fixed-size state filesystem<br/>At most 20 GiB"]
-  Disk --> Snapshots["Require OverlayFS snapshots"]
-  Snapshots --> Command["Run existing gates / release"]
-  Command --> Cleanup["Stop command group / remove owned engine and state"]
+  Entry["Verification / release"] --> Engine["Volume-backed engine<br/>Require OverlayFS"]
+  Engine --> Cleanup["Remove engine and volume on exit"]
 ```
 
-The launcher requires capacity for at least 8 GiB of engine state. A full state filesystem fails the command rather than using more host storage; requiring OverlayFS prevents full-filesystem snapshot copies.
+For direct commands, use `bash scripts/with_dagger_engine dagger ...`. An explicit verification runner remains operator-managed.
 
-For direct commands, prefix Dagger with `python3 scripts/with_dagger_engine.py`. Verification and publishing provision the bounded engine automatically; an explicitly supplied verification runner remains operator-managed.
+Dagger uses a 20 GB GC target, not a hard quota for active builds. The volume and required OverlayFS prevent full-filesystem snapshot copies.
 
-Failures print engine diagnostics before cleanup. After an uncatchable termination, inspect `photography-verification` before removing it and its `photography-verification-state` volume; do not remove an active invocation. Concurrent invocations reject the occupied name instead of allocating another disk.
-
-The [retention installer](../../scripts/configure_dagger_engine.py) remains a safeguard for operator-managed default engines. It preserves unrelated user settings and installs the [age/size policy](../../scripts/dagger-engine.json) in Dagger's native configuration directory; existing engines need recreation or restart to read it. Garbage collection cannot reclaim active snapshots and does not provide the bounded launcher's disk quota.
+SIGKILL or Docker failure can leave resources behind. Inspect containers labelled `dagger.ephemeral=true` and their attached volumes before removing idle resources; never remove another active invocation.
 
 ## Build without publishing
 

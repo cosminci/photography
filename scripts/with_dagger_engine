@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["engineVersion"])' \
+  "$(dirname "$0")/../dagger.json")
+engine=$(docker create --privileged --volume /var/lib/dagger --label dagger.ephemeral=true \
+  --log-driver local --log-opt max-size=10m --log-opt max-file=2 \
+  "registry.dagger.io/engine:$version" \
+  --oci-worker-snapshotter=overlayfs --oci-worker-gc-keepstorage=2000,5000,20000)
+trap 'docker rm --force --volumes "$engine" >/dev/null' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+docker start "$engine" >/dev/null
+export _EXPERIMENTAL_DAGGER_RUNNER_HOST="docker-container://$engine"
+"$@"

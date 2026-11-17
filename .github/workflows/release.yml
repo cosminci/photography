@@ -37,14 +37,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Configure Dagger cache retention
-        run: python3 scripts/configure_dagger_engine.py
-
-      - name: Free unused hosted-runner Android SDK
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
-
       - name: Install Dagger
         run: |
           cd "$RUNNER_TEMP"
@@ -52,7 +44,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Verify and publish
-        shell: python3 scripts/with_dagger_engine.py bash --noprofile --norc -euo pipefail {0}
+        shell: bash scripts/with_dagger_engine bash --noprofile --norc -euo pipefail {0}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_ACTOR: ${{ github.actor }}

@@ -24,11 +24,6 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Free unused hosted-runner Android SDK
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
-
       - name: Install Dagger
         run: |
           cd "$RUNNER_TEMP"
