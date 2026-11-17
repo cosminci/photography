@@ -16,6 +16,7 @@ git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD -- '*.md' |
     python3 .agents/skills/sdd/scripts/check_markdown_wrapping.py "$file"
   done
 
+python3 scripts/configure_dagger_engine.py
 npm ci --prefix .dagger --no-audit --no-fund
 dagger develop
 npm --prefix .dagger run verify

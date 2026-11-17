@@ -37,6 +37,9 @@ jobs:
         with:
           node-version: "24"
 
+      - name: Configure Dagger cache retention
+        run: python3 scripts/configure_dagger_engine.py
+
       - name: Install Dagger
         run: |
           cd "$RUNNER_TEMP"
