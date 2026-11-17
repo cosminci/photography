@@ -2,6 +2,14 @@ name: build
 
 on:
   pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cache:
+        description: Restore and save the build cache
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -11,6 +19,9 @@ jobs:
     name: Verify changed components
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      DAGGER_PROGRESS: plain
+      CACHE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.cache }}
     defaults:
       run:
         shell: bash
@@ -30,5 +41,37 @@ jobs:
           curl -fsSL https://dl.dagger.io/dagger/install.sh | DAGGER_VERSION=0.21.11 sh
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      - name: Select cache generation
+        if: env.CACHE_ENABLED == 'true'
+        id: cache-generation
+        env:
+          FINGERPRINT: ${{ hashFiles('dagger.lock', 'dagger.json', '.dagger/src/buildEnv.ts', '.dagger/src/hooks/cache.ts', 'backend/build.sbt', 'backend/.jvmopts', 'backend/.sbtopts', 'backend/project/**/*.sbt', 'backend/project/**/*.scala', 'backend/project/**/*.properties', 'frontend/package-lock.json') }}
+        run: |
+          echo "ACTIONS_BUILD_CACHE=$RUNNER_TEMP/photography-build-cache" >> "$GITHUB_ENV"
+          echo "prefix=photography-build-v1-$RUNNER_OS-$RUNNER_ARCH-$(date -u +%Y-%m)-$FINGERPRINT-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore build cache
+        if: env.CACHE_ENABLED == 'true'
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ env.ACTIONS_BUILD_CACHE }}
+          key: ${{ steps.cache-generation.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.cache-generation.outputs.prefix }}
+
       - name: Verify changed components
+        id: verify
+        if: github.event_name == 'pull_request'
         run: bash scripts/verify "origin/${GITHUB_BASE_REF}"
+
+      - name: Verify all components
+        id: verify-all
+        if: github.event_name != 'pull_request'
+        run: bash scripts/verify --all
+
+      - name: Save build cache
+        if: (steps.verify.outputs.cache-save == 'true' || steps.verify-all.outputs.cache-save == 'true') && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ env.ACTIONS_BUILD_CACHE }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}

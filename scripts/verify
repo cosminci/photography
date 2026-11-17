@@ -2,12 +2,18 @@
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
-  echo "Usage: bash scripts/verify <base-commit-or-ref>" >&2
+  echo "Usage: bash scripts/verify <base-commit-or-ref|--all>" >&2
   exit 1
 fi
 
 TOP=$(git rev-parse --show-toplevel)
-base=$(git rev-parse --verify "$1^{commit}")
+all=()
+if [ "$1" = --all ]; then
+  all=(--all)
+  base=$(git rev-parse --verify origin/main)
+else
+  base=$(git rev-parse --verify "$1^{commit}")
+fi
 merge_base=$(git merge-base "$base" HEAD)
 cd "$TOP"
 
@@ -17,9 +23,21 @@ git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD -- '*.md' |
   done
 
 if [ -z "${_EXPERIMENTAL_DAGGER_RUNNER_HOST:-}" ]; then
-  exec bash scripts/with_dagger_engine bash scripts/verify "$base"
+  exec bash scripts/with_dagger_engine bash scripts/verify "$1"
 fi
 npm ci --prefix .dagger --no-audit --no-fund
 dagger develop
 npm --prefix .dagger run verify
-dagger call verify --base="$base"
+if [ -n "${ACTIONS_BUILD_CACHE:-}" ]; then
+  mkdir -p "$ACTIONS_BUILD_CACHE"
+  dagger call verify-cached --state="$ACTIONS_BUILD_CACHE" --base="$base" \
+    ${all[@]+"${all[@]}"} export --path="$ACTIONS_BUILD_CACHE" --wipe=true
+  read -r bytes _ < <(du -sb "$ACTIONS_BUILD_CACHE")
+  if [ "$bytes" -le 1500000000 ]; then
+    echo "cache-save=true" >> "$GITHUB_OUTPUT"
+  else
+    echo "::warning::Build cache is $bytes bytes; skipping save above the 1.5 GB snapshot budget."
+  fi
+else
+  dagger call verify --base="$base" ${all[@]+"${all[@]}"}
+fi

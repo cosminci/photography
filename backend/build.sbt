@@ -13,13 +13,15 @@ lazy val root = (project in file("."))
     Compile / packageDoc / publishArtifact := false,
     Universal / packagingStagingDirectory  := baseDirectory.value / "target" / "universal" / "stage",
     Compile / resourceGenerators += Def.task {
-      val frontend = baseDirectory.value.getParentFile / "frontend" / "dist"
-      val packaged = (Compile / resourceManaged).value / "frontend"
-      if (!(frontend / "index.html").isFile)
-        sys.error("Built frontend entry point missing; use Dagger for checks or python3 scripts/local.py for local development")
-      IO.delete(packaged)
-      IO.copyDirectory(frontend, packaged)
-      (packaged ** "*").get().filter(_.isFile)
+      Def.uncached {
+        val frontend = baseDirectory.value.getParentFile / "frontend" / "dist"
+        val packaged = (Compile / resourceManaged).value / "frontend"
+        if (!(frontend / "index.html").isFile)
+          sys.error("Built frontend entry point missing; use Dagger for checks or python3 scripts/local.py for local development")
+        IO.delete(packaged)
+        IO.copyDirectory(frontend, packaged)
+        (packaged ** "*").get().filter(_.isFile)
+      }
     }.taskValue,
     scalacOptions ++= Seq(
       "-encoding",
