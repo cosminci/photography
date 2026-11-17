@@ -17,6 +17,9 @@ git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD -- '*.md' |
   done
 
 python3 scripts/configure_dagger_engine.py
+if [ -z "${_EXPERIMENTAL_DAGGER_RUNNER_HOST:-}" ]; then
+  exec python3 scripts/with_dagger_engine.py bash scripts/verify "$base"
+fi
 npm ci --prefix .dagger --no-audit --no-fund
 dagger develop
 npm --prefix .dagger run verify

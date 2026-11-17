@@ -215,6 +215,7 @@ class VerificationSeamIntegrationTest(unittest.TestCase):
             "PATH": f"{commands}:/usr/bin:/bin:/usr/local/bin",
             "COMMAND_LOG": str(repository / "commands"),
             "FAIL_COMMAND": "",
+            "_EXPERIMENTAL_DAGGER_RUNNER_HOST": "tcp://verification.invalid",
         }
         return repository, environment, base
 
