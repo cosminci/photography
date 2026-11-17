@@ -109,7 +109,7 @@ describe("AlbumDialog", () => {
     expect(saved).toHaveBeenCalledOnce();
   });
 
-  it.each([
+  it.each<{ outcome: "acknowledged" | "uncertain"; failure: Error }>([
     { outcome: "acknowledged", failure: new AcknowledgedWriteError("Unreadable saved response") },
     { outcome: "uncertain", failure: new Error("Lost response") },
   ])("should recover an $outcome creation with catalog reads and never repeat the write", async ({ outcome, failure }) => {

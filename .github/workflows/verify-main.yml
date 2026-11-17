@@ -38,6 +38,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
       - name: Verify all components
+        shell: bash scripts/with_dagger_engine bash --noprofile --norc -euo pipefail {0}
         run: |
           npm ci --prefix .dagger --no-audit --no-fund
           dagger develop

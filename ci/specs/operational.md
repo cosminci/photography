@@ -18,11 +18,17 @@ These commands do not replace the shared host checks required for publication; u
 
 ## Engine storage
 
-Before the first local Dagger command, run `python3 scripts/configure_dagger_engine.py`; the verification wrapper and publish workflow run it automatically. The installer writes the [retention policy](../../scripts/dagger-engine.json) under `$XDG_CONFIG_HOME/dagger/engine.json` when set, otherwise under `~/Library/Application Support/dagger/engine.json` on macOS or `~/.config/dagger/engine.json` on Linux; this is a shared user configuration, and unrelated settings are preserved.
+```mermaid
+flowchart LR
+  Entry["Verification / release"] --> Engine["Volume-backed engine<br/>Require OverlayFS"]
+  Engine --> Cleanup["Remove engine and volume on exit"]
+```
 
-The policy makes entries unused for 72 hours eligible for removal and gives each engine a 20 GB GC budget, a 2 GB reserve, a 5 GB sweep target and a 50 GB free-space target on the engine's filesystem. These are garbage-collection thresholds, not disk quotas or a guarantee of host free space: active references can exceed the budget, age cleanup needs a GC pass, and stopped engines cannot collect their caches.
+For direct commands, use `bash scripts/with_dagger_engine dagger ...`. An explicit verification runner remains operator-managed.
 
-Dagger mounts this file when it creates a default engine and reads it at engine startup. An existing engine without the mount must be recreated after confirming it is idle; a mounted engine needs a restart after a policy change. For a manually created engine, mount the same file read-only at `/etc/dagger/engine.json`, keep its name explicit in the runner override, and remove that exact disposable container and its own cache volume when the experiment ends.
+Dagger uses a 20 GB GC target, not a hard quota for active builds. The volume and required OverlayFS prevent full-filesystem snapshot copies.
+
+SIGKILL or Docker failure can leave resources behind. Inspect containers labelled `dagger.ephemeral=true` and their attached volumes before removing idle resources; never remove another active invocation.
 
 ## Build without publishing
 

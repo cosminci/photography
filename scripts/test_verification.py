@@ -188,8 +188,6 @@ class VerificationSeamIntegrationTest(unittest.TestCase):
             ".githooks/pre-push",
             ".agents/skills/sdd/scripts/check_markdown_wrapping.py",
             "scripts/verify",
-            "scripts/configure_dagger_engine.py",
-            "scripts/dagger-engine.json",
         ):
             target = repository / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -211,10 +209,10 @@ class VerificationSeamIntegrationTest(unittest.TestCase):
             executable.chmod(0o755)
         environment = {
             **os.environ,
-            "XDG_CONFIG_HOME": str(repository / ".git/dagger-config"),
             "PATH": f"{commands}:/usr/bin:/bin:/usr/local/bin",
             "COMMAND_LOG": str(repository / "commands"),
             "FAIL_COMMAND": "",
+            "_EXPERIMENTAL_DAGGER_RUNNER_HOST": "tcp://verification.invalid",
         }
         return repository, environment, base
 
