@@ -8,6 +8,7 @@ Use `dagger call <command> --help` for arguments.
 | --- | --- |
 | `changed` | Comma-separated affected components in canonical order, or `none` |
 | `verify` | Selected checks; `--all` checks every component |
+| `verify-cached` | Same gates with imported build state; returns the updated [Actions snapshot](operational.md#actions-cache) after success |
 | `backend-check`, `frontend-check`, `pipeline-check` | One component gate; tool errors fail the call |
 | `build` | Runtime container with revision metadata |
 | `release-version` | UTC `YYYY.M.D-THHMMSS` version |
