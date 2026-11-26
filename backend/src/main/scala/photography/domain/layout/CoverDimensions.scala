@@ -14,7 +14,7 @@ object CoverSpecification:
       total      <- width.refineEither[Positive]
       vertical   <- height.refineEither[Positive]
       horizontal <- spine.refineEither[Positive]
-      _          <- Either.cond(horizontal < total, (), "Cover spine must be narrower than the artwork")
+      _          <- Either.cond(horizontal < total, right = (), "Cover spine must be narrower than the artwork")
     yield CoverSpecification(pages, total, vertical, horizontal)
 
 final case class CoverPhotoFrame(x: Double, width: Double, height: Double)

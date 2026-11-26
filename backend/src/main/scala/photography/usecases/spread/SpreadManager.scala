@@ -72,7 +72,7 @@ object SpreadManager:
             buildPhotoSpread(layout).flatMap: fresh =>
               val mutation =
                 for
-                  _        <- composition.hasAlbum(album).map(Either.cond(_, (), AddResult.AlbumNotFound: AddResult)).eitherT
+                  _        <- composition.hasAlbum(album).map(Either.cond(_, right = (), AddResult.AlbumNotFound: AddResult)).eitherT
                   order    <- composition.findChapterOrder(album, chapter).orFail(ifEmpty = AddResult.ChapterNotFound: AddResult)
                   target   <- findSpread(album, after).orFail(ifEmpty = AddResult.SpreadNotFound: AddResult)
                   _        <- (!isAlbumOpening(target)).ensure[Db, AddResult](ifFalse = AddResult.Rejected(Conflict.AddTarget))
@@ -97,7 +97,7 @@ object SpreadManager:
               val mismatch = ChangeTemplateResult.Rejected(Conflict.ContextMismatch)
               val mutation =
                 for
-                  _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
+                  _ <- composition.hasAlbum(album).map(Either.cond(_, right = (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
                   target <- findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
                   fresh  <- replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = mismatch)
                   _      <- requireConfirmation(target.spread.placements.size, confirmed = confirmPlacements)(ChangeTemplateResult.Occupied(_))
@@ -114,7 +114,7 @@ object SpreadManager:
     ): F[DeleteResult] =
       val mutation =
         for
-          _      <- composition.hasAlbum(album).map(Either.cond(_, (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
+          _      <- composition.hasAlbum(album).map(Either.cond(_, right = (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
           target <- findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
           photo  <- findPhoto(target).orFail[Db, DeleteResult](ifEmpty = DeleteResult.Rejected(Conflict.OpeningDelete))
           _      <- requireConfirmation[DeleteResult](photo.value.placements.size, confirmed = confirmPlacements)(DeleteResult.Occupied(_))
@@ -152,7 +152,7 @@ object SpreadManager:
     override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): F[SetBleedResult] =
       val mutation =
         for
-          _       <- composition.hasAlbum(album).map(Either.cond(_, (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
+          _       <- composition.hasAlbum(album).map(Either.cond(_, right = (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
           target  <- findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
           changed <- target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult).eitherT[Db]
           _       <- spreads.replaceBleed(changed.id, edges = changed.photos.map(slot => slot.id -> slot.bleed).toMap).lift[SetBleedResult]
@@ -239,7 +239,7 @@ object SpreadManager:
     private def adjustPlacement(values: Vector[SpreadPlacement], id: SpreadPlacementId, transform: PhotoTransform) =
       for
         _ <- findPlacement(values = values, id)
-        _ <- Either.cond(transform.zoom >= 1.0 && transform.zoom <= 5.0, (), Failure.InvalidTransform)
+        _ <- Either.cond(transform.zoom >= 1.0 && transform.zoom <= 5.0, right = (), Failure.InvalidTransform)
       yield values.map(value => if value.id.value === id.value then value.copy(transform = transform) else value)
 
     private def movePlacement(
@@ -257,7 +257,7 @@ object SpreadManager:
         else value
 
     private def requirePlacementSlot(slots: Set[PhotoSpreadSlotId], slot: PhotoSpreadSlotId) =
-      Either.cond(slots.contains(slot), (), Failure.SlotNotFound)
+      Either.cond(slots.contains(slot), right = (), Failure.SlotNotFound)
 
     private def findPlacement(values: Vector[SpreadPlacement], id: SpreadPlacementId) =
       values.find(_.id.value === id.value).toRight(Failure.PlacementNotFound)
@@ -321,7 +321,7 @@ object SpreadManager:
         slots.lift(position).map(slot => placement.copy(slot = slot.id, transform = untouched)).toList
 
     private def requireConfirmation[A](count: Int, confirmed: Boolean)(occupied: Int => A) =
-      Either.cond(confirmed || count === 0, (), occupied(count)).eitherT[Db]
+      Either.cond(confirmed || count === 0, right = (), occupied(count)).eitherT[Db]
 
     private def buildPhotoSpread(layout: SpreadTemplate.PhotosOnly) =
       (IdGenerator[F].generateId, layout.photoSlots.traverse(buildPhotoSlot)).mapN: (id, slots) =>

@@ -140,8 +140,8 @@ object SqliteAlbumCompositionRepository:
         }.toRight("Missing required spread slot")
       }
       for
-        _     <- Either.cond(expected.nonEmpty && expected.size === stored.size, (), "Wrong spread slot count")
-        _     <- Either.cond(stored.map(_.id).distinct.size === stored.size, (), duplicateIdentities)
+        _     <- Either.cond(expected.nonEmpty && expected.size === stored.size, right = (), "Wrong spread slot count")
+        _     <- Either.cond(stored.map(_.id).distinct.size === stored.size, right = (), duplicateIdentities)
         slots <- matchedSlots
       yield slots
 

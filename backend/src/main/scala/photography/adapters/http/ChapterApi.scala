@@ -218,7 +218,7 @@ object ChapterApi:
     private val countryDecoder = Decoder.decodeList[CountryId].emap: values =>
       val distinct = values.map(_.value).distinct.size === values.size
       val nonEmpty = NonEmptyList.fromList(values).toRight("Select at least one country")
-      Either.cond(distinct, (), "Select each country only once").flatMap(_ => nonEmpty)
+      Either.cond(distinct, right = (), "Select each country only once").flatMap(_ => nonEmpty)
 
     private val dateDecoder = Decoder.decodeString.emap: value =>
       val isCalendarDay = value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")

@@ -80,4 +80,4 @@ object FileThumbnailStorage:
 
     private def checkRoot() =
       val valid = root.isAbsolute && root.normalize().toString === root.toString
-      Either.cond(valid, (), new IllegalArgumentException("Expected an absolute normalized thumbnail root"))
+      Either.cond(valid, right = (), new IllegalArgumentException("Expected an absolute normalized thumbnail root"))

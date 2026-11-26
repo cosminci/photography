@@ -67,7 +67,7 @@ object SqliteAlbumRepository:
     override def create(album: Album, cover: Cover): F[CreateResult] =
       val opening   = album.opening
       val isInitial = album.chapters.isEmpty && album.opening.placements.isEmpty && cover.album.value === album.id.value
-      val initial   = Either.cond(isInitial, (), new IllegalArgumentException("Expected an initial album and its cover"))
+      val initial   = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an initial album and its cover"))
       val query     =
         for
           _ <- initial.liftTo[ConnectionIO]
@@ -147,7 +147,7 @@ object SqliteAlbumRepository:
       authors.foldLeft(0)((encoded, author) => encoded | (1 << author.ordinal))
 
     private def decodeAuthors(encoded: Int) =
-      Either.cond(encoded >= 1 && encoded <= 7, (), "Invalid album authors").flatMap: _ =>
+      Either.cond(encoded >= 1 && encoded <= 7, right = (), "Invalid album authors").flatMap: _ =>
         Author.all.filter(author => (encoded & (1 << author.ordinal)) =!= 0).refineEither[MinLength[1]]
 
     private def insertInitialSpread(
@@ -193,7 +193,7 @@ object SqliteAlbumRepository:
     private def decodePeriod(start: Instant, end: Instant) =
       val days    = ChronoUnit.DAYS.between(start, end)
       val aligned = start.compareTo(start.truncatedTo(ChronoUnit.DAYS)) === 0 && end.compareTo(end.truncatedTo(ChronoUnit.DAYS)) === 0
-      Either.cond(aligned, (), "Expected UTC calendar days").flatMap(_ => days.refineEither[Positive])
+      Either.cond(aligned, right = (), "Expected UTC calendar days").flatMap(_ => days.refineEither[Positive])
         .map(length => VisitPeriod(start.atOffset(ZoneOffset.UTC).toLocalDate, days = length))
 
     private def loadCountries(chapter: UUID) =
@@ -205,7 +205,7 @@ object SqliteAlbumRepository:
 
     private def validateChapters(albumId: UUID) =
       sql"SELECT count(*) FROM chapter WHERE album_id = $albumId AND position < 0".query[Long].unique.flatMap: count =>
-        Either.cond(count === 0L, (), new IllegalArgumentException("Invalid chapter composition")).liftTo[ConnectionIO]
+        Either.cond(count === 0L, right = (), new IllegalArgumentException("Invalid chapter composition")).liftTo[ConnectionIO]
 
     private def insertCover(cover: Cover) =
       val albumId = cover.album.value

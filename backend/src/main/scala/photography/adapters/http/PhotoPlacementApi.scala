@@ -138,7 +138,7 @@ object PhotoPlacementApi:
         SpreadManager.Edit.Place(PhotoSpreadSlotId(slot), PhotoId(photo))
       }
     private val bleedDecoder = Decoder.instance[Boolean]: cursor =>
-      Either.cond(cursor.keys.exists(_.toSet === Set("enabled")), (), DecodingFailure("Supply only enabled", cursor.history)) >>
+      Either.cond(cursor.keys.exists(_.toSet === Set("enabled")), right = (), DecodingFailure("Supply only enabled", cursor.history)) >>
         cursor.get[Boolean]("enabled")
 
     private val spineOwnerDecoder = Decoder.instance[SpineOwner]: cursor =>
@@ -147,7 +147,7 @@ object PhotoPlacementApi:
         case "back"  => SpineOwner.Back.asRight[String]
         case _       => "Select front or back".asLeft[SpineOwner]
       }
-      Either.cond(cursor.keys.exists(_.toSet === Set("owner")), (), DecodingFailure("Supply only owner", cursor.history)) >>
+      Either.cond(cursor.keys.exists(_.toSet === Set("owner")), right = (), DecodingFailure("Supply only owner", cursor.history)) >>
         cursor.get[SpineOwner]("owner")(using ownerDecoder)
     private def spreadUpdateDecoder(id: UUID) = Decoder.instance[SpreadManager.Edit]: cursor =>
       if cursor.keys.exists(_.toSet === Set("slotId")) then
@@ -185,7 +185,7 @@ object PhotoPlacementApi:
       else DecodingFailure("Supply either slotId or transform", cursor.history).asLeft
 
     private def validateCreation(cursor: HCursor) =
-      Either.cond(cursor.keys.exists(_.toSet === Set("slotId", "photoId")), (), DecodingFailure("Supply slotId and photoId", cursor.history))
+      Either.cond(cursor.keys.exists(_.toSet === Set("slotId", "photoId")), right = (), DecodingFailure("Supply slotId and photoId", cursor.history))
 
     private def buildTransformDecoder = Decoder.instance[PhotoTransform]: cursor =>
       for

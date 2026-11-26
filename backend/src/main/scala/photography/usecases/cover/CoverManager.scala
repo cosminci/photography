@@ -97,7 +97,7 @@ object CoverManager:
     private def adjust(values: Vector[CoverPlacement], id: CoverPlacementId, transform: PhotoTransform) =
       for
         _ <- findPlacement(values = values, id)
-        _ <- Either.cond(transform.zoom >= 1.0 && transform.zoom <= 5.0, (), Failure.InvalidTransform)
+        _ <- Either.cond(transform.zoom >= 1.0 && transform.zoom <= 5.0, right = (), Failure.InvalidTransform)
       yield values.map(value => if value.id.value === id.value then value.copy(transform = transform) else value)
 
     private def move(slots: Set[CoverSlotId], values: Vector[CoverPlacement], source: CoverPlacementId, destination: CoverSlotId) =
@@ -110,7 +110,7 @@ object CoverManager:
         else value
 
     private def requireSlot(slots: Set[CoverSlotId], slot: CoverSlotId) =
-      Either.cond(slots.contains(slot), (), Failure.SlotNotFound)
+      Either.cond(slots.contains(slot), right = (), Failure.SlotNotFound)
 
     private def findPlacement(values: Vector[CoverPlacement], id: CoverPlacementId) =
       values.find(_.id.value === id.value).toRight(Failure.PlacementNotFound)

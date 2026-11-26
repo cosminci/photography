@@ -63,7 +63,7 @@ object SqliteChapterRepository:
       val opening         = chapter.opening
       val distinctSlotIds = opening.photoSlots.forall(_.id.value =!= opening.textSlot.id.value)
       val isInitial       = opening.placements.isEmpty && opening.photoSlots.nonEmpty && distinctSlotIds
-      val initial         = Either.cond(isInitial, (), new IllegalArgumentException("Expected an empty chapter opening with photo slots"))
+      val initial         = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an empty chapter opening with photo slots"))
       val write           =
         for
           _ <- initial.liftTo[ConnectionIO]
@@ -157,7 +157,11 @@ object SqliteChapterRepository:
       }
       select.query[(String, Double, Double, Double, Double)].to[Vector].flatMap: expected =>
         val matchesTemplate = expected.size === supplied.size && expected.toSet === supplied.toSet
-        Either.cond(matchesTemplate, (), new IllegalArgumentException("Opening slots must represent their chapter template")).liftTo[ConnectionIO]
+        Either.cond(
+          matchesTemplate,
+          right = (),
+          new IllegalArgumentException("Opening slots must represent their chapter template")
+        ).liftTo[ConnectionIO]
 
     private def insertCountries(chapter: ChapterId, countries: NonEmptyList[CountryId]) =
       countries.toList.zipWithIndex.traverse_ { case (country, position) =>
@@ -197,7 +201,7 @@ object SqliteChapterRepository:
 
     private def validateOrder(stored: List[UUID], supplied: List[UUID]) =
       val containsEveryChapter = stored.size === supplied.size && stored.toSet === supplied.toSet
-      Either.cond(containsEveryChapter, (), new IllegalArgumentException("Order must contain every chapter exactly once"))
+      Either.cond(containsEveryChapter, right = (), new IllegalArgumentException("Order must contain every chapter exactly once"))
 
     private def insertOpening(chapter: ChapterId, opening: Spread.ChapterStart) =
       val insert = sql"""INSERT INTO spread (id, template_id, kind, chapter_id, position)

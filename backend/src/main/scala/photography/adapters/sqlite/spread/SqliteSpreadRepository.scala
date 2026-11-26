@@ -63,7 +63,7 @@ object SqliteSpreadRepository:
 
     private def validateOrder(stored: List[UUID], supplied: List[UUID]) =
       val containsEverySpread = stored.size === supplied.size && stored.toSet === supplied.toSet
-      Either.cond(containsEverySpread, (), new IllegalArgumentException("Order must contain every spread of the chapter exactly once"))
+      Either.cond(containsEverySpread, right = (), new IllegalArgumentException("Order must contain every spread of the chapter exactly once"))
 
     private def collectSlots(spread: Spread) = spread match
       case value: Spread.AlbumStart   => value.photoSlots.map(slot => slot: SpreadSlot) :+ value.textSlot
