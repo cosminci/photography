@@ -155,13 +155,10 @@ object SqliteChapterRepository:
       val supplied = (opening.photoSlots.map(slot => ("photo", slot.box)) :+ ("text", opening.textSlot.box)).map { case (kind, box) =>
         (kind, box.x: Double, box.y: Double, box.width: Double, box.height: Double)
       }
-      select.query[(String, Double, Double, Double, Double)].to[Vector].flatMap: expected =>
-        val matchesTemplate = expected.size === supplied.size && expected.toSet === supplied.toSet
-        Either.cond(
-          matchesTemplate,
-          right = (),
-          new IllegalArgumentException("Opening slots must represent their chapter template")
-        ).liftTo[ConnectionIO]
+      select.query[(String, Double, Double, Double, Double)].to[Vector]
+        .ensure(new IllegalArgumentException("Opening slots must represent their chapter template")) { expected =>
+          expected.size === supplied.size && expected.toSet === supplied.toSet
+        }.void
 
     private def insertCountries(chapter: ChapterId, countries: NonEmptyList[CountryId]) =
       countries.toList.zipWithIndex.traverse_ { case (country, position) =>
