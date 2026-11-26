@@ -81,38 +81,43 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
           assertEquals(actual, content: Vector[Byte])
     }
 
-  test("should reject preset ceiling plus one bytes and either dimension on every construction path"):
-    ThumbnailQuality.values.foreach { quality =>
-      val dimensions     = ThumbnailDimensions(width = quality.longestEdge, height = quality.longestEdge)
-      val content        = Vector.fill(quality.maximumBytes)(1.toByte).refineUnsafe[ThumbnailBytesConstraint]
-      val encoded        = EncodedThumbnail(bytes = content, dimensions = dimensions, quality = quality)
-      val thumbnail      = Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = quality.maximumBytes)
-      val excessiveCount = quality.maximumBytes + 1
-      val _              = intercept[IllegalArgumentException]:
-        EncodedThumbnail(bytes = (content :+ 1.toByte).refineUnsafe[ThumbnailBytesConstraint], dimensions = dimensions, quality = quality)
-      val _ = intercept[IllegalArgumentException]:
-        thumbnail.copy(bytes = excessiveCount.refineUnsafe[ThumbnailByteCountConstraint])
-      val _ = intercept[IllegalArgumentException]:
-        encoded.copy(bytes = (content :+ 1.toByte).refineUnsafe[ThumbnailBytesConstraint])
-      val _ = intercept[IllegalArgumentException]:
-        val tooMany = excessiveCount.refineUnsafe[ThumbnailByteCountConstraint]
-        Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = tooMany)
-      Vector(true, false).foreach { width =>
-        val _ = intercept[IllegalArgumentException]:
-          val larger  = (quality.longestEdge + 1).refineUnsafe[ThumbnailPixelCountConstraint]
-          val invalid = if width then dimensions.copy(width = larger) else dimensions.copy(height = larger)
-          encoded.copy(dimensions = invalid)
-        val _ = intercept[IllegalArgumentException]:
-          val larger  = (quality.longestEdge + 1).refineUnsafe[ThumbnailPixelCountConstraint]
-          val invalid = if width then dimensions.copy(width = larger) else dimensions.copy(height = larger)
-          thumbnail.copy(dimensions = invalid)
+  test("should reject values within global bounds that exceed the selected thumbnail preset"):
+    Vector(ThumbnailQuality.Low, ThumbnailQuality.Standard).foreach { quality =>
+      val dimensions         = ThumbnailDimensions(width = quality.longestEdge, height = quality.longestEdge)
+      val content            = Vector.fill(quality.maximumBytes)(1.toByte).refineUnsafe[ThumbnailBytesConstraint]
+      val encoded            = EncodedThumbnail(bytes = content, dimensions = dimensions, quality = quality)
+      val thumbnail          = Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = quality.maximumBytes)
+      val excessiveBytes     = (content :+ 1.toByte).refineUnsafe[ThumbnailBytesConstraint]
+      val excessiveCount     = (quality.maximumBytes + 1).refineUnsafe[ThumbnailByteCountConstraint]
+      val excessiveEdge      = (quality.longestEdge + 1).refineUnsafe[ThumbnailPixelCountConstraint]
+      def constructEncoded   = EncodedThumbnail(bytes = excessiveBytes, dimensions = dimensions, quality = quality)
+      def constructThumbnail = Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = excessiveCount)
+      def newEncoded         = new EncodedThumbnail(bytes = excessiveBytes, dimensions = dimensions, quality = quality)
+      def newThumbnail       = new Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = excessiveCount)
+
+      val _ = intercept[IllegalArgumentException](constructEncoded)
+      val _ = intercept[IllegalArgumentException](thumbnail.copy(bytes = excessiveCount))
+      val _ = intercept[IllegalArgumentException](encoded.copy(bytes = excessiveBytes))
+      val _ = intercept[IllegalArgumentException](constructThumbnail)
+      Vector(dimensions.copy(width = excessiveEdge), dimensions.copy(height = excessiveEdge)).foreach { invalid =>
+        val _ = intercept[IllegalArgumentException](encoded.copy(dimensions = invalid))
+        val _ = intercept[IllegalArgumentException](thumbnail.copy(dimensions = invalid))
       }
-      val _ = intercept[IllegalArgumentException]:
-        new EncodedThumbnail(bytes = (content :+ 1.toByte).refineUnsafe[ThumbnailBytesConstraint], dimensions = dimensions, quality = quality)
-      val _ = intercept[IllegalArgumentException]:
-        val tooMany = excessiveCount.refineUnsafe[ThumbnailByteCountConstraint]
-        new Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = tooMany)
+      val _ = intercept[IllegalArgumentException](newEncoded)
+      val _ = intercept[IllegalArgumentException](newThumbnail)
     }
+
+  test("should reject values above the high preset at the global refinement boundary"):
+    val quality        = ThumbnailQuality.High
+    val excessiveCount = quality.maximumBytes + 1
+    val excessiveBytes = Vector.fill(excessiveCount)(1.toByte)
+    val excessiveEdge  = quality.longestEdge + 1
+    val bytes          = excessiveBytes.refineEither[ThumbnailBytesConstraint]
+    val count          = excessiveCount.refineEither[ThumbnailByteCountConstraint]
+    val edge           = excessiveEdge.refineEither[ThumbnailPixelCountConstraint]
+    assert(bytes.isLeft)
+    assert(count.isLeft)
+    assert(edge.isLeft)
 
   test("should read the stored content version and distinguish absence from read failure"):
     buildDirectory.use: root =>

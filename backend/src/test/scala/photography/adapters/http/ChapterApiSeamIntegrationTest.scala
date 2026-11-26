@@ -126,10 +126,9 @@ final class ChapterApiSeamIntegrationTest extends CatsEffectSuite:
         otherCalls   <- refs.calls.get
         gearCalls    <- refs.gearCalls.get
       yield
-        assertEquals(
-          response,
+        val expectedResponse =
           (scenario.status, Json.obj("code" -> Json.fromString(scenario.code)).noSpaces, MediaType.application.json.some, "no-store".some)
-        )
+        assertEquals(response, expectedResponse)
         assertEquals(descriptions, Vector(DescriptionCall(otherAlbum, chapter.id, text = "once")))
         assertEquals(otherCalls, Vector.empty[String])
         assertEquals(gearCalls, Vector.empty[GearCall])

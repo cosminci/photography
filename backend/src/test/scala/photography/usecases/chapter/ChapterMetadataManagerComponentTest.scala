@@ -303,10 +303,10 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
       writes  <- refs.updates.get
     yield
       assertEquals(result, UpdateResult.Updated(Scheduling.NotRequested))
-      assertEquals(
-        refs.planningUpdates.get(),
+      val planningUpdates = refs.planningUpdates.get()
+      val expectedUpdates =
         Vector(UpdateCall(current.year, current.chapters, chapter.id, chapter.destination.name, Period.AlbumYear, chapter.sourceFolder))
-      )
+      assertEquals(planningUpdates, expectedUpdates)
       assertEquals(writes, Vector(expected))
 
   test("should stop rejected and unavailable plans before photo reads, persistence or import preparation"):

@@ -130,8 +130,8 @@ private[album] object BookExportJson:
         case SpineOwner.Back  => "back"),
       "frontSlot"  -> text(composition.cover.front.id.value.toString),
       "backSlot"   -> text(composition.cover.back.id.value.toString),
-      "frontFrame" -> encodeFrame(PrintFrame(front.x, 0.0, front.width, front.height)),
-      "backFrame"  -> encodeFrame(PrintFrame(back.x, 0.0, back.width, back.height)),
+      "frontFrame" -> encodeFrame(PrintFrame(front.x, y = 0.0, front.width, front.height)),
+      "backFrame"  -> encodeFrame(PrintFrame(back.x, y = 0.0, back.width, back.height)),
       "placements" -> Json.fromValues(composition.placements.map(placement =>
         Json.obj(
           "slot"      -> text(placement.slot.value.toString),

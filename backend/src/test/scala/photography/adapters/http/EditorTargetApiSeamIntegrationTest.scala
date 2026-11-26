@@ -65,15 +65,13 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
           assertEquals(readBody, expected)
           assertEquals(renewedBody, encodeGrant(kind, grant.value, remainingMillis = 30000L))
           assertEquals(releasedBody, Json.obj("revision" -> Json.fromString("2")))
-          assertEquals(
-            calls,
-            Calls(
-              Vector((connection, TargetRevision.initial, target)),
-              Vector(connection),
-              Vector((connection, grant)),
-              Vector((connection, revision, grant))
-            )
+          val expectedCalls = Calls(
+            Vector((connection, TargetRevision.initial, target)),
+            Vector(connection),
+            Vector((connection, grant)),
+            Vector((connection, revision, grant))
           )
+          assertEquals(calls, expectedCalls)
           assertEquals(selected.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
       }
   }
@@ -85,7 +83,7 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         service = buildService(
           refs,
           SelectResult.Blocked(owner, alias = "Other browser", 12.seconds, TargetRevision.initial.next),
-          ReadTargetResult.Current(TargetRevision.initial.next, None),
+          ReadTargetResult.Current(TargetRevision.initial.next, maybeLock = None),
           RenewTargetResult.Rejected(Failure.StaleGrant),
           ReleaseResult.Rejected(Failure.StaleTransition)
         )
@@ -96,16 +94,14 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         current  <- read.as[Json]
       yield
         assertEquals(response.status, Status.Conflict)
-        assertEquals(
-          body,
-          Json.obj(
-            "code"            -> Json.fromString("target_locked"),
-            "ownerId"         -> Json.fromString(owner.value.toString),
-            "alias"           -> Json.fromString("Other browser"),
-            "remainingMillis" -> Json.fromLong(12000L),
-            "revision"        -> Json.fromString("1")
-          )
+        val expectedConflict = Json.obj(
+          "code"            -> Json.fromString("target_locked"),
+          "ownerId"         -> Json.fromString(owner.value.toString),
+          "alias"           -> Json.fromString("Other browser"),
+          "remainingMillis" -> Json.fromLong(12000L),
+          "revision"        -> Json.fromString("1")
         )
+        assertEquals(body, expectedConflict)
         assertEquals(current, Json.obj("revision" -> Json.fromString("1"), "grant" -> Json.Null))
     }
 
@@ -190,10 +186,9 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(missingGrantBody, Json.obj("code" -> Json.fromString("missing_credentials")))
       assertEquals(invalidGrantBody, Json.obj("code" -> Json.fromString("invalid_credentials")))
       assertEquals(badReleaseBody, Json.obj("code" -> Json.fromString("invalid_target_request")))
-      assertEquals(
-        Vector(malformed.status, missing.status, invalidHeader.status, missingGrant.status, invalidGrant.status, badRelease.status),
-        Vector.fill(6)(Status.BadRequest)
-      )
+      val statuses = Vector(malformed.status, missing.status, invalidHeader.status, missingGrant.status, invalidGrant.status, badRelease.status)
+      val expectedStatuses = Vector.fill(6)(Status.BadRequest)
+      assertEquals(statuses, expectedStatuses)
       assertEquals(calls, Calls(Vector.empty, Vector.empty, Vector.empty, Vector.empty))
 
   test("should preserve unbounded revisions and report elapsed leases as zero rather than exposing backend deadlines"):
@@ -219,13 +214,11 @@ final class EditorTargetApiSeamIntegrationTest extends CatsEffectSuite:
         calls    <- refs.get
       yield
         assertEquals(response.status, Status.Ok)
-        assertEquals(
-          body,
-          Json.obj(
-            "revision" -> Json.fromString((BigInt(decimal) + 1).toString),
-            "grant"    -> encodeGrant("cover", grant.value, remainingMillis = 0L)
-          )
+        val expectedRenewal = Json.obj(
+          "revision" -> Json.fromString((BigInt(decimal) + 1).toString),
+          "grant"    -> encodeGrant("cover", grant.value, remainingMillis = 0L)
         )
+        assertEquals(body, expectedRenewal)
         assertEquals(calls, Calls(Vector((connection, revision, target)), Vector.empty, Vector.empty, Vector.empty))
     }
 

@@ -89,10 +89,9 @@ final class RoutesSeamIntegrationTest extends CatsEffectSuite:
         admitted <- calls.get
       yield
         assertEquals(response.status, status)
-        assertEquals(
-          admitted,
+        val expectedAdmissions =
           if status === Status.Ok then Vector((connection, protection, maybeGrant)) else Vector.empty[(EditorConnection, Protection, Option[GrantId])]
-        )
+        assertEquals(admitted, expectedAdmissions)
   }
 
   Vector(

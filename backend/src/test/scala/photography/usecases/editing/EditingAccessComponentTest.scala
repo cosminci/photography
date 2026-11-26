@@ -70,7 +70,8 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           val authorization = maybeTarget.fold[Call](Call.Affected(connection, Set.empty, grant.some))(Call.Target(connection, _, grant))
           val resolved      = Vector(Call.Connection(connection), Call.PhotoTarget(chapter, photo))
           val expected      =
-            resolved ++ Vector(authorization, Call.Written) ++ resolved ++ Vector(Call.Affected(connection, Set.empty, None), Call.Written) ++
+            resolved ++ Vector(authorization, Call.Written) ++ resolved ++
+              Vector(Call.Affected(connection, Set.empty, maybeGrant = None), Call.Written) ++
               resolved ++ Vector(authorization) ++ resolved ++ resolved ++ Vector(Call.Connection(connection))
           assertEquals(saved, Result.Completed(()))
           assertEquals(unplaced, Result.Completed(()))
@@ -266,9 +267,9 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
           val expected = Vector(
             Call.Target(connection, destination, grant),
             Call.Affected(connection, Set(destination), grant.some),
-            Call.Affected(connection, Set(destination), None),
+            Call.Affected(connection, Set(destination), maybeGrant = None),
             Call.Target(connection, destination, grant),
-            Call.Affected(connection, Set(destination), None)
+            Call.Affected(connection, Set(destination), maybeGrant = None)
           )
           assertEquals(missing, Result.Rejected[Unit](Failure.StaleGrant))
           assertEquals(blocked, Result.Blocked[Unit](EditorId(new UUID(0L, 6L)), "Other"))
@@ -298,8 +299,8 @@ final class EditingAccessComponentTest extends CatsEffectSuite:
         observed    <- refs.calls.get
       yield
         val expected = Vector(
-          Call.Affected(connection, Set(target), None),
-          Call.Affected(connection, Set(target), None),
+          Call.Affected(connection, Set(target), maybeGrant = None),
+          Call.Affected(connection, Set(target), maybeGrant = None),
           Call.Connection(connection),
           Call.Connection(connection)
         )

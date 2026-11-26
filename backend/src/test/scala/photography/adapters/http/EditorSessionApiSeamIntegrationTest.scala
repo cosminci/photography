@@ -45,10 +45,9 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
     yield
       assertEquals(registration.status, Status.Conflict)
       assertEquals(body, Json.obj("code" -> Json.fromString("credential_required")))
-      assertEquals(
-        events.filter(_.eventType.nonEmpty),
-        Vector(ServerSentEvent(data = """{"code":"stale_session"}""".some, eventType = "session_lost".some))
-      )
+      val typedEvents    = events.filter(_.eventType.nonEmpty)
+      val expectedEvents = Vector(ServerSentEvent(data = """{"code":"stale_session"}""".some, eventType = "session_lost".some))
+      assertEquals(typedEvents, expectedEvents)
 
   test("should encode a blocked binding without exposing credentials or acquiring a stream"):
     for
@@ -129,11 +128,11 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
           response  <- app.run(bind(session.id, tab))
           events    <- response.body.through(ServerSentEvent.decoder[IO]).compile.toVector
           bound     <- IO.fromEither(events.flatMap(_.data).headOption.toRight[Throwable](new AssertionError("Missing bound event")).flatMap(parse))
-          read      <- app.run(connected(Method.GET, "", bound))
+          read      <- app.run(connected(Method.GET, suffix = "", bound))
           readBody  <- read.as[Json]
           heartbeat <- app.run(connected(Method.POST, "/heartbeat", bound))
           heartbeatBody <- heartbeat.as[Json]
-          rename        <- app.run(connected(Method.PATCH, "", bound).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
+          rename        <- app.run(connected(Method.PATCH, suffix = "", bound).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
           renameBody    <- rename.as[Json]
           departure     <- app.run(connected(Method.DELETE, "/binding", bound))
           departureBody <- departure.as[Json]
@@ -174,13 +173,13 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         before         <- refs.get
         events         <- response.body.through(ServerSentEvent.decoder[IO]).take(3).compile.toVector
         elapsed        <- IO.monotonic
-        read           <- app.run(connected(Method.GET, "", binding))
+        read           <- app.run(connected(Method.GET, suffix = "", binding))
         heartbeat      <- app.run(connected(Method.POST, "/heartbeat", binding))
-        renamed        <- app.run(connected(Method.PATCH, "", binding).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
+        renamed        <- app.run(connected(Method.PATCH, suffix = "", binding).withEntity(Json.obj("alias" -> Json.fromString("Mara"))))
         renamedBody    <- renamed.as[Json]
         invalidNames   <-
           Vector(Json.obj("alias" -> Json.fromString(" ")), Json.obj("alias" -> Json.fromInt(1)), Json.obj("extra" -> Json.True)).traverse(body =>
-            app.run(connected(Method.PATCH, "", binding).withEntity(body)).map(_.status)
+            app.run(connected(Method.PATCH, suffix = "", binding).withEntity(body)).map(_.status)
           )
         departure     <- app.run(connected(Method.DELETE, "/binding", binding))
         departureBody <- departure.as[Json]
@@ -209,14 +208,12 @@ final class EditorSessionApiSeamIntegrationTest extends CatsEffectSuite:
         assertEquals(response.contentType.map(_.mediaType), MediaType.`text/event-stream`.some)
         assertEquals(response.headers.get(CIString("Cache-Control")).map(_.head.value), "no-store".some)
         assertEquals(response.headers.get(CIString("X-Accel-Buffering")).map(_.head.value), "no".some)
-        assertEquals(
-          events,
-          Vector(
-            ServerSentEvent(data = binding.noSpaces.some, eventType = "bound".some),
-            ServerSentEvent(data = "{}".some, eventType = "ownership_changed".some),
-            ServerSentEvent(comment = "heartbeat".some)
-          )
+        val expectedEvents = Vector(
+          ServerSentEvent(data = binding.noSpaces.some, eventType = "bound".some),
+          ServerSentEvent(data = "{}".some, eventType = "ownership_changed".some),
+          ServerSentEvent(comment = "heartbeat".some)
         )
+        assertEquals(events, expectedEvents)
     }
 
   private case class Calls(

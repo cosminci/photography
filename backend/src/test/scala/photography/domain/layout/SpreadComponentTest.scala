@@ -38,10 +38,10 @@ class SpreadComponentTest extends FunSuite:
   test("should enable complete outer directions and derive reversible frames without changing saved geometry"):
     val enabled = spread.withBleed(enabled = true)
 
-    assertEquals(
-      enabled.map(_.photos.map(_.bleed)),
+    val bleedEdges    = enabled.map(_.photos.map(_.bleed))
+    val expectedEdges =
       Vector(Set(SpreadEdge.Top, SpreadEdge.Bottom, SpreadEdge.Left), Set(SpreadEdge.Top, SpreadEdge.Bottom, SpreadEdge.Right)).asRight[String]
-    )
+    assertEquals(bleedEdges, expectedEdges)
     assertEquals(enabled.map(_.photos.map(_.box)), Vector(left.box, right.box).asRight[String])
     assertEquals(left.visibleBox, left.contentBox)
     assertEquals(enabled.flatMap(_.withBleed(enabled = false)), (spread: Spread).asRight[String])
@@ -54,14 +54,13 @@ class SpreadComponentTest extends FunSuite:
     val rightLower = right.copy(id = PhotoSpreadSlotId(new UUID(0L, 9L)), box = SlotBox(x = 70.0, y = 50.5, width = 30.0, height = 49.5))
     val stacked    = spread.copy(photoSlots = NonEmptyList.of(upper, lower, inner, rightUpper, rightLower))
 
-    assertEquals(
-      stacked.withBleed(enabled = true).map(_.photos.map(_.bleed)),
+    val stackedBleedEdges    = stacked.withBleed(enabled = true).map(_.photos.map(_.bleed))
+    val expectedStackedEdges =
       Vector(Set(SpreadEdge.Left), Set(SpreadEdge.Left), Set.empty[SpreadEdge], Set(SpreadEdge.Right), Set(SpreadEdge.Right)).asRight[String]
-    )
-    assertEquals(
-      spread.copy(photoSlots = NonEmptyList.one(inner)).withBleed(enabled = true),
-      "This spread has no eligible outer photo slots.".asLeft[Spread]
-    )
+    assertEquals(stackedBleedEdges, expectedStackedEdges)
+    val innerBleedResult  = spread.copy(photoSlots = NonEmptyList.one(inner)).withBleed(enabled = true)
+    val expectedRejection = "This spread has no eligible outer photo slots.".asLeft[Spread]
+    assertEquals(innerBleedResult, expectedRejection)
 
   for (singleSide, single, outer) <- Vector((SpreadEdge.Left, left, right), (SpreadEdge.Right, right, left)) do
     test(s"should bleed only the full-height ${singleSide} photo opposite an outer stack"):
