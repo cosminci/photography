@@ -230,11 +230,12 @@ final class PhotosApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
     Vector(false, true).traverse_ { annotated =>
-      val maybeDate    = Option.when(annotated)(LocalDateTime.of(2026, 1, 2, 3, 4))
-      val maybeCaption = Option.when(annotated)("Ș 日本語\nSecond line")
-      val metadata     = PhotoMetadata(hash = "source-hash", maybeCapturedLocal = maybeDate, PhotoDimensions(width = 20, height = 30))
-      val thumbnail    = Thumbnail(location, version = "version", ThumbnailDimensions(width = 10, height = 15), ThumbnailQuality.Standard, bytes = 1)
-      val photo        = Photo(
+      val maybeDate         = Option.when(annotated)(LocalDateTime.of(2026, 1, 2, 3, 4))
+      val maybeCaption      = Option.when(annotated)("Ș 日本語\nSecond line")
+      val metadata          = PhotoMetadata(hash = "source-hash", maybeCapturedLocal = maybeDate, PhotoDimensions(width = 20, height = 30))
+      val thumbnailMetadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 10, height = 15), ThumbnailQuality.Standard, bytes = 1)
+      val thumbnail         = Thumbnail(location, version = "version", thumbnailMetadata.fold(message => fail(message), identity))
+      val photo             = Photo(
         PhotoId(new UUID(0L, 82L)),
         chapter,
         OriginalPhotoLocation(source = "/private/originals", filename = "one.jpg"),

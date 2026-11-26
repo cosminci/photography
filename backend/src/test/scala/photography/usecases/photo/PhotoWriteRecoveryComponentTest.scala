@@ -27,10 +27,12 @@ final class PhotoWriteRecoveryComponentTest extends CatsEffectSuite:
   private val old                                       = ThumbnailLocation(new UUID(0L, 5L))
   private val publication: PhotoWriteIntent.Publication =
     PhotoWriteIntent.Publication(writeId, chapter, photoId, fresh, maybePrevious = old.some)
-  private val retirement = PhotoWriteIntent.Retirement(writeId, chapter, photoId, old)
-  private val metadata   = PhotoMetadata(hash = "hash", maybeCapturedLocal = None, PhotoDimensions(width = 10, height = 10))
-  private val thumbnail  = Thumbnail(fresh, version = "v", ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
-  private val photo      =
+  private val retirement        = PhotoWriteIntent.Retirement(writeId, chapter, photoId, old)
+  private val metadata          = PhotoMetadata(hash = "hash", maybeCapturedLocal = None, PhotoDimensions(width = 10, height = 10))
+  private val thumbnailMetadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
+    .fold(message => fail(message), identity)
+  private val thumbnail = Thumbnail(fresh, version = "v", thumbnailMetadata)
+  private val photo     =
     Photo(photoId, chapter, OriginalPhotoLocation(source = "/photos", filename = "one.jpg"), metadata, thumbnail, maybeCaption = None)
   private val error = new RuntimeException("boundary failed")
 

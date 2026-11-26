@@ -17,8 +17,9 @@ import java.util.{HexFormat, UUID}
 final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
   private given Logger[IO] = Slf4jLogger.getLogger[IO]
   private val location     = ThumbnailLocation(new UUID(0L, 1L))
-  private val bytes        = Vector(1.toByte, 2.toByte).refineEither[ThumbnailBytesConstraint].fold(message => fail(message), identity)
-  private val image        = EncodedThumbnail(bytes, ThumbnailDimensions(width = 1, height = 2), ThumbnailQuality.Standard)
+  private val bytes        = Vector(1.toByte, 2.toByte)
+  private val image        = EncodedThumbnail.from(bytes, ThumbnailDimensions(width = 1, height = 2), ThumbnailQuality.Standard)
+    .fold(message => fail(message), identity)
 
   test("should store one exclusive thumbnail and idempotently remove only its final and partial artifacts"):
     buildDirectory.use: root =>
@@ -27,7 +28,7 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
       val partial  = root.resolve(s"${location.value}.tmp")
       val original = root.resolve("unrelated.jpg")
       val expected =
-        Thumbnail(location, version = "a12871fee210fb8619291eaea194581cbd2531e4b23759d225f6806923f63222", image.dimensions, image.quality, bytes = 2)
+        Thumbnail(location, version = "a12871fee210fb8619291eaea194581cbd2531e4b23759d225f6806923f63222", image.metadata)
 
       for
         stored    <- storage.storeThumbnail(location, image)
@@ -65,8 +66,8 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
     ThumbnailQuality.values.toVector.traverse_ { quality =>
       buildDirectory.use: root =>
         val dimensions = ThumbnailDimensions(width = quality.longestEdge, height = quality.longestEdge)
-        val content    = Vector.fill(quality.maximumBytes)(1.toByte).refineUnsafe[ThumbnailBytesConstraint]
-        val encoded    = EncodedThumbnail(bytes = content, dimensions = dimensions, quality = quality)
+        val content    = Vector.fill(quality.maximumBytes)(1.toByte)
+        val encoded    = EncodedThumbnail.from(bytes = content, dimensions = dimensions, quality = quality).fold(message => fail(message), identity)
         val version    = IO.blocking:
           val digest = MessageDigest.getInstance("SHA-256").digest(content.toArray)
           HexFormat.of().formatHex(digest).refineUnsafe[Not[Blank]]
@@ -76,48 +77,11 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
           stored <- FileThumbnailStorage.make[IO](root).storeThumbnail(location, encoded)
           actual <- IO.blocking(Files.readAllBytes(root.resolve(s"${location.value}.jpg")).toVector)
         yield
-          val expected = Thumbnail(location, version = hash, dimensions = dimensions, quality = quality, bytes = quality.maximumBytes)
+          val metadata = ThumbnailMetadata.from(dimensions, quality, bytes = quality.maximumBytes).fold(message => fail(message), identity)
+          val expected = Thumbnail(location, version = hash, metadata)
           assertEquals(stored, StoreResult.Stored(expected))
           assertEquals(actual, content: Vector[Byte])
     }
-
-  test("should reject values within global bounds that exceed the selected thumbnail preset"):
-    Vector(ThumbnailQuality.Low, ThumbnailQuality.Standard).foreach { quality =>
-      val dimensions         = ThumbnailDimensions(width = quality.longestEdge, height = quality.longestEdge)
-      val content            = Vector.fill(quality.maximumBytes)(1.toByte).refineUnsafe[ThumbnailBytesConstraint]
-      val encoded            = EncodedThumbnail(bytes = content, dimensions = dimensions, quality = quality)
-      val thumbnail          = Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = quality.maximumBytes)
-      val excessiveBytes     = (content :+ 1.toByte).refineUnsafe[ThumbnailBytesConstraint]
-      val excessiveCount     = (quality.maximumBytes + 1).refineUnsafe[ThumbnailByteCountConstraint]
-      val excessiveEdge      = (quality.longestEdge + 1).refineUnsafe[ThumbnailPixelCountConstraint]
-      def constructEncoded   = EncodedThumbnail(bytes = excessiveBytes, dimensions = dimensions, quality = quality)
-      def constructThumbnail = Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = excessiveCount)
-      def newEncoded         = new EncodedThumbnail(bytes = excessiveBytes, dimensions = dimensions, quality = quality)
-      def newThumbnail       = new Thumbnail(location, version = "version", dimensions = dimensions, quality = quality, bytes = excessiveCount)
-
-      val _ = intercept[IllegalArgumentException](constructEncoded)
-      val _ = intercept[IllegalArgumentException](thumbnail.copy(bytes = excessiveCount))
-      val _ = intercept[IllegalArgumentException](encoded.copy(bytes = excessiveBytes))
-      val _ = intercept[IllegalArgumentException](constructThumbnail)
-      Vector(dimensions.copy(width = excessiveEdge), dimensions.copy(height = excessiveEdge)).foreach { invalid =>
-        val _ = intercept[IllegalArgumentException](encoded.copy(dimensions = invalid))
-        val _ = intercept[IllegalArgumentException](thumbnail.copy(dimensions = invalid))
-      }
-      val _ = intercept[IllegalArgumentException](newEncoded)
-      val _ = intercept[IllegalArgumentException](newThumbnail)
-    }
-
-  test("should reject values above the high preset at the global refinement boundary"):
-    val quality        = ThumbnailQuality.High
-    val excessiveCount = quality.maximumBytes + 1
-    val excessiveBytes = Vector.fill(excessiveCount)(1.toByte)
-    val excessiveEdge  = quality.longestEdge + 1
-    val bytes          = excessiveBytes.refineEither[ThumbnailBytesConstraint]
-    val count          = excessiveCount.refineEither[ThumbnailByteCountConstraint]
-    val edge           = excessiveEdge.refineEither[ThumbnailPixelCountConstraint]
-    assert(bytes.isLeft)
-    assert(count.isLeft)
-    assert(edge.isLeft)
 
   test("should read the stored content version and distinguish absence from read failure"):
     buildDirectory.use: root =>
@@ -138,7 +102,7 @@ final class FileThumbnailStorageSeamIntegrationTest extends CatsEffectSuite:
         _           <- IO.blocking(Files.write(file, Array.fill[Byte](300001)(1)))
         excessive   <- storage.readThumbnail(location, version = version)
       yield
-        assertEquals(found, ReadResult.Read(bytes))
+        assertEquals(found, ReadResult.Read(image.bytes))
         assertEquals(Vector(absent, stale, missingRoot), Vector.fill(3)(ReadResult.NotFound))
         assertEquals(Vector(invalidRoot, relative, empty, excessive), Vector.fill(4)(ReadResult.Failed))
 

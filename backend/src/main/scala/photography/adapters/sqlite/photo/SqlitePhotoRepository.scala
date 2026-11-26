@@ -1,5 +1,6 @@
 package photography.adapters.sqlite.photo
 
+import cats.Show
 import cats.syntax.all.*
 import io.github.iltotore.iron.*
 import io.github.iltotore.iron.constraint.all.*
@@ -173,14 +174,21 @@ object SqlitePhotoRepository:
       case ThumbnailQuality.Standard => "standard"
       case ThumbnailQuality.High     => "high"
     }
-    private given Read[PhotoDimensions]     = Read[(PixelCount, PixelCount)].map(PhotoDimensions.apply.tupled)
-    private given Read[ThumbnailDimensions] = Read[(ThumbnailPixelCount, ThumbnailPixelCount)].map(ThumbnailDimensions.apply.tupled)
-    private given Read[PhotoMetadata]       =
+    private given Read[PhotoDimensions] = Read[(PixelCount, PixelCount)].map(PhotoDimensions.apply.tupled)
+    private given Read[PhotoMetadata]   =
       Read[(String :| Not[Blank], Option[LocalDateTime], PhotoDimensions)].map(PhotoMetadata.apply.tupled)
     private given Read[Thumbnail] =
-      Read[(UUID, String :| Not[Blank], ThumbnailDimensions, ThumbnailQuality, ThumbnailByteCount)].map:
-        case (location, version, dimensions, quality, bytes) =>
-          Thumbnail(ThumbnailLocation(location), version = version, dimensions, quality, bytes = bytes)
+      Read[(UUID, String :| Not[Blank], Long, Long, ThumbnailQuality, Long)].emap {
+        case (location, version, width, height, quality, bytes) =>
+          for
+            checkedWidth  <- thumbnailInt(width).flatMap(_.refineEither[ThumbnailPixelCountConstraint])
+            checkedHeight <- thumbnailInt(height).flatMap(_.refineEither[ThumbnailPixelCountConstraint])
+            checkedSize   <- thumbnailInt(bytes).flatMap(_.refineEither[ThumbnailByteCountConstraint])
+            metadata      <- ThumbnailMetadata.from(ThumbnailDimensions(checkedWidth, checkedHeight), quality, checkedSize)
+          yield Thumbnail(ThumbnailLocation(location), version = version, metadata)
+      }(using Show.fromToString)
+    private def thumbnailInt(raw: Long) =
+      Either.cond(raw.isValidInt, raw.toInt, "Stored thumbnail value exceeds integer range")
     private given Read[Photo] =
       Read[(UUID, UUID, PhotoSource, PhotoFilename, PhotoMetadata, Thumbnail, Option[String])].map:
         case (id, chapter, source, filename, metadata, thumbnail, maybeCaption) =>

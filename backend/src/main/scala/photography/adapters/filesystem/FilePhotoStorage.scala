@@ -32,7 +32,7 @@ object FilePhotoStorage:
 
   final private class LiveFilePhotoStorage[F[_]: Async] extends PhotoStorage[F]:
     override def discoverOriginals(source: PhotoSource): F[DiscoveryResult] =
-      resolveSource(source).blocking[F].flatMap: root =>
+      resolveSource(source).blocking[F].flatMap(_.liftTo[F]).flatMap: root =>
         Resource.fromAutoCloseable(Files.newDirectoryStream(root).blocking[F]).use: entries =>
           enumerate(root, entries = entries.iterator().asScala.toVector).blocking[F]
       .handleError(error => DiscoveryResult.Failed(error))
@@ -40,13 +40,13 @@ object FilePhotoStorage:
     override def readOriginal(location: OriginalPhotoLocation): F[ReadResult] =
       val read =
         for
-          path     <- resolveOriginal(location).blocking[F]
-          before   <- inspectOriginal(path).blocking[F]
+          path     <- resolveOriginal(location).blocking[F].flatMap(_.liftTo[F])
+          before   <- inspectOriginal(path)
           bytes    <- bufferOriginal(path)
           decoded  <- decodeOriginal(bytes = bytes).recover { case _: IOException | _: JpegProcessingException => ReadResult.Undecodable }
-          middle   <- inspectOriginal(path).blocking[F]
+          middle   <- inspectOriginal(path)
           repeated <- bufferOriginal(path)
-          after    <- inspectOriginal(path).blocking[F]
+          after    <- inspectOriginal(path)
           stable   <- (before === middle && middle === after && bytes === repeated).blocking[F]
         yield if stable then decoded else ReadResult.Unstable
       read.handleError(error => ReadResult.Failed(error))
@@ -64,21 +64,21 @@ object FilePhotoStorage:
       DiscoveryResult.Complete(originals = ordered, unsupportedCount = (regular.size - originals.size).refineUnsafe[GreaterEqual[0]])
 
     private def resolveSource(source: PhotoSource) =
-      val root = Path.of(source)
-      require(Files.readAttributes(root, classOf[BasicFileAttributes]).isDirectory, "Expected a photo directory")
-      root
+      val root        = Path.of(source)
+      val isDirectory = Files.readAttributes(root, classOf[BasicFileAttributes]).isDirectory
+      Either.cond(isDirectory, root, new IllegalArgumentException("requirement failed: Expected a photo directory"))
 
     private def resolveOriginal(location: OriginalPhotoLocation) =
-      val root = resolveSource(location.source)
-      val path = root.resolve(location.filename)
-      require(isJpeg(path), "Expected an original JPEG")
-      path
+      resolveSource(location.source).flatMap: root =>
+        val path = root.resolve(location.filename)
+        Either.cond(isJpeg(path), path, new IllegalArgumentException("requirement failed: Expected an original JPEG"))
 
     private def inspectOriginal(path: Path) =
-      val attributes = Files.readAttributes(path, classOf[BasicFileAttributes])
-      require(attributes.isRegularFile, "Expected a regular original")
-      val maybeFileKey = Option(attributes.fileKey())
-      (maybeFileKey, attributes.size(), attributes.lastModifiedTime().toString)
+      Async[F].blocking {
+        val attributes = Files.readAttributes(path, classOf[BasicFileAttributes])
+        val rejection  = new IllegalArgumentException("requirement failed: Expected a regular original")
+        Either.cond(attributes.isRegularFile, (Option(attributes.fileKey()), attributes.size(), attributes.lastModifiedTime().toString), rejection)
+      }.flatMap(_.liftTo[F])
 
     private def bufferOriginal(path: Path) =
       Resource.fromAutoCloseable(FileChannel.open(path, StandardOpenOption.READ).blocking[F])

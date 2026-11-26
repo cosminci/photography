@@ -28,14 +28,15 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
   private val metadata     = PhotoMetadata(hash = "original", maybeCapturedLocal = None, PhotoDimensions(width = 120, height = 80))
   private val content      = PhotoContent(Vector(1.toByte).refineEither[MinLength[1]].fold[PhotoBytes](message => fail(message), identity))
   private val encoded      = Vector(1.toByte).refineEither[ThumbnailBytesConstraint].fold[ThumbnailBytes](message => fail(message), identity)
-  private val image        = EncodedThumbnail(encoded, ThumbnailDimensions(width = 60, height = 40), ThumbnailQuality.Standard)
-  private val thumbnail    = Thumbnail(ThumbnailLocation(new UUID(0L, 3L)), version = "version", image.dimensions, image.quality, bytes = 1)
-  private val stored       = thumbnail.copy(location = ThumbnailLocation(new UUID(0L, 9L)))
-  private val existing     = Photo(PhotoId(new UUID(0L, 4L)), chapter, original, metadata, thumbnail, maybeCaption = "Retained".some)
-  private val complete     = PhotoStorage.DiscoveryResult.Complete(Vector(original), unsupportedCount = 2)
-  private val absent       = PhotoStorage.DiscoveryResult.Complete(Vector.empty[OriginalPhotoLocation], unsupportedCount = 0)
-  private val read         = PhotoStorage.ReadResult.Read(content, metadata)
-  private val error        = new RuntimeException("boundary failed")
+  private val image        = EncodedThumbnail.from(encoded, ThumbnailDimensions(width = 60, height = 40), ThumbnailQuality.Standard)
+    .fold(message => fail(message), identity)
+  private val thumbnail = Thumbnail(ThumbnailLocation(new UUID(0L, 3L)), version = "version", image.metadata)
+  private val stored    = thumbnail.copy(location = ThumbnailLocation(new UUID(0L, 9L)))
+  private val existing  = Photo(PhotoId(new UUID(0L, 4L)), chapter, original, metadata, thumbnail, maybeCaption = "Retained".some)
+  private val complete  = PhotoStorage.DiscoveryResult.Complete(Vector(original), unsupportedCount = 2)
+  private val absent    = PhotoStorage.DiscoveryResult.Complete(Vector.empty[OriginalPhotoLocation], unsupportedCount = 0)
+  private val read      = PhotoStorage.ReadResult.Read(content, metadata)
+  private val error     = new RuntimeException("boundary failed")
 
   test("should read the complete individual photo and distinguish missing, rejected and unavailable repository reads"):
     val cases = Vector(
@@ -133,7 +134,9 @@ final class PhotoManagerComponentTest extends CatsEffectSuite:
           "transaction",
           "resolve"
         )
-        val previous = existing.copy(thumbnail = thumbnail.copy(quality = previousQuality))
+        val previousMetadata = ThumbnailMetadata.from(thumbnail.dimensions, previousQuality, bytes = thumbnail.bytes)
+          .fold(message => fail(message), identity)
+        val previous = existing.copy(thumbnail = thumbnail.copy(metadata = previousMetadata))
         val manager  = buildManager(
           refs,
           readResult = PhotoStorage.ReadResult.Read(content, changed).pure[IO],

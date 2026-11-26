@@ -104,7 +104,7 @@ object ImageIoPhotoThumbnailGenerator:
               height = image.getHeight.refineUnsafe[ThumbnailPixelCountConstraint]
             )
             validateThumbnail(bytes = bytes.toByteArray.toVector, dimensions)
-          }.blocking[F]
+          }.blocking[F].flatMap(_.leftMap(new IllegalArgumentException(_)).liftTo[F])
 
     private def writeJpeg(image: BufferedImage, output: MemoryCacheImageOutputStream, compression: Int) =
       val acquire = ImageIO.getImageWritersByFormatName("jpeg").asScala.nextOption().flatMap(Option(_))
@@ -121,8 +121,7 @@ object ImageIoPhotoThumbnailGenerator:
         }.blocking[F]
 
     private def validateThumbnail(bytes: Vector[Byte], dimensions: ThumbnailDimensions) =
-      Option.when(bytes.sizeIs <= quality.maximumBytes):
-        EncodedThumbnail(bytes = bytes.refineUnsafe[ThumbnailBytesConstraint], dimensions, quality)
+      Option.when(bytes.sizeIs <= quality.maximumBytes)(bytes).traverse(EncodedThumbnail.from(_, dimensions, quality))
 
     private def isExpectedFailure(error: Throwable) =
       isImageFailure(error) && error.getSuppressed.forall(isImageFailure)

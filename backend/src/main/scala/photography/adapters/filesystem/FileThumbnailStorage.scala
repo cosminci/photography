@@ -28,7 +28,8 @@ object FileThumbnailStorage:
           bytes  <- image.bytes.toArray.blocking[F]
           _      <- checkRoot().liftTo[F]
           _      <- Files.createDirectories(root).blocking[F]
-          _      <- require(!Files.exists(target), "Thumbnail location already exists").blocking[F]
+          exists <- Files.exists(target).blocking[F]
+          _      <- Async[F].raiseWhen(exists)(new IllegalArgumentException("requirement failed: Thumbnail location already exists"))
           _      <- Files.write(partial, bytes, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).blocking[F]
           _      <- force(partial, StandardOpenOption.WRITE)
           _      <- Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE).blocking[F]
@@ -36,8 +37,7 @@ object FileThumbnailStorage:
           digest <- computeVersion(bytes).blocking[F]
         yield digest
       write.map: version =>
-        val size = image.bytes.size.refineUnsafe[ThumbnailByteCountConstraint]
-        StoreResult.Stored(Thumbnail(location, version = version, dimensions = image.dimensions, quality = image.quality, bytes = size))
+        StoreResult.Stored(Thumbnail(location, version = version, image.metadata))
       .handleError(error => StoreResult.Failed(error))
 
     override def readThumbnail(location: ThumbnailLocation, version: String :| Not[Blank]): F[ReadResult] =

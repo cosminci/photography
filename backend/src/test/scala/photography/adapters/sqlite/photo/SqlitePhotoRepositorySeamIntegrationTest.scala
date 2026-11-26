@@ -39,14 +39,15 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
   private val location = ThumbnailLocation(new UUID(0L, 4L))
   private val metadata =
     PhotoMetadata(hash = "hash", maybeCapturedLocal = LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123456789).some, PhotoDimensions(width = 10, height = 20))
-  private val thumbnail = Thumbnail(location, version = "version", ThumbnailDimensions(width = 5, height = 10), ThumbnailQuality.Standard, bytes = 1)
+  private val thumbnailMetadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 5, height = 10), ThumbnailQuality.Standard, bytes = 1)
+    .fold(message => fail(message), identity)
+  private val thumbnail = Thumbnail(location, version = "version", thumbnailMetadata)
   private val photo     =
     Photo(photoId, chapter, OriginalPhotoLocation(source = "/photos", filename = "one.jpg"), metadata, thumbnail, maybeCaption = "caption".some)
   private val publication = PhotoWriteIntent.Publication(writeId, chapter, photoId, location, maybePrevious = none[ThumbnailLocation])
   private val retirement  = PhotoWriteIntent.Retirement(writeId, chapter, photoId, location)
   private val content     = PhotoContent(Vector(1.toByte).refineEither[MinLength[1]].fold(message => fail(message), identity))
-  private val imageBytes  = Vector(1.toByte).refineEither[ThumbnailBytesConstraint].fold(message => fail(message), identity)
-  private val image       = EncodedThumbnail(imageBytes, thumbnail.dimensions, thumbnail.quality)
+  private val image       = EncodedThumbnail.from(Vector(1.toByte), thumbnail.dimensions, thumbnail.quality).fold(message => fail(message), identity)
 
   test("should retain current authored captions when a stale import snapshot updates every source and thumbnail field"):
     buildDatabase.use: path =>
@@ -54,15 +55,15 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
       val placements = sql"""SELECT id, photo_id, kind, spread_photo_slot_id, cover_slot_id, shift_x, shift_y, mirrored, zoom, caption_corner
         FROM placement ORDER BY id""".query[(String, String, String, Option[String], Option[String], Double, Double, Int, Double, Option[String])]
         .to[Vector]
+      val replacementMetadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 15, height = 20), ThumbnailQuality.High, bytes = 12)
+        .fold(message => fail(message), identity)
       val replacement = photo.copy(
         original = photo.original.copy(filename = "changed.jpg"),
         metadata = metadata.copy(hash = "new hash", maybeCapturedLocal = none[LocalDateTime], dimensions = PhotoDimensions(width = 30, height = 40)),
         thumbnail = thumbnail.copy(
           location = ThumbnailLocation(new UUID(0L, 10L)),
           version = "new version",
-          dimensions = ThumbnailDimensions(width = 15, height = 20),
-          quality = ThumbnailQuality.High,
-          bytes = 12
+          metadata = replacementMetadata
         )
       )
 
@@ -178,10 +179,12 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   test("should retain complete photos and write evidence across database reopening"):
     buildDatabase.use: path =>
-      val repository  = SqlitePhotoRepository.make
+      val repository          = SqlitePhotoRepository.make
+      val replacementMetadata = ThumbnailMetadata.from(thumbnail.dimensions, ThumbnailQuality.Low, bytes = thumbnail.bytes)
+        .fold(message => fail(message), identity)
       val replacement = photo.copy(
         metadata = metadata.copy(hash = "edited", maybeCapturedLocal = none[LocalDateTime]),
-        thumbnail = thumbnail.copy(location = ThumbnailLocation(new UUID(0L, 10L)), quality = ThumbnailQuality.Low)
+        thumbnail = thumbnail.copy(location = ThumbnailLocation(new UUID(0L, 10L)), metadata = replacementMetadata)
       )
 
       val persist = buildTransactor(path).use: xa =>
@@ -239,7 +242,8 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
         val otherChapter   = ChapterId(new UUID(0L, 9L))
         val insertChapter  = sql"INSERT INTO chapter VALUES (${otherChapter.value}, 'a', 'Trip', '', 0, 1, 1, '/other')"
         val checkQualities = ThumbnailQuality.values.toVector.traverse_ { quality =>
-          val complete = photo.copy(thumbnail = thumbnail.copy(quality = quality))
+          val checked  = ThumbnailMetadata.from(thumbnail.dimensions, quality, bytes = thumbnail.bytes).fold(message => fail(message), identity)
+          val complete = photo.copy(thumbnail = thumbnail.copy(metadata = checked))
           (repository.save(complete) >> repository.listChapter(chapter)).transact(xa)
             .map(actual => assertEquals(actual, ListResult.Listed(photos = Vector(complete))))
         }
@@ -260,7 +264,9 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
       sql"UPDATE photo SET captured_local = '2026-02-30T00:00:00.000000000'",
       sql"UPDATE photo SET captured_local = 'not-a-date'",
       sql"UPDATE photo SET thumbnail_quality = 'low', thumbnail_width = 1025",
-      sql"UPDATE photo SET thumbnail_quality = 'standard', thumbnail_height = 1537"
+      sql"UPDATE photo SET thumbnail_quality = 'standard', thumbnail_height = 1537",
+      sql"UPDATE photo SET thumbnail_width = 4294967297",
+      sql"UPDATE photo SET thumbnail_quality = 'low', thumbnail_bytes = 75001"
     )
       .traverse_ { corrupt =>
         buildDatabase.use: path =>
@@ -268,7 +274,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
             val repository = SqlitePhotoRepository.make
 
             for
-              _      <- (seed >> repository.save(photo) >> corrupt.update.run).transact(xa)
+              _      <- (seed >> repository.save(photo) >> sql"PRAGMA ignore_check_constraints = ON".update.run >> corrupt.update.run).transact(xa)
               result <- repository.listChapter(chapter).transact(xa).attempt
             yield assert(result.isLeft)
       }
@@ -471,7 +477,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
           assertEquals(pending, ListUnfinishedWritesResult.Listed(intents = Vector.empty[PhotoWriteIntent]))
           assertEquals(listed, ListResult.Listed(photos = Vector(photo)))
           assertEquals((finalExists, partialExists), (false, false))
-          assertEquals(oldBytes.toVector, imageBytes: Vector[Byte])
+          assertEquals(oldBytes.toVector, image.bytes: Vector[Byte])
           assertEquals(unrelated.toVector, Vector(7.toByte))
     }
 
@@ -482,7 +488,7 @@ final class SqlitePhotoRepositorySeamIntegrationTest extends CatsEffectSuite:
 
   private def buildGenerator =
     new PhotoThumbnailGenerator[IO]:
-      override def quality: ThumbnailQuality                                                   = image.quality
+      override def quality: ThumbnailQuality                                                   = image.metadata.quality
       override def generate(bytes: PhotoContent): IO[PhotoThumbnailGenerator.GenerationResult] =
         PhotoThumbnailGenerator.GenerationResult.Generated(image).pure[IO]
 

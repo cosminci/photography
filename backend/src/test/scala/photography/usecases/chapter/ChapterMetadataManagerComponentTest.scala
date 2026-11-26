@@ -67,7 +67,8 @@ final class ChapterMetadataManagerComponentTest extends CatsEffectSuite:
   private val photo      =
     val metadata  = PhotoMetadata(hash = "source", maybeCapturedLocal = None, PhotoDimensions(width = 10, height = 10))
     val thumbnail =
-      Thumbnail(ThumbnailLocation(buildUuid(index = 90)), version = "v", ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
+      val metadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
+      Thumbnail(ThumbnailLocation(buildUuid(index = 90)), version = "v", metadata.fold(message => fail(message), identity))
     val photoId  = PhotoId(buildUuid(index = 91))
     val original = OriginalPhotoLocation(chapter.sourceFolder, filename = "one.jpg")
     Photo(photoId, chapter.id, original, metadata, thumbnail, maybeCaption = None)

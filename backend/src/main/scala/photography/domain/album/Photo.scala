@@ -47,7 +47,10 @@ object ThumbnailLocation:
   def apply(value: UUID): ThumbnailLocation               = value
   extension (location: ThumbnailLocation) def value: UUID = location
 
-final case class ThumbnailDimensions(width: ThumbnailPixelCount, height: ThumbnailPixelCount)
+sealed abstract case class ThumbnailDimensions(width: ThumbnailPixelCount, height: ThumbnailPixelCount)
+
+object ThumbnailDimensions:
+  def apply(width: ThumbnailPixelCount, height: ThumbnailPixelCount): ThumbnailDimensions = new ThumbnailDimensions(width, height) {}
 
 enum ThumbnailQuality(val longestEdge: ThumbnailPixelCount, val maximumBytes: ThumbnailByteCount):
   case Low      extends ThumbnailQuality(longestEdge = 1024, maximumBytes = 75000)
@@ -60,14 +63,28 @@ enum ThumbnailQuality(val longestEdge: ThumbnailPixelCount, val maximumBytes: Th
 object ThumbnailQuality:
   given Eq[ThumbnailQuality] = Eq.by(_.ordinal)
 
-final case class EncodedThumbnail(bytes: ThumbnailBytes, dimensions: ThumbnailDimensions, quality: ThumbnailQuality):
-  require(quality.accepts(dimensions, bytes = bytes.size), "Thumbnail exceeds its quality preset")
+sealed abstract case class ThumbnailMetadata(dimensions: ThumbnailDimensions, quality: ThumbnailQuality, bytes: ThumbnailByteCount)
+
+object ThumbnailMetadata:
+  def from(dimensions: ThumbnailDimensions, quality: ThumbnailQuality, bytes: ThumbnailByteCount): Either[String, ThumbnailMetadata] =
+    val fitsPreset = quality.accepts(dimensions, bytes = bytes)
+    Either.cond(fitsPreset, new ThumbnailMetadata(dimensions, quality, bytes) {}, "Thumbnail exceeds its quality preset")
+
+sealed abstract case class EncodedThumbnail(bytes: ThumbnailBytes, metadata: ThumbnailMetadata)
+
+object EncodedThumbnail:
+  def from(bytes: Vector[Byte], dimensions: ThumbnailDimensions, quality: ThumbnailQuality): Either[String, EncodedThumbnail] =
+    for
+      content  <- bytes.refineEither[ThumbnailBytesConstraint]
+      size     <- content.size.refineEither[ThumbnailByteCountConstraint]
+      metadata <- ThumbnailMetadata.from(dimensions, quality, bytes = size)
+    yield new EncodedThumbnail(content, metadata) {}
 
 final case class Thumbnail(
     location: ThumbnailLocation,
     version: String :| Not[Blank],
-    dimensions: ThumbnailDimensions,
-    quality: ThumbnailQuality,
-    bytes: ThumbnailByteCount
+    metadata: ThumbnailMetadata
 ):
-  require(quality.accepts(dimensions, bytes = bytes), "Thumbnail exceeds its quality preset")
+  def dimensions: ThumbnailDimensions = metadata.dimensions
+  def quality: ThumbnailQuality       = metadata.quality
+  def bytes: ThumbnailByteCount       = metadata.bytes

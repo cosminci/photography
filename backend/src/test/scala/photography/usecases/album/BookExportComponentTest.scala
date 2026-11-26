@@ -34,10 +34,12 @@ final class BookExportComponentTest extends CatsEffectSuite:
   private given Transaction[IO, IO] with
     override def run[A](program: IO[A]): IO[A]     = program
     override def resolve[A](program: IO[A]): IO[A] = fail("Export must not resolve writes")
-  private val chapterId = ChapterId(new UUID(0L, 2L))
-  private val original  = OriginalPhotoLocation(source = "/photos/trip", filename = "one.jpg")
-  private val metadata  = PhotoMetadata(hash = "original", maybeCapturedLocal = None, PhotoDimensions(width = 16000, height = 12000))
-  private val thumbnail = Thumbnail(ThumbnailLocation(new UUID(0L, 3L)), "version", ThumbnailDimensions(60, 40), ThumbnailQuality.Standard, bytes = 1)
+  private val chapterId         = ChapterId(new UUID(0L, 2L))
+  private val original          = OriginalPhotoLocation(source = "/photos/trip", filename = "one.jpg")
+  private val metadata          = PhotoMetadata(hash = "original", maybeCapturedLocal = None, PhotoDimensions(width = 16000, height = 12000))
+  private val thumbnailMetadata = ThumbnailMetadata.from(ThumbnailDimensions(60, 40), ThumbnailQuality.Standard, bytes = 1)
+    .fold(message => fail(message), identity)
+  private val thumbnail = Thumbnail(ThumbnailLocation(new UUID(0L, 3L)), "version", thumbnailMetadata)
   private val photos    = Vector(1, 2, 3, 4).map: index =>
     Photo(PhotoId(new UUID(1L, index.toLong)), chapterId, original, metadata, thumbnail, maybeCaption = None)
   private val box       = SlotBox(x = 1.0, y = 1.0, width = 40.0, height = 90.0)

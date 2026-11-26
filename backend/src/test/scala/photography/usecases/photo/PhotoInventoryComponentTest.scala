@@ -20,7 +20,8 @@ final class PhotoInventoryComponentTest extends CatsEffectSuite:
   private val chapter      = ChapterId(new UUID(0L, 1L))
   private val metadata     = PhotoMetadata(hash = "hash", maybeCapturedLocal = None, PhotoDimensions(width = 10, height = 10))
   private val thumbnail    =
-    Thumbnail(ThumbnailLocation(new UUID(0L, 2L)), version = "v", ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
+    val metadata = ThumbnailMetadata.from(ThumbnailDimensions(width = 5, height = 5), ThumbnailQuality.Low, bytes = 1)
+    Thumbnail(ThumbnailLocation(new UUID(0L, 2L)), version = "v", metadata.fold(message => fail(message), identity))
   private val photo =
     Photo(PhotoId(new UUID(0L, 3L)), chapter, OriginalPhotoLocation(source = "/photos", filename = "z.jpg"), metadata, thumbnail, maybeCaption = None)
 
