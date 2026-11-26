@@ -78,14 +78,18 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
           _ <- insertChapter
           _ <- sql"INSERT INTO chapter_country VALUES ($chapter, ${country.id.value}, 0), ($nextChapter, ${country.id.value}, 0)".update.run
         yield country
+      val misalignPeriod = sql"UPDATE chapter SET position = 0, end_ms = end_ms + 1 WHERE id = $chapter".update.run
+      val restorePeriod  = sql"UPDATE chapter SET end_ms = end_ms - 1 WHERE id = $chapter".update.run
       for
-        _            <- repository.create(album, buildCover(album))
-        country      <- saveMetadata.transact(xa)
-        chapters     <- repository.chapters(album.id)
-        planning     <- repository.readPlanning(album.id)
-        _            <- sql"UPDATE chapter SET position = -1 WHERE id = $chapter".update.run.transact(xa)
-        invalidOrder <- repository.chapters(album.id)
-        _ <- (sql"UPDATE chapter SET position = 0 WHERE id = $chapter".update.run >> sql"DELETE FROM chapter_country".update.run).transact(xa)
+        _                <- repository.create(album, buildCover(album))
+        country          <- saveMetadata.transact(xa)
+        chapters         <- repository.chapters(album.id)
+        planning         <- repository.readPlanning(album.id)
+        _                <- sql"UPDATE chapter SET position = -1 WHERE id = $chapter".update.run.transact(xa)
+        invalidOrder     <- repository.chapters(album.id)
+        _                <- misalignPeriod.transact(xa)
+        invalidPeriod    <- repository.chapters(album.id)
+        _                <- (restorePeriod >> sql"DELETE FROM chapter_country".update.run).transact(xa)
         missingCountries <- repository.chapters(album.id)
       yield
         val expected = ChapterMetadata(
@@ -105,6 +109,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         assertEquals(chapters, ChaptersResult.Found(ordered))
         assertEquals(planning, PlanningResult.Found(PlanningSnapshot(album.year, ordered, 1)))
         assertEquals(invalidOrder, ChaptersResult.Failed(Failure.DatabaseFailure))
+        assertEquals(invalidPeriod, ChaptersResult.Failed(Failure.DatabaseFailure))
         assertEquals(missingCountries, ChaptersResult.Failed(Failure.DatabaseFailure))
 
   test("should persist the initial album and its Cover while field edits preserve year and opening geometry"):
