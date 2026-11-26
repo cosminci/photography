@@ -308,7 +308,9 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
             order = NonEmptyList.of(first.id, second.id)
           ),
           (
-            chapter = second.copy(opening = second.opening.copy(textSlot = second.opening.textSlot.copy(box = SlotBox(0.0, 0.0, 100.0, 100.0)))),
+            chapter = second.copy(opening =
+              second.opening.copy(textSlot = second.opening.textSlot.copy(box = SlotBox(x = 0.0, y = 0.0, 100.0, 100.0)))
+            ),
             order = NonEmptyList.of(first.id, second.id)
           ),
           (chapter = second, order = NonEmptyList.one(second.id)),
@@ -401,7 +403,7 @@ final class SqliteChapterRepositorySeamIntegrationTest extends CatsEffectSuite:
         }
         val text    = SpreadSlot.Text(TextSpreadSlotId(new UUID(4L, 11L)), template.textSlot)
         val opening = Spread.AlbumStart(SpreadId(new UUID(4L, 10L)), template.id, slots, text, Vector.empty[SpreadPlacement])
-        val initial = Album(album, 2026, "Album", "", Author.all, Instant.EPOCH, opening, Vector.empty[Chapter])
+        val initial = Album(album, 2026, "Album", synopsis = "", Author.all, Instant.EPOCH, opening, Vector.empty[Chapter])
         val cover   = Cover(album, SpineOwner.Front, CoverSlot(CoverSlotId(new UUID(4L, 12L))), CoverSlot(CoverSlotId(new UUID(4L, 13L))))
         for
           saved <- SqliteAlbumRepository.make[IO](xa).create(initial, cover)

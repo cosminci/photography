@@ -32,7 +32,8 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
     val suspendedChapter          = ChapterId(new UUID(0L, 3L))
     val secondSource: PhotoSource = "/photos/b"
     (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (mutex, entered, release) =>
-      val pending = entered.complete(()).void >> release.get.as(PhotoManager.RefreshResult(0, Vector(PhotoManager.Issue.Discovery)))
+      val pending = entered.complete(()).void >>
+        release.get.as(PhotoManager.RefreshResult(unsupportedCount = 0, Vector(PhotoManager.Issue.Discovery)))
       val replies = Ref.unsafe[IO, Vector[IO[PhotoManager.RefreshResult]]](Vector(pending, finished.pure[IO]))
       val refresh = replies.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unarranged reconciliation"))).flatten
       val program = buildImport(refs, refresh)(using mutex).use { imports =>

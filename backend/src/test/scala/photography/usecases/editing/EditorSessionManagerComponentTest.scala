@@ -472,12 +472,12 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
               val expectedResults = (SelectResult.Owned(expectedLock, revision), SelectResult.Blocked(owner, alias, 30.seconds, revision))
               assertEquals(results, expectedResults)
               assertEquals(firstState, ReadTargetResult.Current(revision, expectedLock.some))
-              assertEquals(secondState, ReadTargetResult.Current(revision, None))
+              assertEquals(secondState, ReadTargetResult.Current(revision, maybeLock = None))
             case (_, SelectResult.Owned(lock, _)) =>
               val expectedLock    = EditingLock(target, second.session, lock.grant, 30.seconds)
               val expectedResults = (SelectResult.Blocked(otherOwner, otherAlias, 30.seconds, revision), SelectResult.Owned(expectedLock, revision))
               assertEquals(results, expectedResults)
-              assertEquals(firstState, ReadTargetResult.Current(revision, None))
+              assertEquals(firstState, ReadTargetResult.Current(revision, maybeLock = None))
               assertEquals(secondState, ReadTargetResult.Current(revision, expectedLock.some))
             case _ => fail(s"Expected one exact owner and one public contender: $results, $firstState, $secondState")
       }
@@ -506,7 +506,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(lateSelect, SelectResult.Rejected(Failure.StaleTransition))
       assertEquals(lateRelease, ReleaseResult.Rejected(Failure.StaleTransition))
       assertEquals(oldRenewal, RenewTargetResult.Rejected(Failure.StaleGrant))
-      assertEquals(current, ReadTargetResult.Current(revision, None))
+      assertEquals(current, ReadTargetResult.Current(revision, maybeLock = None))
       assertEquals(acquired.target, firstTarget)
       assertNotEquals(original.grant, acquired.grant)
 
@@ -531,7 +531,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       yield
         val expiredRevision = TargetRevision.initial.next.next
         val freshRevision   = expiredRevision.next
-        assertEquals(expired, ReadTargetResult.Current(expiredRevision, None))
+        assertEquals(expired, ReadTargetResult.Current(expiredRevision, maybeLock = None))
         assertEquals(late, SelectResult.Rejected(Failure.StaleTransition))
         assertEquals(renewed, RenewTargetResult.Rejected(Failure.StaleGrant))
         assertNotEquals(original.grant, fresh.grant)
@@ -589,7 +589,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
       assertEquals(released, ReleaseResult.Released(TargetRevision.initial.next.next))
       assertEquals(replay, ReleaseResult.Rejected(Failure.StaleTransition))
-      assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+      assertEquals(retained, ReadTargetResult.Current(TargetRevision.initial.next.next, maybeLock = None))
 
   test("should reconcile lost target acknowledgements without replaying obsolete transitions"):
     val target              = EditingTarget.Spread(SpreadId(new UUID(0L, 10L)))
@@ -615,7 +615,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
       assertEquals(reconciled, ReadTargetResult.Current(TargetRevision.initial.next, lock.some))
       assertEquals(replay, SelectResult.Rejected(Failure.StaleTransition))
       assertEquals(unknownRelease, lostAcknowledgement.asLeft[ReleaseResult])
-      assertEquals(released, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+      assertEquals(released, ReadTargetResult.Current(TargetRevision.initial.next.next, maybeLock = None))
       assertNotEquals(lock.grant, replacement.grant)
       assertEquals(lateRelease, ReleaseResult.Rejected(Failure.StaleTransition))
       assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next.next, replacement.some))
@@ -735,7 +735,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
             assertEquals(revision, TargetRevision.initial.next)
             assertNotEquals(acquired.grant, lock.grant)
           case _ => fail(s"Expected expired renewal and a fresh acquisition: $results")
-        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, maybeLock = None))
     }
 
   test("should reject acquisition when identity generation crosses the live session deadline"):
@@ -781,7 +781,7 @@ final class EditorSessionManagerComponentTest extends CatsEffectSuite:
         current    <- manager.readTarget(connection)
       yield
         assertEquals(result, SelectResult.Rejected(Failure.StaleTransition))
-        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, None))
+        assertEquals(current, ReadTargetResult.Current(TargetRevision.initial.next.next, maybeLock = None))
     }
 
   test("should preserve the original target and error when replacement identity generation fails"):

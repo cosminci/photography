@@ -121,20 +121,18 @@ final class BookExportComponentTest extends CatsEffectSuite:
             assertEquals(json.hcursor.get[Vector[Json]]("warnings"), Vector.empty[Json].asRight[DecodingFailure])
             assertEquals(schemaViolations, Vector.empty)
           case other => fail(s"Expected validated artifact, got $other")
-        assertEquals(
-          reads,
-          Vector(
-            Read.Metadata(album.id),
-            Read.Chapters(album.id),
-            Read.Composition(album.id),
-            Read.Spread(album.id, opening.id),
-            Read.Spread(album.id, chapterOpening.id),
-            Read.Gear(album.id, chapterId),
-            Read.Cover(album.id),
-            Read.Photos(chapterId),
-            Read.Catalog
-          )
+        val expectedReads = Vector(
+          Read.Metadata(album.id),
+          Read.Chapters(album.id),
+          Read.Composition(album.id),
+          Read.Spread(album.id, opening.id),
+          Read.Spread(album.id, chapterOpening.id),
+          Read.Gear(album.id, chapterId),
+          Read.Cover(album.id),
+          Read.Photos(chapterId),
+          Read.Catalog
         )
+        assertEquals(reads, expectedReads)
 
   test("should aggregate missing content across the entire book before publishing"):
     Ref.of[IO, Vector[Read]](Vector.empty).flatMap: calls =>
@@ -206,32 +204,25 @@ final class BookExportComponentTest extends CatsEffectSuite:
           val chapters = json.hcursor.get[Vector[Json]]("chapters")
           val spreads  = json.hcursor.downField("interior").get[Vector[Json]]("spreads")
           assertEquals(filename, "album-2025-indesign.json")
-          assertEquals(
-            chapters.flatMap(_.traverse(_.hcursor.get[String]("id"))),
-            Vector(nextChapterId, chapterId).map(_.value.toString).asRight[DecodingFailure]
-          )
+          val chapterIds         = chapters.flatMap(_.traverse(_.hcursor.get[String]("id")))
+          val expectedChapterIds = Vector(nextChapterId, chapterId).map(_.value.toString).asRight[DecodingFailure]
+          assertEquals(chapterIds, expectedChapterIds)
           assertEquals(chapters.flatMap(_.traverse(_.hcursor.get[String]("name"))), Vector("Coast", "Hội An").asRight[DecodingFailure])
-          assertEquals(
-            chapters.flatMap(_.traverse(_.hcursor.get[String]("description"))),
-            Vector("Coast description", "Retained Ș description").asRight[DecodingFailure]
-          )
-          assertEquals(
-            chapters.flatMap(_.traverse(_.hcursor.get[String]("opening"))),
-            Vector(nextChapter.opening.id, chapterOpening.id).map(_.value.toString).asRight[DecodingFailure]
-          )
-          assertEquals(
-            chapters.flatMap(_.traverse(_.hcursor.downField("gear").downN(0).get[String]("cameraId"))),
-            Vector(phone.id, camera.id).map(_.value.toString).asRight[DecodingFailure]
-          )
-          assertEquals(
-            chapters.flatMap(_.traverse(_.hcursor.downField("gear").downN(0).get[Vector[String]]("lensIds"))),
-            Vector(Vector.empty[String], Vector(lens.id.value.toString)).asRight[DecodingFailure]
-          )
+          val descriptions         = chapters.flatMap(_.traverse(_.hcursor.get[String]("description")))
+          val expectedDescriptions = Vector("Coast description", "Retained Ș description").asRight[DecodingFailure]
+          assertEquals(descriptions, expectedDescriptions)
+          val openingIds         = chapters.flatMap(_.traverse(_.hcursor.get[String]("opening")))
+          val expectedOpeningIds = Vector(nextChapter.opening.id, chapterOpening.id).map(_.value.toString).asRight[DecodingFailure]
+          assertEquals(openingIds, expectedOpeningIds)
+          val cameraIds         = chapters.flatMap(_.traverse(_.hcursor.downField("gear").downN(0).get[String]("cameraId")))
+          val expectedCameraIds = Vector(phone.id, camera.id).map(_.value.toString).asRight[DecodingFailure]
+          assertEquals(cameraIds, expectedCameraIds)
+          val lensIds         = chapters.flatMap(_.traverse(_.hcursor.downField("gear").downN(0).get[Vector[String]]("lensIds")))
+          val expectedLensIds = Vector(Vector.empty[String], Vector(lens.id.value.toString)).asRight[DecodingFailure]
+          assertEquals(lensIds, expectedLensIds)
           assertEquals(spreads.flatMap(_.traverse(_.hcursor.get[String]("id"))), expectedSpreads.asRight[DecodingFailure])
-          assertEquals(
-            spreads.flatMap(_.traverse(_.hcursor.downField("placements").downN(0).get[String]("photo"))),
-            expectedPhotos.asRight[DecodingFailure]
-          )
+          val placedPhotos = spreads.flatMap(_.traverse(_.hcursor.downField("placements").downN(0).get[String]("photo")))
+          assertEquals(placedPhotos, expectedPhotos.asRight[DecodingFailure])
           assertEquals(json.hcursor.downField("interior").get[Long]("pageCount"), 10L.asRight[DecodingFailure])
           assertEquals(json.hcursor.downField("interior").downField("spreads").downN(2).get[String]("kind"), "photos".asRight[DecodingFailure])
         case other => fail(s"Expected validated photo spread, got $other")

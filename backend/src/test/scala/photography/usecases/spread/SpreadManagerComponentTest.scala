@@ -428,14 +428,12 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
         assertEquals(read, PlacementReadResult.Found(populated))
         assertEquals(removed, PlacementResult.Saved(target))
         assertEquals(describePlacementResult(fresh), Vector(expected.copy(id = SpreadPlacementId(buildUuid(index = 1001L)))))
-        assertEquals(
-          writes,
-          Vector(
-            target.id -> Vector(expected),
-            target.id -> Vector.empty[SpreadPlacement],
-            target.id -> Vector(expected.copy(id = SpreadPlacementId(buildUuid(index = 1001L))))
-          )
+        val expectedWrites = Vector(
+          target.id -> Vector(expected),
+          target.id -> Vector.empty[SpreadPlacement],
+          target.id -> Vector(expected.copy(id = SpreadPlacementId(buildUuid(index = 1001L))))
         )
+        assertEquals(writes, expectedWrites)
     }
 
   test("should adjust, move, swap and replace while retaining slot geometry and photo transforms"):
@@ -475,17 +473,15 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(replaced, PlacementResult.Saved(firstOccupied.copy(placements = Vector(movedSource, incoming))))
       assertEquals(removed, PlacementResult.Saved(firstOccupied.copy(placements = Vector(movedSource))))
       assertEquals(movedToEmpty, PlacementResult.Saved(firstOccupied.copy(placements = Vector(source.copy(transform = adjusted)))))
-      assertEquals(
-        writes,
-        Vector(
-          changed,
-          swapped,
-          swapped,
-          Vector(movedSource, incoming),
-          Vector(movedSource),
-          Vector(source.copy(transform = adjusted))
-        ).map(first.id -> _)
-      )
+      val expectedWrites = Vector(
+        changed,
+        swapped,
+        swapped,
+        Vector(movedSource, incoming),
+        Vector(movedSource),
+        Vector(source.copy(transform = adjusted))
+      ).map(first.id -> _)
+      assertEquals(writes, expectedWrites)
 
   test("should reject stale placement targets and invalid zoom without replacing a spread"):
     val occupied  = buildAlbumWithSpreads(spreads = Vector(firstOccupied))
@@ -545,17 +541,15 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(saved, 1)
       assertEquals(alreadyUsed, 1)
       assertEquals(used, PlacementResult.Rejected(Failure.PhotoAlreadyUsed))
-      assertEquals(
-        effects,
-        Vector(
-          Effect.Inspect(album.id, chapter.id.some, foreignPhoto),
-          Effect.Inspect(album.id, chapter.id.some, missing),
-          Effect.Inspect(album.id, chapter.id.some, photo),
-          Effect.Place(first.id),
-          Effect.Inspect(album.id, chapter.id.some, photo),
-          Effect.Inspect(album.id, chapter.id.some, photo)
-        )
+      val expectedEffects = Vector(
+        Effect.Inspect(album.id, chapter.id.some, foreignPhoto),
+        Effect.Inspect(album.id, chapter.id.some, missing),
+        Effect.Inspect(album.id, chapter.id.some, photo),
+        Effect.Place(first.id),
+        Effect.Inspect(album.id, chapter.id.some, photo),
+        Effect.Inspect(album.id, chapter.id.some, photo)
       )
+      assertEquals(effects, expectedEffects)
 
   test("should distinguish missing placement targets and fail explicitly on reads, photo inspection and writes"):
     val refs    = Refs()
@@ -679,13 +673,11 @@ final class SpreadManagerComponentTest extends CatsEffectSuite:
       assertEquals(enabled, SetBleedResult.Saved(expected))
       assertEquals(disabled, SetBleedResult.Saved(firstOccupied))
       assertEquals(rejected, SetBleedResult.Rejected)
-      assertEquals(
-        replacements,
-        Vector(
-          firstOccupied.id -> expected.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap,
-          firstOccupied.id -> firstOccupied.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap
-        )
+      val expectedReplacements = Vector(
+        firstOccupied.id -> expected.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap,
+        firstOccupied.id -> firstOccupied.photoSlots.toList.map(slot => slot.id -> slot.bleed).toMap
       )
+      assertEquals(replacements, expectedReplacements)
       assertEquals(layouts, Vector.empty[Spread])
 
   test("should expose missing and failed bleed writes without changing another spread"):

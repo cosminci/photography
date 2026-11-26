@@ -137,13 +137,11 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       val statuses = responses.map { case (status, _) => status }
       assertEquals(statuses, Vector(Status.Ok, Status.Ok))
       assertEquals(calls, Vector(PlacementCall.SetBleed(album, spread.id, enabled = true), PlacementCall.SetSpineOwner(album, SpineOwner.Back)))
-      assertEquals(
-        admissions,
-        Vector(
-          (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Spread(spread.id)), grant.some),
-          (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Cover(album)), grant.some)
-        )
+      val expectedAdmissions = Vector(
+        (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Spread(spread.id)), grant.some),
+        (connection, EditingAccess.Protection.OwnSpread(EditingTarget.Cover(album)), grant.some)
       )
+      assertEquals(admissions, expectedAdmissions)
 
   test("should declare exact ownership for every edit route and leave saved composition reads public"):
     val api     = buildApi(result = CoverManager.Result.Failed)
@@ -661,10 +659,9 @@ class PhotoPlacementApiSeamIntegrationTest extends CatsEffectSuite:
       assertEquals(coverResponse, expected)
       assertEquals(spreadResponse, expected)
       assertEquals(coverCalls, Vector(PlacementCall.EditCover(album, CoverManager.Edit.Adjust(placement.id, outside))))
-      assertEquals(
-        spreadCalls,
+      val expectedSpreadCalls =
         Vector(PlacementCall.Edit(album, spread.id, SpreadManager.Edit.Adjust(SpreadPlacementId(placement.id.value), outside)))
-      )
+      assertEquals(spreadCalls, expectedSpreadCalls)
 
   final private case class CornerScenario(corner: CaptionCorner, encoded: String)
   final private case class PlacementRequest(method: Method, suffix: String, body: Json)

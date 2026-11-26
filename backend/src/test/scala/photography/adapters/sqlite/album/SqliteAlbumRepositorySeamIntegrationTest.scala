@@ -145,7 +145,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         last   <- repository.list(offset = 2, limit = 2)
         beyond <- repository.list(offset = 3, limit = 2)
       yield
-        assertEquals(empty, ListResult.Listed(AlbumPageSlice(0, Vector.empty[Metadata])))
+        assertEquals(empty, ListResult.Listed(AlbumPageSlice(totalAlbums = 0, Vector.empty[Metadata])))
         assertEquals(first, ListResult.Listed(AlbumPageSlice(3, newestFirst.take(2))))
         assertEquals(last, ListResult.Listed(AlbumPageSlice(3, newestFirst.drop(2))))
         assertEquals(beyond, ListResult.Listed(AlbumPageSlice(3, Vector.empty[Metadata])))
@@ -214,7 +214,7 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
         ChapterId(buildUuid(index = 13)),
         Destination("Home", NonEmptyList.one(country)),
         VisitPeriod(LocalDate.of(1901, 1, 1), days = 365),
-        "",
+        description = "",
         Vector.empty[CameraSelection],
         "/photos/Home",
         chapterOpening,
@@ -431,7 +431,16 @@ final class SqliteAlbumRepositorySeamIntegrationTest extends CatsEffectSuite:
     val opening =
       Spread.AlbumStart(SpreadId(buildUuid(index + 100)), SpreadTemplateId(buildUuid(index = 1)), photos, text, Vector.empty[SpreadPlacement])
     val timestamp = if index === 1 then createdAt.plusSeconds(1) else createdAt
-    Album(album, (1900 + index).refineUnsafe[AlbumYearConstraint], "My photographs", "", Author.all, timestamp, opening, Vector.empty[Chapter])
+    Album(
+      album,
+      (1900 + index).refineUnsafe[AlbumYearConstraint],
+      "My photographs",
+      synopsis = "",
+      Author.all,
+      timestamp,
+      opening,
+      Vector.empty[Chapter]
+    )
 
   private def buildCover(album: Album) =
     val index = album.id.value.getLeastSignificantBits.toInt

@@ -210,8 +210,8 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     val server = buildAlbumApi(refs, metadataResult = AlbumRepository.MetadataResult.NotFound)
 
     for
-      missing <- send(server, Method.GET, albumPath, "")
-      invalid <- send(server, Method.GET, "/api/albums/1-1-1-1-1", "")
+      missing <- send(server, Method.GET, albumPath, body = "")
+      invalid <- send(server, Method.GET, "/api/albums/1-1-1-1-1", body = "")
       calls   <- refs.calls.get
     yield
       val expected = ApiResponse(Status.NotFound, jsonMediaType, json("""{"code":"album_not_found"}""").some)
@@ -222,7 +222,7 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
   test("should expose metadata database failures rather than empty successful responses"):
     val server = buildAlbumApi(Refs(), metadataResult = AlbumRepository.MetadataResult.Failed(AlbumRepository.Failure.DatabaseFailure))
 
-    send(server, Method.GET, albumPath, "").map: response =>
+    send(server, Method.GET, albumPath, body = "").map: response =>
       assertEquals(response, ApiResponse(Status.InternalServerError, jsonMediaType, json("""{"code":"service_failure"}""").some))
 
   test("should list exact album metadata and forward default and explicit pages"):
@@ -368,10 +368,9 @@ final class AlbumApiSeamIntegrationTest extends CatsEffectSuite:
     )
 
     declarations.foreach { case (path, protection) =>
-      assertEquals(
-        server.definition.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access),
-        Routes.Access.Editor(protection).some
-      )
+      val actualAccess   = server.definition.routes.lift(Request[IO](Method.PUT, Uri.unsafeFromString(path))).map(_.access)
+      val expectedAccess = Routes.Access.Editor(protection).some
+      assertEquals(actualAccess, expectedAccess)
     }
 
   final private case class Refs():
