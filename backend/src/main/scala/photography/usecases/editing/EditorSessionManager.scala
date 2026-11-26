@@ -60,27 +60,21 @@ object EditorSessionManager:
 
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): F[RegisterResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- current.sessions.get(owner) match
+        afterExpiry: (current, now) =>
+          current.sessions.get(owner) match
             case Some(session) if maybeSession.contains(session.id) => RegisterResult.Ready(session).pure[F]
             case Some(_)                                            => RegisterResult.CredentialRequired.pure[F]
             case None                                               => create(owner, alias, now)
-        yield result
       }
 
     override def bind(session: SessionId, tab: TabId): F[BindResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- current.sessions.values.find(_.id.value === session.value) match
+        afterExpiry: (current, _) =>
+          current.sessions.values.find(_.id.value === session.value) match
             case None                                                                                          => BindResult.StaleSession.pure[F]
             case Some(existing) if existing.maybeConnection.exists(binding => binding.tab.value =!= tab.value) =>
               BindResult.Blocked(existing.owner, existing.alias).pure[F]
             case Some(existing) => connect(existing, tab)
-        yield result
       }
 
     override def unbind(connection: EditorConnection): F[UnbindResult] =
@@ -93,13 +87,10 @@ object EditorSessionManager:
 
     override def heartbeat(connection: EditorConnection): F[HeartbeatResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- findConnection(current, connection) match
+        afterExpiry: (current, now) =>
+          findConnection(current, connection) match
             case Left(failure)  => HeartbeatResult.Rejected(failure).pure[F]
             case Right(session) => renew(session, now)
-        yield result
       }
 
     override def read(connection: EditorConnection): F[ReadResult] =
@@ -122,36 +113,27 @@ object EditorSessionManager:
 
     override def select(connection: EditorConnection, revision: TargetRevision, target: EditingTarget): F[SelectResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- findTransition(current, connection, revision) match
+        afterExpiry: (current, _) =>
+          findTransition(current, connection, revision) match
             case Left(failure)  => SelectResult.Rejected(failure).pure[F]
             case Right(session) => acquire(current, session, connection, target)
-        yield result
       }
 
     override def release(connection: EditorConnection, revision: TargetRevision, grant: GrantId): F[ReleaseResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- findTransition(current, connection, revision).flatMap(session => findGrant(current, session, grant).as(session)) match
+        afterExpiry: (current, _) =>
+          findTransition(current, connection, revision).flatMap(session => findGrant(current, session, grant).as(session)) match
             case Left(failure)  => ReleaseResult.Rejected(failure).pure[F]
             case Right(session) =>
               changeTarget(session, maybeLock = None).as(ReleaseResult.Released(session.targetRevision.next))
-        yield result
       }
 
     override def renewTarget(connection: EditorConnection, grant: GrantId): F[RenewTargetResult] =
       summon[Mutex[F]].lock.surround {
-        for
-          now     <- Clock[F].monotonic
-          current <- expire(now)
-          result  <- findConnection(current, connection).flatMap(session => findGrant(current, session, grant)) match
+        afterExpiry: (current, now) =>
+          findConnection(current, connection).flatMap(session => findGrant(current, session, grant)) match
             case Left(failure) => RenewTargetResult.Rejected(failure).pure[F]
             case Right(lock)   => renewLock(lock, now)
-        yield result
       }
 
     override def readTarget(connection: EditorConnection): F[ReadTargetResult] =
@@ -223,14 +205,18 @@ object EditorSessionManager:
           IdGenerator[F].generateId.flatMap(id => finishAcquisition(session.targetRevision, connection, target, GrantId(id)))
 
     private def finishAcquisition(revision: TargetRevision, connection: EditorConnection, target: EditingTarget, grant: GrantId) =
-      for
-        now     <- Clock[F].monotonic
-        current <- expire(now)
-        result  <- findTransition(current, connection, revision) match
+      afterExpiry[SelectResult]: (current, now) =>
+        findTransition(current, connection, revision) match
           case Left(failure)  => SelectResult.Rejected(failure).pure[F]
           case Right(session) =>
             val lock = EditingLock(target, session.id, grant, now + lease.seconds)
             changeTarget(session, lock.some).as(SelectResult.Owned(lock, session.targetRevision.next))
+
+    private def afterExpiry[A](action: (EditorSessionState, FiniteDuration) => F[A]) =
+      for
+        now     <- Clock[F].monotonic
+        current <- expire(now)
+        result  <- action(current, now)
       yield result
 
     private def changeTarget(session: EditorSession, maybeLock: Option[EditingLock]) =

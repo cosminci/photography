@@ -90,13 +90,15 @@ object ChapterMetadataManager:
         period: Period,
         sourceFolder: PhotoSource
     ): F[UpdateResult] =
+      def applyPlan(plan: ChapterPlanning.UpdatePlan) =
+        val command = ChapterRepository.Update(album, chapter, name, countries, plan.period, sourceFolder, plan.order)
+        applyUpdate(plan.previousSource, command)
       val update = summon[Mutex[F]].lock.surround:
         val program: EitherT[F, UpdateFailure, Option[ImportLaunch]] =
           for
             current <- readAlbum(album).eitherT.leftWiden[UpdateFailure]
             plan    <- translateUpdatePlan(planning.planUpdate(current, chapter, name, period, sourceFolder)).eitherT[F]
-            launch  <-
-              applyUpdate(plan.previousSource, ChapterRepository.Update(album, chapter, name, countries, plan.period, sourceFolder, plan.order))
+            launch  <- applyPlan(plan)
           yield launch
         program.value
       MonadCancelThrow[F].uncancelable: _ =>

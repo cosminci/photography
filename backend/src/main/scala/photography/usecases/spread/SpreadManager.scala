@@ -100,11 +100,8 @@ object SpreadManager:
                   _      <- composition.hasAlbum(album).map(Either.cond(_, (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
                   target <- findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
                   fresh  <- replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = mismatch)
-                  _      <- checkConfirmation(
-                    target.spread.placements.size,
-                    confirmed = confirmPlacements
-                  ).leftMap(ChangeTemplateResult.Occupied(_)).eitherT[Db]
-                  _ <- spreads.replace(fresh).lift[ChangeTemplateResult]
+                  _      <- requireConfirmation(target.spread.placements.size, confirmed = confirmPlacements)(ChangeTemplateResult.Occupied(_))
+                  _      <- spreads.replace(fresh).lift[ChangeTemplateResult]
                 yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
               Transaction[Db, F].run(mutation.merge)
           case FindTemplateResult.NotFound  => (ChangeTemplateResult.Rejected(Conflict.UnknownTemplate): ChangeTemplateResult).pure[F]
@@ -120,10 +117,9 @@ object SpreadManager:
           _      <- composition.hasAlbum(album).map(Either.cond(_, (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
           target <- findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
           photo  <- findPhoto(target).orFail[Db, DeleteResult](ifEmpty = DeleteResult.Rejected(Conflict.OpeningDelete))
-          _      <-
-            checkConfirmation(photo.value.placements.size, confirmed = confirmPlacements).leftMap(DeleteResult.Occupied(_): DeleteResult).eitherT[Db]
-          order <- composition.findChapterOrder(album, photo.chapter).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
-          _     <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = removeFromOrder(order = order, spread))).lift[DeleteResult]
+          _      <- requireConfirmation[DeleteResult](photo.value.placements.size, confirmed = confirmPlacements)(DeleteResult.Occupied(_))
+          order  <- composition.findChapterOrder(album, photo.chapter).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
+          _      <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = removeFromOrder(order = order, spread))).lift[DeleteResult]
         yield DeleteResult.Deleted: DeleteResult
       act[DeleteResult](DeleteResult.Failed):
         Transaction[Db, F].run(mutation.merge)
@@ -324,8 +320,8 @@ object SpreadManager:
         val position = previous.indexWhere(_.id.value === placement.slot.value)
         slots.lift(position).map(slot => placement.copy(slot = slot.id, transform = untouched)).toList
 
-    private def checkConfirmation(count: Int, confirmed: Boolean) =
-      Either.cond(confirmed || count === 0, (), count)
+    private def requireConfirmation[A](count: Int, confirmed: Boolean)(occupied: Int => A) =
+      Either.cond(confirmed || count === 0, (), occupied(count)).eitherT[Db]
 
     private def buildPhotoSpread(layout: SpreadTemplate.PhotosOnly) =
       (IdGenerator[F].generateId, layout.photoSlots.traverse(buildPhotoSlot)).mapN: (id, slots) =>
