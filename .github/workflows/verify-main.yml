@@ -58,4 +58,4 @@ jobs:
           npm ci --prefix .dagger --no-audit --no-fund
           dagger develop
           npm --prefix .dagger run verify
-          dagger call verify-cached --state="$RUNNER_TEMP/photography-build-cache" --all id
+          dagger call verify-cached --state="$RUNNER_TEMP/photography-build-cache" --all sync
