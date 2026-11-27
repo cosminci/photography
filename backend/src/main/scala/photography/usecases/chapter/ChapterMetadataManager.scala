@@ -15,7 +15,6 @@ import photography.ports.album.AlbumRepository.{ChapterMetadata, PlanningSnapsho
 import photography.ports.chapter.ChapterRepository
 import photography.ports.photo.PhotoRepository
 import photography.syntax.EitherSyntax.*
-import photography.syntax.EitherSyntax.Pure.*
 import photography.usecases.chapter.ChapterMetadataManager.*
 import photography.usecases.photo.ChapterPhotoImport.{Request, Scheduling}
 
@@ -94,10 +93,11 @@ object ChapterMetadataManager:
         val command = ChapterRepository.Update(album, chapter, name, countries, plan.period, sourceFolder, plan.order)
         applyUpdate(plan.previousSource, command)
       val update = summon[Mutex[F]].lock.surround:
+        val updatePlan = readAlbum(album).eitherT.leftWiden[UpdateFailure].subflatMap: current =>
+          translateUpdatePlan(planning.planUpdate(current, chapter, name, period, sourceFolder))
         val program: EitherT[F, UpdateFailure, Option[ImportLaunch]] =
           for
-            current     <- readAlbum(album).eitherT.leftWiden[UpdateFailure]
-            plan        <- translateUpdatePlan(planning.planUpdate(current, chapter, name, period, sourceFolder)).eitherT[F]
+            plan        <- updatePlan
             maybeLaunch <- applyPlan(plan)
           yield maybeLaunch
         program.value

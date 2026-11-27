@@ -14,9 +14,6 @@ object EitherSyntax:
     def lift[E]: EitherT[F, E, A] = EitherT.liftF(value)
 
   object Pure:
-    extension [E, A](value: Either[E, A])
-      def eitherT[F[_]: Applicative]: EitherT[F, E, A] = EitherT.fromEither[F](value)
-
     extension [A](value: Option[A])
       def orFail[F[_]: Applicative, E](ifEmpty: => E): EitherT[F, E, A] = EitherT.fromOption[F](value, ifEmpty)
 
