@@ -507,15 +507,34 @@ export function AlbumWorkspace(props: {
     return maybeTarget === undefined ? undefined : props.session.owner(maybeTarget);
   });
   let observedOwnershipRevision = untrack(() => props.session.ownershipRevision());
+  let observedLossRevision = untrack(() => props.session.lossRevision());
   createEffect(
     on(
-      [() => props.session.ownershipRevision(), ownershipLoading, () => props.session.targetPending(), navigationReason],
-      ([revision, loading, pending, maybeNavigationReason]) => {
-        if (revision === observedOwnershipRevision || loading || pending || maybeNavigationReason !== undefined) return;
+      [
+        () => props.session.ownershipRevision(),
+        () => props.session.lossRevision(),
+        ownershipLoading,
+        () => props.session.targetPending(),
+        navigationReason,
+        placement.saving,
+      ],
+      ([revision, lossRevision, loading, pending, maybeNavigationReason, savingPhotos]) => {
+        const retainingTextDraft = textEdit() !== undefined && maybeNavigationReason === contentReason();
+        const retainingPhotoDraft = maybeNavigationReason === placement.navigationReason();
+        if (loading || pending || savingPhotos || (maybeNavigationReason !== undefined && !retainingTextDraft && !retainingPhotoDraft)) return;
+        const ownerChanged = revision !== observedOwnershipRevision;
+        const accessLost = lossRevision !== observedLossRevision;
         observedOwnershipRevision = revision;
+        observedLossRevision = lossRevision;
         const maybeTarget = editingTarget();
-        if (!reader() && props.session.available() && maybeTarget !== undefined && otherOwner() !== undefined)
-          void confirmOwnership(maybeTarget, true);
+        if (
+          !reader() &&
+          props.session.available() &&
+          maybeTarget !== undefined &&
+          ownershipReason() !== undefined &&
+          (accessLost || (ownerChanged && otherOwner() !== undefined))
+        )
+          ownershipRequest = confirmOwnership(maybeTarget, true);
       },
     ),
   );
@@ -796,20 +815,6 @@ export function AlbumWorkspace(props: {
             />
           </Show>
           <BrowserAlias session={props.session} />
-          <Show when={!reader() && ownershipReason() !== undefined && otherOwner() === undefined && editingTarget()}>
-            {(target) => (
-              <button
-                type="button"
-                disabled={!props.session.available() || props.session.targetPending() || ownershipLoading()}
-                aria-describedby="editing-ownership-reason"
-                onClick={() => {
-                  void confirmOwnership(target(), true);
-                }}
-              >
-                Edit spread
-              </button>
-            )}
-          </Show>
           <div ref={setReaderEntry} />
           <BookExportControl
             album={props.album.id}
@@ -853,18 +858,6 @@ export function AlbumWorkspace(props: {
         <p role="status" class="visually-hidden">
           Refreshing saved workspace…
         </p>
-      </Show>
-      <Show when={!reader() && ownershipReason()}>
-        {(reason) => (
-          <p
-            id="editing-ownership-reason"
-            role="status"
-            class="control-help"
-            classList={{ "visually-hidden": props.session.targetPending() || ownershipLoading() }}
-          >
-            {reason()}
-          </p>
-        )}
       </Show>
       <Show when={placement.error()}>
         {(message) => (
@@ -1021,9 +1014,7 @@ export function AlbumWorkspace(props: {
         onRetryInventory={props.onInventoryRetry}
         onChoosePhoto={(photoId) => setChoice({ kind: "photo", photoId })}
         unavailable={ownershipReason() ?? refreshReason() ?? placement.unavailable() ?? navigationReason()}
-        onRetryRefresh={(id) => {
-          void props.onPhotoRefresh([id]);
-        }}
+        quietUnavailable={ownershipReason() !== undefined}
       >
         <div class="workspace-editor">
           <Show when={part() === "cover"}>
@@ -1095,14 +1086,7 @@ export function AlbumWorkspace(props: {
                     </p>
                   )}
                 </Show>
-                <div class="workspace-lock-frame" classList={{ "workspace-locked": otherOwner() !== undefined }}>
-                  <Show when={otherOwner()}>
-                    {(owner) => (
-                      <span class="workspace-lock-owner" role="status">
-                        {owner()}
-                      </span>
-                    )}
-                  </Show>
+                <div>
                   <Show when={part() === "cover"}>
                     <CoverCanvas title={props.album.title} year={props.workspace.year} authors={props.album.authors} editing={editing()} />
                   </Show>
@@ -1123,8 +1107,8 @@ export function AlbumWorkspace(props: {
               </FullscreenReader>
               <Show when={contentEditReason()}>
                 {(reason) => (
-                  <p id="content-edit-reason" class="control-help">
-                    {reason()}
+                  <p id="content-edit-reason" class="control-help" classList={{ "visually-hidden": ownershipReason() !== undefined }}>
+                    {ownershipReason() === undefined ? reason() : "Read only."}
                   </p>
                 )}
               </Show>
@@ -1144,7 +1128,7 @@ export function AlbumWorkspace(props: {
                         chapter={owner()}
                         position={position()}
                         countries={props.workspace.countries}
-                        unavailable={refreshReason() ?? navigationReason()}
+                        unavailable={contentEditReason()}
                         onEdit={(opener) => {
                           setDialog({ chapter: owner(), opener });
                         }}
@@ -1162,8 +1146,8 @@ export function AlbumWorkspace(props: {
                       class="icon-button"
                       aria-label="Edit album name"
                       title="Edit album name"
-                      disabled={(refreshReason() ?? navigationReason()) !== undefined}
-                      aria-describedby={(refreshReason() ?? navigationReason()) === undefined ? undefined : "album-name-reason"}
+                      disabled={contentEditReason() !== undefined}
+                      aria-describedby={contentEditReason() === undefined ? undefined : "content-edit-reason"}
                       onClick={(event) => {
                         setTextEdit({ kind: "name", opener: event.currentTarget });
                       }}
@@ -1172,13 +1156,6 @@ export function AlbumWorkspace(props: {
                         <path d="m15 4 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14z" />
                       </svg>
                     </button>
-                    <Show when={refreshReason() ?? navigationReason()}>
-                      {(reason) => (
-                        <span class="visually-hidden" id="album-name-reason">
-                          {reason()}
-                        </span>
-                      )}
-                    </Show>
                   </div>
                 </div>
               </Show>
@@ -1327,12 +1304,11 @@ export function AlbumWorkspace(props: {
                       ? props.session.lossRevision()
                       : props.session.authority()
                     : undefined,
-                recoveryLabel: props.session.available() ? "Edit spread" : "Reconnect browser",
+                recoveryLabel: props.session.available() ? undefined : "Reconnect browser",
                 reason: ownershipReason() ?? "Editing ownership is unavailable. Your draft is retained.",
                 pending: props.session.targetPending() || ownershipLoading(),
                 recover: async () => {
-                  if (!props.session.available()) await props.session.reconnect();
-                  else await confirmOwnership(editingTarget(), true);
+                  await props.session.reconnect();
                 },
               }}
               heading={action.kind === "name" ? "Edit album name" : owner === undefined ? "Album synopsis" : `Chapter description for ${owner.name}`}

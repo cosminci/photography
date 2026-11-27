@@ -76,17 +76,20 @@ describe("AlbumOpen", () => {
     } else expect(screen.queryByRole("button", { name: "Retry album" })).not.toBeInTheDocument();
   });
 
-  it.each(["invalid", "interrupted"] as const)("should reveal initial %s live feedback and replace it with the loaded workspace", (status) => {
+  it.each(["invalid", "interrupted"] as const)("keeps initial %s quiet unless reloading requires the user", (status) => {
     const [loaded, setLoaded] = createSignal<Workspace>();
     const [liveStatus, setLiveStatus] = createSignal<ReturnType<ReturnType<typeof createLiveWorkspace>["liveStatus"]>>(status);
     vi.mocked(createLiveWorkspace).mockReturnValue(buildLive({ workspace: loaded, album: () => album, liveStatus }));
     const ready = vi.fn();
     render(() => <AlbumOpen id={album.id} client={buildAlbumClient()} events={{ subscribe: vi.fn() }} session={editingSession} onReady={ready} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(status === "invalid" ? "could not be decoded" : "interrupted");
     expect(ready).toHaveBeenCalled();
     if (status === "invalid") {
+      expect(screen.getByRole("alert")).toHaveTextContent("Live photo updates stopped.");
       expect(screen.getByRole("link", { name: "Reopen album" })).toHaveAttribute("href", window.location.href);
       expect(screen.queryByRole("status", { name: "Loading album" })).not.toBeInTheDocument();
+    } else {
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("status", { name: "Loading album" })).toBeVisible();
     }
 
     setLiveStatus("live");

@@ -51,9 +51,7 @@
   margin: 0;
   font-size: 14px;
 }
-.photo-controls p,
-.photo-processing h3,
-.photo-processing summary {
+.photo-controls p {
   margin: 6px 8px;
   font-size: 11px;
   overflow-wrap: anywhere;
@@ -62,9 +60,19 @@
   margin: 3px 0 0;
   font-size: 12px;
 }
-.photo-processing summary {
-  cursor: pointer;
-  color: #a42525;
+.photo-refresh[aria-disabled="true"] {
+  color: #667577;
+  cursor: default;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .photo-refresh[aria-disabled="true"] svg {
+    animation: photo-refresh-spin 1s linear infinite;
+  }
+}
+@keyframes photo-refresh-spin {
+  to {
+    transform: rotate(1turn);
+  }
 }
 .photo-thumbnails {
   position: relative;

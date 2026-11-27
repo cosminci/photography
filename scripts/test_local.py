@@ -1,7 +1,10 @@
+import hashlib
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +20,6 @@ class LocalStateComponentTest(unittest.TestCase):
             state = local.make_local_state(Path(temporary_directory))
 
             self.assertEqual(state.directory, Path(temporary_directory) / ".local")
-            self.assertEqual(state.database, state.directory / "photography.db")
             self.assertEqual(stat.S_IMODE(state.directory.stat().st_mode), 0o700)
 
     def test_should_instance_lock_reject_a_second_launcher_and_release_after_close(self):
@@ -36,6 +38,23 @@ class LocalStateComponentTest(unittest.TestCase):
 
 
 class LocalRunnerComponentTest(unittest.TestCase):
+    def setUp(self):
+        seed = mock.patch.object(local, "seed_from_nas")
+        self.seed = seed.start()
+        self.addCleanup(seed.stop)
+
+    def test_should_not_start_services_or_keep_a_partial_seed_when_restore_fails(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self.seed.side_effect = local.StartupError("No verified checkpoint")
+            with mock.patch.object(local, "check_prerequisites"), mock.patch.object(local.subprocess, "Popen") as start:
+                with self.assertRaisesRegex(local.StartupError, "No verified checkpoint"):
+                    local.run_local_backend(root, {})
+            start.assert_not_called()
+            state = local.make_local_state(root)
+            self.assertEqual(list(state.directory.iterdir()), [state.lock])
+            local.acquire_instance_lock(state.lock).close()
+
     def test_should_health_url_use_loopback_for_wildcard_bind_addresses(self):
         ipv4_url = local.build_health_url(host="0.0.0.0", port=8080)
         ipv6_url = local.build_health_url(host="::", port=8080)
@@ -183,8 +202,8 @@ class LocalRunnerComponentTest(unittest.TestCase):
                 state = local.make_local_state(Path(temporary_directory))
                 next_lock = local.acquire_instance_lock(state.lock)
                 next_lock.close()
-                expected_database = database_override or str(state.database)
-                actual_database = start.call_args.kwargs["env"]["PHOTOGRAPHY_SQLITE_PATH"]
+                child_env = start.call_args.kwargs["env"]
+                actual_database = Path(child_env["PHOTOGRAPHY_SQLITE_PATH"])
 
                 self.assertEqual(result, 0)
                 check_prerequisites.assert_called_once_with("0.0.0.0", 8090, None)
@@ -193,7 +212,10 @@ class LocalRunnerComponentTest(unittest.TestCase):
                 self.assertTrue(start.call_args.kwargs["start_new_session"])
                 self.assertEqual(start.call_args.kwargs["env"]["PHOTOGRAPHY_HOST"], "0.0.0.0")
                 self.assertEqual(start.call_args.kwargs["env"]["PHOTOGRAPHY_PORT"], "8090")
-                self.assertEqual(actual_database, expected_database)
+                self.assertEqual(actual_database.name, "photography.db")
+                self.assertEqual(actual_database.parent.parent, state.directory)
+                self.assertEqual(Path(child_env["PHOTOGRAPHY_THUMBNAIL_ROOT"]), actual_database.parent / "thumbnails")
+                self.assertFalse(actual_database.parent.exists())
                 ready.assert_called_once_with(process, url="http://127.0.0.1:8090/health")
                 stop.assert_called_once_with(process)
                 output.assert_called_once_with("Photography backend ready at http://127.0.0.1:8090")
@@ -306,6 +328,26 @@ class LocalRunnerComponentTest(unittest.TestCase):
         self.assertEqual(result, 1)
         output.assert_called_once_with(f"Error: {failure}", file=local.sys.stderr)
 
+    def test_should_sigterm_stop_the_child_and_remove_the_seed(self):
+        process = mock.Mock()
+        process.wait.side_effect = lambda: signal.raise_signal(signal.SIGTERM)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            run = local.run_local_backend
+            with (
+                mock.patch.object(local, "run_local_backend", side_effect=lambda _: run(root, {})),
+                mock.patch.object(local, "check_prerequisites"),
+                mock.patch.object(local, "wait_for_readiness"),
+                mock.patch.object(local.subprocess, "Popen", return_value=process),
+                mock.patch.object(local, "stop_process_tree") as stop,
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(SystemExit) as terminated:
+                    local.main()
+            self.assertEqual(terminated.exception.code, 143)
+            stop.assert_called_once_with(process)
+            self.assertFalse(self.seed.call_args.args[0].exists())
+
     def test_should_interruption_stop_the_child_and_release_the_lock(self):
         process = mock.Mock()
         process.pid = 45
@@ -325,6 +367,89 @@ class LocalRunnerComponentTest(unittest.TestCase):
             state = local.make_local_state(Path(temporary_directory))
             next_lock = local.acquire_instance_lock(state.lock)
             next_lock.close()
+
+
+class NasSeedComponentTest(unittest.TestCase):
+    def test_should_choose_the_newest_verified_app_archive_even_if_another_app_failed(self):
+        run = subprocess.run
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for name, stopped in (
+                ("ab_20261124_060001", False),
+                ("ab_20261123_060001-failed", True),
+                ("ab_20261116_060001", True),
+            ):
+                backup = root / name
+                backup.mkdir()
+                (backup / "album-layout-studio.tar.gz").write_text(name)
+                stop = "[album-layout-studio] Stopping album-layout-studio...  done!\n" if stopped else ""
+                (backup / "backup.log").write_text(stop + "[album-layout-studio] Verification ended without issues\n")
+            seed = root / "seed"
+            seed.mkdir()
+
+            def execute_remote(command, **kwargs):
+                self.assertEqual(command[-2], "backup-host")
+                return run(["sh", "-c", command[-1]], **kwargs)
+
+            with (
+                mock.patch.object(local.subprocess, "run", side_effect=execute_remote),
+                mock.patch.object(local, "restore_checkpoint") as restore,
+            ):
+                def verify_selection(archive, destination):
+                    self.assertEqual(archive.read_text(), "ab_20261123_060001-failed")
+                    self.assertEqual(destination, seed)
+
+                restore.side_effect = verify_selection
+                local.seed_from_nas(seed, {"PHOTOGRAPHY_NAS_HOST": "backup-host", "PHOTOGRAPHY_NAS_BACKUPS": str(root)})
+
+            restore.assert_called_once()
+            self.assertEqual(list(seed.iterdir()), [])
+
+    def test_should_restore_the_database_and_thumbnails_from_the_same_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "source.sqlite"
+            location = "00000000-0000-0000-0000-000000000001"
+            with sqlite3.connect(source) as database:
+                database.execute("CREATE TABLE album (name TEXT)")
+                database.execute("INSERT INTO album VALUES ('From NAS')")
+                database.execute("CREATE TABLE photo (thumbnail TEXT, thumbnail_version TEXT, thumbnail_bytes INTEGER)")
+                database.execute("INSERT INTO photo VALUES (?, ?, ?)", (location, hashlib.sha256(b"preview").hexdigest(), 7))
+            thumbnail = root / "preview.jpg"
+            thumbnail.write_bytes(b"preview")
+            checkpoint = root / "checkpoint.tar.gz"
+            with tarfile.open(checkpoint, "w:gz") as archive:
+                archive.add(source, arcname="/mnt/user/appdata/photography/data/photography.db")
+                archive.add(thumbnail, arcname=f"/mnt/user/appdata/photography/thumbnails/{location}.jpg")
+            destination = root / "run"
+            destination.mkdir()
+            local.restore_checkpoint(checkpoint, destination)
+            with sqlite3.connect(destination / "photography.db") as database:
+                self.assertEqual(database.execute("SELECT name FROM album").fetchone(), ("From NAS",))
+            self.assertEqual((destination / "thumbnails" / f"{location}.jpg").read_bytes(), b"preview")
+
+            truncated = root / "truncated.tar.gz"
+            truncated.write_bytes(checkpoint.read_bytes()[:-4])
+            destination = root / "truncated"
+            destination.mkdir()
+            with self.assertRaises(EOFError):
+                local.restore_checkpoint(truncated, destination)
+
+            for case in ("missing", "mismatched"):
+                with self.subTest(case=case):
+                    with tarfile.open(checkpoint, "w:gz") as archive:
+                        archive.add(source, arcname="mnt/user/appdata/photography/data/photography.db")
+                        directory = tarfile.TarInfo("mnt/user/appdata/photography/thumbnails")
+                        directory.type = tarfile.DIRTYPE
+                        archive.addfile(directory)
+                        if case == "mismatched":
+                            thumbnail.write_bytes(b"invalid")
+                            archive.add(thumbnail, arcname=f"mnt/user/appdata/photography/thumbnails/{location}.jpg")
+                    destination = root / case
+                    destination.mkdir()
+                    error = FileNotFoundError if case == "missing" else local.StartupError
+                    with self.assertRaises(error):
+                        local.restore_checkpoint(checkpoint, destination)
 
 
 if __name__ == "__main__":

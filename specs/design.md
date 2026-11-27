@@ -172,6 +172,8 @@ sequenceDiagram
 - Failed relationship acquisition is a failure, never an empty affected set. A write admitted while authority is live may finish across expiry; later acquisition observes its completion.
 - Original-file reading and image generation stay outside the shared mutation interval.
 
+Outside Reader, opening a spread or Cover requests its edit lock automatically. The canvas stays read-only and the spread toolbar disables its edit controls until the server grants ownership. Reacquiring a lock does not submit retained drafts.
+
 ## Photo processing
 
 ```mermaid
@@ -197,6 +199,8 @@ flowchart TD
 - Only the current source generation can publish a coordinated database mutation.
 - Refresh preserves photo identity and authored caption when replacing that photo's metadata/thumbnail; individual read or generation failures retain the previous usable photo.
 - An unchanged photo hash and selected thumbnail quality reuse the current thumbnail.
+
+The photo browser marks Refresh as busy while import is queued or running. The inventory reports activity, not percentage completion. Routine import diagnostics stay out of the browser; Refresh can retry failed inventory reads.
 
 ## Thumbnail publication and recovery
 

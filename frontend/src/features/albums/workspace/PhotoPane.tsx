@@ -13,9 +13,9 @@ export function PhotoPane(props: {
   liveStatus: "connecting" | "catching-up" | "live" | "interrupted" | "invalid";
   onRefresh: () => void;
   onRetryInventory: (id: string) => void;
-  onRetryRefresh: (id: string) => void;
   onChoosePhoto?: (id: string) => void;
   unavailable?: string | undefined;
+  quietUnavailable?: boolean;
   children: JSX.Element;
 }) {
   const [collapsed, setCollapsed] = createSignal(false);
@@ -36,27 +36,22 @@ export function PhotoPane(props: {
     () => new Map(layout().rows.flatMap((row) => row.items.map((item) => [`${item.photo.chapterId}/${item.photo.photo.id}`, item] as const))),
   );
   const keys = createMemo(() => [...geometry().keys()]);
-  const refreshReason = createMemo(() =>
-    props.chapters.length === 0
-      ? "Add a chapter to refresh photos."
-      : props.chapters.some((chapter) => props.scheduling[chapter.id] === "pending")
-        ? "Scheduling photo refresh. Please wait."
-        : undefined,
+  const noChapters = () => props.chapters.length === 0;
+  const inventoryNeedsRetry = (id: string) => props.liveStatus !== "live" || props.inventoryErrors[id] !== undefined;
+  const refreshing = createMemo(() =>
+    props.chapters.some(({ id }) => {
+      const request = props.scheduling[id];
+      if (request === "pending") return true;
+      if (inventoryNeedsRetry(id)) return false;
+      if (request === "queued" || request === "coalesced") return true;
+      const state = props.inventories[id]?.processing.state;
+      return state === "queued" || state === "running";
+    }),
   );
-  const liveFeedback = createMemo(
-    () =>
-      ({
-        connecting: "Connecting live photo updates…",
-        "catching-up": "Catching up with saved photos…",
-        interrupted: "Live updates interrupted. Reconnecting; displayed photos may be out of date.",
-        invalid: "Live photo update could not be decoded. Reconnect or reopen this workspace to catch up.",
-        live: "",
-      })[props.liveStatus],
-  );
+  const refreshReason = () => (noChapters() ? "Add a chapter to refresh photos." : refreshing() ? "Processing photos…" : undefined);
   let group: HTMLDivElement;
   let thumbnails: HTMLDivElement;
   let grip: HTMLButtonElement;
-  let refreshButton: HTMLButtonElement;
   let drag: { start: number; width: number } | undefined;
   let dragged = false;
 
@@ -101,17 +96,6 @@ export function PhotoPane(props: {
     window.removeEventListener("pointercancel", endResize);
   }
 
-  function focusPhotoControl() {
-    if (refreshButton.disabled) grip.focus({ preventScroll: true });
-    else refreshButton.focus({ preventScroll: true });
-  }
-
-  function preserveFeedbackFocus(element: HTMLElement) {
-    onCleanup(() => {
-      if (element.contains(document.activeElement)) focusPhotoControl();
-    });
-  }
-
   return (
     <div
       ref={(element) => {
@@ -133,16 +117,18 @@ export function PhotoPane(props: {
               </p>
             </div>
             <button
-              ref={(element) => {
-                refreshButton = element;
-              }}
               type="button"
-              class="icon-button"
+              class="icon-button photo-refresh"
               aria-label="Refresh photos"
-              title="Refresh photos"
-              disabled={refreshReason() !== undefined}
+              title={refreshReason() ?? "Refresh photos"}
+              disabled={noChapters()}
+              aria-disabled={refreshing() ? true : undefined}
               aria-describedby={refreshReason() === undefined ? undefined : "photo-refresh-reason"}
               onClick={() => {
+                if (refreshing()) return;
+                for (const { id } of props.chapters) {
+                  if (inventoryNeedsRetry(id)) props.onRetryInventory(id);
+                }
                 props.onRefresh();
               }}
             >
@@ -153,102 +139,14 @@ export function PhotoPane(props: {
           </div>
           <Show when={refreshReason()}>
             {(reason) => (
-              <p id="photo-refresh-reason" role="status" class="control-help">
+              <span id="photo-refresh-reason" hidden>
                 {reason()}
-              </p>
+              </span>
             )}
           </Show>
-          <Show when={liveFeedback()}>{(feedback) => <p role="status">{feedback()}</p>}</Show>
-          <For each={props.chapters.map((chapter) => chapter.id)}>
-            {(id) => (
-              <Show when={props.chapters.find((chapter) => chapter.id === id)}>
-                {(chapter) => (
-                  <Show when={props.inventories[id]}>
-                    {(inventory) => (
-                      <Show
-                        when={
-                          hasProcessingFeedback(inventory().processing) ||
-                          props.scheduling[id] === "failed" ||
-                          props.inventoryErrors[id] !== undefined
-                        }
-                      >
-                        <section
-                          ref={(element) => {
-                            preserveFeedbackFocus(element);
-                          }}
-                          aria-label={`Processing ${chapter().name}`}
-                          class="photo-processing"
-                        >
-                          <h3>{chapter().name} photos</h3>
-                          <Show when={hasProcessingFeedback(inventory().processing)}>
-                            <>
-                              <p aria-live="polite">
-                                {inventory().processing.state}
-                                <Show when={inventory().processing.unsupportedCount > 0}>
-                                  {" "}
-                                  · {inventory().processing.unsupportedCount} unsupported
-                                </Show>
-                                <Show when={inventory().processing.skippedCount > 0}> · {inventory().processing.skippedCount} skipped</Show>
-                              </p>
-                              <Show when={inventory().processing.issues.length > 0}>
-                                <details
-                                  ref={(element) => {
-                                    preserveFeedbackFocus(element);
-                                  }}
-                                >
-                                  <summary role="button" aria-label={`Processing issues for ${chapter().name}`}>
-                                    Processing issues: {inventory().processing.issues.length}
-                                  </summary>
-                                  <For each={inventory().processing.issues}>
-                                    {(issue) => (
-                                      <p role="alert">
-                                        {issue.stage}: {issue.code}
-                                        {issue.filename === null ? "" : ` — ${issue.filename}`}
-                                      </p>
-                                    )}
-                                  </For>
-                                </details>
-                              </Show>
-                            </>
-                          </Show>
-                          <Show when={props.scheduling[id] === "failed"}>
-                            <p role="alert">
-                              Photos could not be scheduled. The chapter remains saved.{" "}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  focusPhotoControl();
-                                  props.onRetryRefresh(id);
-                                }}
-                              >
-                                Retry refresh for {chapter().name}
-                              </button>
-                            </p>
-                          </Show>
-                          <Show when={props.inventoryErrors[id]}>
-                            {(error) => (
-                              <p role="alert">
-                                {error()}{" "}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    focusPhotoControl();
-                                    props.onRetryInventory(id);
-                                  }}
-                                >
-                                  Retry inventory for {chapter().name}
-                                </button>
-                              </p>
-                            )}
-                          </Show>
-                        </section>
-                      </Show>
-                    )}
-                  </Show>
-                )}
-              </Show>
-            )}
-          </For>
+          <Show when={props.liveStatus === "invalid"}>
+            <p role="alert">Live photo updates stopped. Reopen the album to reconnect.</p>
+          </Show>
           <div
             ref={(element) => {
               thumbnails = element;
@@ -319,8 +217,13 @@ export function PhotoPane(props: {
           </Show>
           <Show when={props.unavailable}>
             {(reason) => (
-              <p id="photo-placement-unavailable" class="control-help" role="status">
-                {reason()}
+              <p
+                id="photo-placement-unavailable"
+                class="control-help"
+                classList={{ "visually-hidden": props.quietUnavailable }}
+                role={props.quietUnavailable === true ? undefined : "status"}
+              >
+                {props.quietUnavailable === true ? "Read only." : reason()}
               </p>
             )}
           </Show>
@@ -372,16 +275,5 @@ export function PhotoPane(props: {
       </aside>
       {props.children}
     </div>
-  );
-}
-
-export function hasProcessingFeedback(processing: PhotoInventory["processing"]): boolean {
-  return (
-    processing.state === "queued" ||
-    processing.state === "running" ||
-    processing.state === "failed" ||
-    processing.unsupportedCount > 0 ||
-    processing.skippedCount > 0 ||
-    processing.issues.length > 0
   );
 }

@@ -59,11 +59,8 @@ export function AlbumOpen(props: {
       </Show>
       <Show when={live.workspace() === undefined && live.liveStatus() === "invalid" && live.error() === undefined}>
         <p role="alert">
-          Live photo update could not be decoded. <a href={window.location.href}>Reopen album</a> to reconnect.
+          Live photo updates stopped. <a href={window.location.href}>Reopen album</a> to reconnect.
         </p>
-      </Show>
-      <Show when={live.workspace() === undefined && live.liveStatus() === "interrupted" && live.error() === undefined}>
-        <p role="alert">Live photo updates interrupted. Reconnecting…</p>
       </Show>
       <Show when={live.error() !== undefined && live.workspace() === undefined}>
         <div role="alert">

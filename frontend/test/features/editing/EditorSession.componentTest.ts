@@ -625,7 +625,22 @@ describe("browser editing session", () => {
 
     expect(await session.select(target)).toBe(false);
     expect(session.headers()["X-Editor-Grant"]).toBeUndefined();
-    expect(session.targetReason(target)).toMatch(/Choose Edit spread/);
+    expect(session.targetReason(target)).toMatch(/view only/i);
+  });
+
+  it("should request the same target automatically after reconnecting without its former grant", async () => {
+    const { session, emit, transport } = await connect();
+    await session.select(target);
+    session.interrupt("Disconnected");
+    await session.reconnect();
+    emit({ kind: "bound", sessionId, tabId, generation });
+    await vi.waitFor(() => {
+      expect(session.available()).toBe(true);
+    });
+
+    expect(await session.select(target)).toBe(true);
+    expect(transport.select).toHaveBeenCalledTimes(2);
+    expect(session.targetReason(target)).toBeUndefined();
   });
 
   it("should reconcile lost release acknowledgements using current ownership rather than repeat an obsolete release", async () => {

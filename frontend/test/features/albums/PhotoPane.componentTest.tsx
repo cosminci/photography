@@ -1,29 +1,8 @@
-import { fireEvent, render, screen, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PhotoPane, hasProcessingFeedback } from "../../../src/features/albums/workspace/PhotoPane";
+import { PhotoPane } from "../../../src/features/albums/workspace/PhotoPane";
 import type { PhotoInventory } from "../../../src/features/albums/model/Photo";
-
-describe("photo processing visibility", () => {
-  it.each([
-    { state: "idle", unsupportedCount: 0, skippedCount: 0, issues: [], expected: false },
-    { state: "completed", unsupportedCount: 0, skippedCount: 0, issues: [], expected: false },
-    { state: "queued", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
-    { state: "running", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
-    { state: "failed", unsupportedCount: 0, skippedCount: 0, issues: [], expected: true },
-    { state: "completed", unsupportedCount: 1, skippedCount: 0, issues: [], expected: true },
-    { state: "completed", unsupportedCount: 0, skippedCount: 1, issues: [], expected: true },
-    {
-      state: "completed",
-      unsupportedCount: 0,
-      skippedCount: 0,
-      issues: [{ stage: "cleanup", code: "cleanup_failed", filename: null }],
-      expected: true,
-    },
-  ] as const)("should expose only meaningful $state processing feedback", ({ state, unsupportedCount, skippedCount, issues, expected }) => {
-    expect(hasProcessingFeedback({ state, unsupportedCount, skippedCount, issues })).toBe(expected);
-  });
-});
 
 describe("photo pane browser controls", () => {
   const inventory: PhotoInventory = {
@@ -97,7 +76,6 @@ describe("photo pane browser controls", () => {
         liveStatus="live"
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
         onChoosePhoto={choose}
         unavailable={reason()}
       >
@@ -142,7 +120,6 @@ describe("photo pane browser controls", () => {
         liveStatus="live"
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
         onChoosePhoto={choose}
       >
         <div />
@@ -161,10 +138,33 @@ describe("photo pane browser controls", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("should render authoritative counts, complete processing feedback and unchanged lazy image URLs without photo actions", () => {
+  it("disables photo placement without a visible status banner while the spread is read-only", () => {
+    render(() => (
+      <PhotoPane
+        label="Chapter photos"
+        chapters={[{ id: "chapter", name: "Kyoto" }]}
+        inventories={{ chapter: inventory }}
+        inventoryErrors={{}}
+        scheduling={{}}
+        liveStatus="live"
+        onRefresh={vi.fn()}
+        onRetryInventory={vi.fn()}
+        unavailable="Confirming editing ownership."
+        quietUnavailable
+      >
+        <div />
+      </PhotoPane>
+    ));
+
+    const photo = screen.getByRole("button", { name: "Choose Photo.jpg" });
+    expect(photo).toBeDisabled();
+    expect(photo).toHaveAccessibleDescription("Read only.");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("keeps import diagnostics out of the pane and retries failed inventory reads from Refresh", () => {
     const refresh = vi.fn();
     const retryInventory = vi.fn();
-    const retryRefresh = vi.fn();
     const [inventories, change] = createSignal({ chapter: inventory });
     const [chapters, changeChapters] = createSignal([{ id: "chapter", name: "Kyoto" }]);
     const view = render(() => (
@@ -177,42 +177,32 @@ describe("photo pane browser controls", () => {
         liveStatus="interrupted"
         onRefresh={refresh}
         onRetryInventory={retryInventory}
-        onRetryRefresh={retryRefresh}
       >
         <div>Editor</div>
       </PhotoPane>
     ));
     const image = screen.getByRole("img", { name: "Photo.jpg" });
-    const processing = within(screen.getByRole("region", { name: "Processing Kyoto" }));
+    const button = screen.getByRole("button", { name: "Refresh photos" });
 
     expect(screen.getByText("0 unplaced / 1 total")).toBeInTheDocument();
-    expect(processing.getByText(/failed.*2 unsupported.*1 skipped/)).toBeInTheDocument();
-    fireEvent.click(processing.getByRole("button", { name: "Processing issues for Kyoto" }));
-    const disclosure = processing.getByRole("button", { name: "Processing issues for Kyoto" });
-    disclosure.focus();
+    button.focus();
     screen.getByRole("region", { name: "Chapter photos" }).scrollTop = 40;
     changeChapters([{ id: "chapter", name: "Kyoto" }]);
 
-    expect(processing.getByRole("button", { name: "Processing issues for Kyoto" })).toBe(disclosure);
-    expect(disclosure).toHaveFocus();
+    expect(button).toHaveFocus();
     expect(screen.getByRole("region", { name: "Chapter photos" }).scrollTop).toBe(40);
-    expect(processing.getByText("cleanup: cleanup_failed")).toBeInTheDocument();
-    expect(processing.getByText("read: undecodable — bad.jpg")).toBeInTheDocument();
-    expect(screen.getByText(/Live updates interrupted/)).toBeInTheDocument();
+    expect(screen.queryByText(/Kyoto photos|unsupported|skipped|bad\.jpg|Inventory unavailable|interrupted/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(image).toHaveAttribute("src", inventory.photos[0]?.thumbnail.url);
     expect(image).toHaveAttribute("loading", "lazy");
     fireEvent.click(image);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh photos" }));
-    fireEvent.click(screen.getByRole("button", { name: "Retry inventory for Kyoto" }));
-    fireEvent.click(screen.getByRole("button", { name: "Retry refresh for Kyoto" }));
-    disclosure.focus();
+    fireEvent.click(button);
     change({ chapter: { ...inventory, processing: { state: "completed", unsupportedCount: 0, skippedCount: 0, issues: [] } } });
 
     expect(refresh).toHaveBeenCalledOnce();
     expect(retryInventory).toHaveBeenCalledExactlyOnceWith("chapter");
-    expect(retryRefresh).toHaveBeenCalledExactlyOnceWith("chapter");
     expect(screen.getByRole("img", { name: "Photo.jpg" })).toBe(image);
     expect(screen.getByRole("button", { name: "Refresh photos" })).toHaveFocus();
     view.unmount();
@@ -230,7 +220,6 @@ describe("photo pane browser controls", () => {
         liveStatus="live"
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
       >
         <div>Editor</div>
       </PhotoPane>
@@ -267,11 +256,7 @@ describe("photo pane browser controls", () => {
     fireEvent(window, new MouseEvent("pointermove", { clientX: 900 }));
   });
 
-  it.each([
-    ["connecting", "Connecting live photo updates"],
-    ["catching-up", "Catching up"],
-    ["invalid", "Live photo update could not be decoded"],
-  ] as const)("should expose %s live state without inventing processing completion", (liveStatus, message) => {
+  it.each(["connecting", "catching-up", "interrupted", "invalid"] as const)("only alerts on invalid live updates, not %s recovery", (liveStatus) => {
     render(() => (
       <PhotoPane
         label="Album photos"
@@ -282,21 +267,22 @@ describe("photo pane browser controls", () => {
         liveStatus={liveStatus}
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
       >
         <div />
       </PhotoPane>
     ));
 
-    expect(screen.getByText(new RegExp(message))).toBeInTheDocument();
+    if (liveStatus === "invalid") expect(screen.getByRole("alert")).toHaveTextContent("Reopen the album");
+    else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh photos" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Refresh photos" })).toHaveAccessibleDescription("Add a chapter to refresh photos.");
   });
 
   it.each([
-    ["pending", "Scheduling photo refresh. Please wait."],
-    ["queued", "Refresh photos"],
-    ["coalesced", "Refresh photos"],
+    ["pending", "Processing photos…"],
+    ["queued", "Processing photos…"],
+    ["coalesced", "Processing photos…"],
     ["not-requested", "Refresh photos"],
   ] as const)("should keep routine %s receipts out of the photo explorer", (scheduling, description) => {
     render(() => (
@@ -314,13 +300,14 @@ describe("photo pane browser controls", () => {
         liveStatus="live"
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
       >
         <div />
       </PhotoPane>
     ));
 
-    expect(screen.getByRole("button", { name: "Refresh photos" }).hasAttribute("disabled")).toBe(scheduling === "pending");
+    expect(screen.getByRole("button", { name: "Refresh photos" }).getAttribute("aria-disabled")).toBe(
+      description === "Processing photos…" ? "true" : null,
+    );
     expect(screen.getByRole("button", { name: "Refresh photos" })).toHaveAccessibleDescription(description);
     expect(screen.getByRole("heading", { name: "Photos" })).toBeInTheDocument();
     expect(screen.getByText("0 unplaced / 1 total")).toBeInTheDocument();
@@ -345,7 +332,6 @@ describe("photo pane browser controls", () => {
         liveStatus="live"
         onRefresh={vi.fn()}
         onRetryInventory={vi.fn()}
-        onRetryRefresh={vi.fn()}
       >
         <div />
       </PhotoPane>
@@ -370,10 +356,12 @@ describe("photo pane browser controls", () => {
     expect(cancel).toHaveBeenCalledExactlyOnceWith(7);
   });
 
-  it("should retain focus on the grip when a retry starts while another chapter disables Refresh", () => {
+  it("keeps Refresh busy until all displayed chapters finish, but allows recovery from stale activity", () => {
     const retryInventory = vi.fn();
-    const retryRefresh = vi.fn();
-    const empty = { ...inventory, photos: [], counts: { unplaced: 0, total: 0 } };
+    const refresh = vi.fn();
+    const [state, setState] = createSignal<PhotoInventory["processing"]["state"]>("queued");
+    const [other, setOther] = createSignal<PhotoInventory["processing"]["state"]>("running");
+    const [failedRead, setFailedRead] = createSignal(false);
     render(() => (
       <PhotoPane
         label="Album photos"
@@ -381,28 +369,40 @@ describe("photo pane browser controls", () => {
           { id: "chapter", name: "Kyoto" },
           { id: "home", name: "Home" },
         ]}
-        inventories={{ chapter: inventory, home: empty }}
-        inventoryErrors={{ chapter: "Unavailable inventory" }}
-        scheduling={{ chapter: "failed", home: "pending" }}
+        inventories={{
+          chapter: { ...inventory, processing: { ...inventory.processing, state: state() } },
+          home: { ...inventory, photos: [], processing: { ...inventory.processing, state: other() } },
+        }}
+        inventoryErrors={failedRead() ? { home: "Unavailable inventory" } : {}}
+        scheduling={{}}
         liveStatus="live"
-        onRefresh={vi.fn()}
+        onRefresh={refresh}
         onRetryInventory={retryInventory}
-        onRetryRefresh={retryRefresh}
       >
         <div />
       </PhotoPane>
     ));
-    const retry = screen.getByRole("button", { name: "Retry inventory for Kyoto" });
-    retry.focus();
+    const button = screen.getByRole("button", { name: "Refresh photos" });
+    button.focus();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAttribute("title", "Processing photos…");
+    expect(button).toHaveAccessibleDescription("Processing photos…");
+    expect(screen.queryByText(/Kyoto photos|Home photos|^running$|^queued$/)).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(refresh).not.toHaveBeenCalled();
 
-    fireEvent.click(retry);
+    setState("running");
+    setOther("completed");
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    setState("failed");
+    expect(button).not.toHaveAttribute("aria-disabled");
+    expect(button).toHaveFocus();
 
-    expect(screen.getByRole("button", { name: "Collapse photo pane" })).toHaveFocus();
-    const schedule = screen.getByRole("button", { name: "Retry refresh for Kyoto" });
-    schedule.focus();
-    fireEvent.click(schedule);
-    expect(screen.getByRole("button", { name: "Collapse photo pane" })).toHaveFocus();
-    expect(retryInventory).toHaveBeenCalledExactlyOnceWith("chapter");
-    expect(retryRefresh).toHaveBeenCalledExactlyOnceWith("chapter");
+    setOther("running");
+    setFailedRead(true);
+    expect(button).not.toHaveAttribute("aria-disabled");
+    fireEvent.click(button);
+    expect(retryInventory).toHaveBeenCalledExactlyOnceWith("home");
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });
