@@ -26,9 +26,9 @@ object AlbumPhotoEvents:
   ) extends AlbumPhotoEvents[F]:
     override def subscribe(album: AlbumId): F[SubscribeResult[F]] =
       albums.metadata(album).map:
-        case AlbumRepository.MetadataResult.Found(_)  => SubscribeResult.Opened(Stream.resource(register(album)).flatMap(readEvents))
+        case _: AlbumRepository.MetadataResult.Found  => SubscribeResult.Opened(Stream.resource(register(album)).flatMap(readEvents))
         case AlbumRepository.MetadataResult.NotFound  => SubscribeResult.AlbumNotFound()
-        case AlbumRepository.MetadataResult.Failed(_) => SubscribeResult.Failed()
+        case _: AlbumRepository.MetadataResult.Failed => SubscribeResult.Failed()
       .handleErrorWith(error => Logger[F].error(error)("Album photo subscription failed").as(SubscribeResult.Failed()))
 
     override def invalidate(album: AlbumId, chapter: ChapterId): F[Unit] =

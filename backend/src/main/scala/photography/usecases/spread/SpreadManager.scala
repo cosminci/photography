@@ -105,7 +105,7 @@ object SpreadManager:
                 yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
               Transaction[Db, F].run(mutation.merge)
           case FindTemplateResult.NotFound  => (ChangeTemplateResult.Rejected(Conflict.UnknownTemplate): ChangeTemplateResult).pure[F]
-          case FindTemplateResult.Failed(_) => (ChangeTemplateResult.Failed: ChangeTemplateResult).pure[F]
+          case _: FindTemplateResult.Failed => (ChangeTemplateResult.Failed: ChangeTemplateResult).pure[F]
 
     override def delete(
         album: AlbumId,
@@ -217,8 +217,8 @@ object SpreadManager:
         change.pure[F]
 
     private def checkPlacementPhoto(album: AlbumId, maybeChapter: Option[ChapterId], request: Edit) = request match
-      case Edit.Place(_, photo) =>
-        placements.inspect(album, maybeChapter = maybeChapter, photo).map:
+      case place: Edit.Place =>
+        placements.inspect(album, maybeChapter = maybeChapter, place.photo).map:
           case PhotoPlacementRepository.InspectResult.Found(inCollection, placed) =>
             if !inCollection then Failure.PhotoNotInCollection.asLeft[Unit]
             else if placed then Failure.PhotoAlreadyUsed.asLeft[Unit]
@@ -227,9 +227,9 @@ object SpreadManager:
       case _ => ().asRight[Failure].pure[Db]
 
     private def findPlacementChapter(target: Located) = target match
-      case Located.AlbumOpening(_)            => none[ChapterId]
-      case Located.ChapterOpening(chapter, _) => chapter.some
-      case Located.Photo(chapter, _)          => chapter.some
+      case _: Located.AlbumOpening         => none[ChapterId]
+      case opening: Located.ChapterOpening => opening.chapter.some
+      case photo: Located.Photo            => photo.chapter.some
 
     private def collectPlacementSlots(spread: Spread) = spread match
       case value: Spread.AlbumStart   => value.photoSlots.map(_.id).toSet
@@ -268,7 +268,7 @@ object SpreadManager:
       case value: Spread.PhotosOnly   => value.copy(placements = values)
 
     private def isAlbumOpening(target: Located) = target match
-      case Located.AlbumOpening(_) => true
+      case _: Located.AlbumOpening => true
       case _                       => false
 
     private def findPhoto(target: Located) = target match

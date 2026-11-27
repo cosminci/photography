@@ -25,17 +25,17 @@ object SpreadTemplateApi:
       case GET -> Root / "api" / "templates" / "album-start" => Route.public {
           templates.listAlbumStartTemplates.flatMap:
             case listed: ListAlbumStartTemplatesResult.Listed => Ok(listed)
-            case ListAlbumStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+            case _: ListAlbumStartTemplatesResult.Failed      => InternalServerError(Map("code" -> "service_failure"))
         }
       case GET -> Root / "api" / "templates" / "chapter-start" => Route.public {
           templates.listChapterStartTemplates.flatMap:
             case listed: ListChapterStartTemplatesResult.Listed => Ok(listed)
-            case ListChapterStartTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+            case _: ListChapterStartTemplatesResult.Failed      => InternalServerError(Map("code" -> "service_failure"))
         }
       case GET -> Root / "api" / "templates" / "photos-only" => Route.public {
           templates.listPhotosOnlyTemplates.flatMap:
             case listed: ListPhotosOnlyTemplatesResult.Listed => Ok(listed)
-            case ListPhotosOnlyTemplatesResult.Failed(_)      => InternalServerError(Map("code" -> "service_failure"))
+            case _: ListPhotosOnlyTemplatesResult.Failed      => InternalServerError(Map("code" -> "service_failure"))
         }
     }
 

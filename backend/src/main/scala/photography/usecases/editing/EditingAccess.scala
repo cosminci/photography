@@ -64,7 +64,7 @@ object EditingAccess:
             case OpeningResult.Found(spread)   => admit(connection, EditingTarget.Spread(spread), maybeGrant)(write)
             case OpeningResult.AlbumNotFound   => Result.AlbumNotFound[A]().pure[F]
             case OpeningResult.ChapterNotFound => Result.ChapterNotFound[A]().pure[F]
-            case OpeningResult.Failed(_)       => Result.Failed[A]().pure[F]
+            case _: OpeningResult.Failed       => Result.Failed[A]().pure[F]
 
     private def admit[A](connection: EditorConnection, spread: EditingTarget, maybeGrant: Option[GrantId])(write: F[A]) =
       val authorization = maybeGrant match
@@ -74,9 +74,9 @@ object EditingAccess:
 
     private def complete[A](authorization: F[AuthorizationResult])(write: F[A]) =
       authorization.flatMap:
-        case AuthorizationResult.Authorized               => write.map(Result.Completed(_))
-        case AuthorizationResult.Rejected(reason)         => Result.Rejected[A](reason).pure[F]
-        case AuthorizationResult.Blocked(_, owner, alias) => Result.Blocked[A](owner, alias).pure[F]
+        case AuthorizationResult.Authorized       => write.map(Result.Completed(_))
+        case AuthorizationResult.Rejected(reason) => Result.Rejected[A](reason).pure[F]
+        case blocked: AuthorizationResult.Blocked => Result.Blocked[A](blocked.owner, blocked.alias).pure[F]
 
   enum Protection:
     case ActiveTab

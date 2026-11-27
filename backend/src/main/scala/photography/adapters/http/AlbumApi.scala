@@ -43,7 +43,7 @@ object AlbumApi:
       metadata.metadata(id).flatMap:
         case AlbumRepository.MetadataResult.Found(value) => Ok(value)
         case AlbumRepository.MetadataResult.NotFound     => respondAlbumNotFound
-        case AlbumRepository.MetadataResult.Failed(_)    => respondServiceFailure
+        case _: AlbumRepository.MetadataResult.Failed    => respondServiceFailure
 
     private def saveSynopsis(album: AlbumId, request: Request[F]) =
       val decode = request.attemptAs[String](using jsonOf[F, String](using Async[F], JsonBody.text)).value

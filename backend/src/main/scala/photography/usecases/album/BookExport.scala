@@ -69,7 +69,7 @@ object BookExport:
       albums.metadata(id).map:
         case AlbumRepository.MetadataResult.Found(saved) => saved.asRight[Result]
         case AlbumRepository.MetadataResult.NotFound     => Result.NotFound.asLeft[AlbumRepository.Metadata]
-        case AlbumRepository.MetadataResult.Failed(_)    => Result.Failed.asLeft[AlbumRepository.Metadata]
+        case _: AlbumRepository.MetadataResult.Failed    => Result.Failed.asLeft[AlbumRepository.Metadata]
 
     private def readCover(id: AlbumId) =
       covers.read(id).map:

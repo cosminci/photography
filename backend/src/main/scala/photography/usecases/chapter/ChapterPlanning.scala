@@ -81,7 +81,7 @@ object ChapterPlanning:
         chapters: Vector[ChapterMetadata]
     ) =
       templates.listChapterStartTemplates.flatMap:
-        case ListChapterStartTemplatesResult.Failed(_)         => (CreationResult.Failed: CreationResult).pure[F]
+        case _: ListChapterStartTemplatesResult.Failed         => (CreationResult.Failed: CreationResult).pure[F]
         case ListChapterStartTemplatesResult.Listed(available) =>
           val template = available.head
           for

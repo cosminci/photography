@@ -41,7 +41,7 @@ object AlbumManager:
 
     override def list(page: Int): F[ListAlbumsResult] =
       repository.list(offset = 0, limit = pageSize).flatMap:
-        case AlbumRepository.ListResult.Failed(_)         => ListAlbumsResult.Failed.pure[F]
+        case _: AlbumRepository.ListResult.Failed         => ListAlbumsResult.Failed.pure[F]
         case AlbumRepository.ListResult.Listed(firstPage) =>
           val totalAlbums  = firstPage.totalAlbums
           val totalPages   = ((totalAlbums + pageSize - 1) / pageSize).toInt
@@ -54,7 +54,7 @@ object AlbumManager:
               val result =
                 AlbumPage(albums = slice.albums, page = selectedPage, pageSize = pageSize, totalAlbums = totalAlbums, totalPages = totalPages)
               ListAlbumsResult.Listed(result)
-            case AlbumRepository.ListResult.Failed(_) => ListAlbumsResult.Failed
+            case _: AlbumRepository.ListResult.Failed => ListAlbumsResult.Failed
 
     override def create(year: AlbumYear): F[CreateAlbumResult] =
       spreads.listAlbumStartTemplates.flatMap:
@@ -65,9 +65,9 @@ object AlbumManager:
             repository.create(album, cover).map:
               case AlbumRepository.CreateResult.Created                                         => CreateAlbumResult.Created(album)
               case AlbumRepository.CreateResult.Failed(AlbumRepository.Failure.YearAlreadyUsed) => CreateAlbumResult.YearAlreadyUsed
-              case AlbumRepository.CreateResult.Failed(_)                                       => CreateAlbumResult.Failed
+              case _: AlbumRepository.CreateResult.Failed                                       => CreateAlbumResult.Failed
           }
-        case ListAlbumStartTemplatesResult.Failed(_) => CreateAlbumResult.Failed.pure[F]
+        case _: ListAlbumStartTemplatesResult.Failed => CreateAlbumResult.Failed.pure[F]
 
     override def rename(id: AlbumId, title: AlbumTitle): F[RenameResult] =
       repository.rename(id, title = title).flatMap:

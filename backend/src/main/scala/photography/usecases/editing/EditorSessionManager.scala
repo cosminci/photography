@@ -55,7 +55,7 @@ object EditorSessionManager:
       ).void
       changes.concurrently(expiry).takeThrough {
         case OwnershipChangeResult.Changed     => true
-        case OwnershipChangeResult.Rejected(_) => false
+        case _: OwnershipChangeResult.Rejected => false
       }
 
     override def register(owner: EditorId, alias: EditorAlias, maybeSession: Option[SessionId]): F[RegisterResult] =

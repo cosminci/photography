@@ -1,7 +1,7 @@
 ThisBuild / scalafixResolvers += coursierapi.MavenRepository.of(
-  "https://raw.githubusercontent.com/cosminci/agentic-workflows/6f59737de4c1b3272e589722e86b0f13163a8f18/"
+  "https://raw.githubusercontent.com/cosminci/agentic-workflows/89c9644d0c9fedd6619d3c90cabf97eb1345aede/"
 )
-scalafixDependencies += "com.cosminci" % "scalafix-custom-rules_2.13" % "0.3.7"
+scalafixDependencies += "com.cosminci" % "scalafix-custom-rules_2.13" % "0.3.8"
 
 Compile / scalafixConfig := Some(baseDirectory.value / ".scalafix-codecs.conf")
 Test / scalafixConfig    := Some(baseDirectory.value / ".scalafix-test.conf")

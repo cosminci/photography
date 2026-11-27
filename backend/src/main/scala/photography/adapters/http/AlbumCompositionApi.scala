@@ -26,7 +26,7 @@ object AlbumCompositionApi:
       composition.composition(id).flatMap:
         case AlbumCompositionRepository.CompositionResult.Found(values) => Ok(Json.obj("spreads" -> Json.arr(values.toList.map(encode)*)))
         case AlbumCompositionRepository.CompositionResult.AlbumNotFound => missing
-        case AlbumCompositionRepository.CompositionResult.Failed(_)     => InternalServerError(Map("code" -> "service_failure"))
+        case _: AlbumCompositionRepository.CompositionResult.Failed     => InternalServerError(Map("code" -> "service_failure"))
 
     private def missing = NotFound(Map("code" -> "album_not_found"))
 

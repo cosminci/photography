@@ -203,8 +203,8 @@ object ChapterMetadataManager:
       if !sourceChanged then none[ImportPreparation].pure[F]
       else
         preparePhotos(album, chapter, source).flatTap:
-          case ImportPreparation.Failed(_)   => photos.suspend(chapter)
-          case ImportPreparation.Prepared(_) => ().pure[F]
+          case _: ImportPreparation.Failed   => photos.suspend(chapter)
+          case _: ImportPreparation.Prepared => ().pure[F]
         .map(_.some)
 
     private def preparePhotos(album: AlbumId, chapter: ChapterId, source: PhotoSource) =

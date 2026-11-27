@@ -85,8 +85,8 @@ object CoverManager:
         change.pure[F]
 
     private def checkPhoto(album: AlbumId, request: Edit) = request match
-      case Edit.Place(_, photo) =>
-        photos.inspect(album, maybeChapter = none[ChapterId], photo).map:
+      case place: Edit.Place =>
+        photos.inspect(album, maybeChapter = none[ChapterId], place.photo).map:
           case PhotoPlacementRepository.InspectResult.Found(inCollection, placed) =>
             if !inCollection then Failure.PhotoNotInCollection.asLeft[Unit]
             else if placed then Failure.PhotoAlreadyUsed.asLeft[Unit]

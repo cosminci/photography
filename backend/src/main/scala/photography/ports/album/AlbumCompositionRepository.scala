@@ -40,6 +40,6 @@ object AlbumCompositionRepository:
     case Photo(chapter: ChapterId, value: Spread.PhotosOnly)
 
     def spread: Spread = this match
-      case AlbumOpening(value)      => value
-      case ChapterOpening(_, value) => value
-      case Photo(_, value)          => value
+      case AlbumOpening(value)     => value
+      case opening: ChapterOpening => opening.value
+      case photo: Photo            => photo.value

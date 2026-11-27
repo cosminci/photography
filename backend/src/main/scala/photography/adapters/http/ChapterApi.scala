@@ -144,7 +144,7 @@ object ChapterApi:
       metadata.chapters(id).flatMap:
         case AlbumRepository.ChaptersResult.Found(values) => Ok(Json.obj("chapters" -> Json.arr(values.map(encodeChapter)*)))
         case AlbumRepository.ChaptersResult.AlbumNotFound => albumNotFound
-        case AlbumRepository.ChaptersResult.Failed(_)     => serviceFailure
+        case _: AlbumRepository.ChaptersResult.Failed     => serviceFailure
 
     private def encodeChapter(value: AlbumRepository.ChapterMetadata) =
       val destination = value.destination
