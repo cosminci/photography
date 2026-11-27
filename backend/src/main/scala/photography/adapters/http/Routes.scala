@@ -33,12 +33,12 @@ object Routes:
       route.access match
         case Access.Public             => decoded
         case Access.Editor(protection) =>
-          val grant = protection match
+          val grantIdResult = protection match
             case Protection.ActiveTab                                                                         => none[GrantId].asRight[String]
             case Protection.OwnSpread(_) | Protection.OwnAlbumOpening(_) | Protection.OwnChapterOpening(_, _) =>
               requiredId(request, "X-Editor-Grant").map(value => GrantId(value).some)
             case Protection.ChangeSpreads(_) | Protection.OwnPhotoSpread(_, _) => optionalId(request, "X-Editor-Grant").map(_.map(GrantId(_)))
-          (readConnection(request), grant).tupled match
+          (readConnection(request), grantIdResult).tupled match
             case Left(message)                   => Response[F](Status.BadRequest).withEntity(Map("code" -> message)).pure[F]
             case Right((connection, maybeGrant)) =>
               route.decode.flatMap:

@@ -175,8 +175,8 @@ object EditorSessionManager:
         case Right(session) => checkAffected(current, session, targets, maybeGrant)
 
     private def checkAffected(current: EditorSessionState, session: EditorSession, targets: Set[EditingTarget], maybeGrant: Option[GrantId]) =
-      val proof = maybeGrant.traverse(findGrant(current, session, _))
-      proof match
+      val grantCheckResult = maybeGrant.traverse(findGrant(current, session, _))
+      grantCheckResult match
         case Left(failure)    => AuthorizationResult.Rejected(failure)
         case Right(maybeLock) =>
           val affected = current.locks.filter(lock => targets.contains(lock.target))

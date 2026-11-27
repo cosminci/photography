@@ -54,9 +54,9 @@ object CoverManager:
             case CoverRepository.ReadResult.NotFound      => Result.CoverNotFound.pure[Db]
             case CoverRepository.ReadResult.Found(stored) =>
               val current = compose(stored)
-              checkPhoto(album, request).flatMap: permission =>
+              checkPhoto(album, request).flatMap: photoCheckResult =>
                 val slots = Set(current.cover.front.id, current.cover.back.id)
-                permission.flatMap(_ => change(slots, current.placements)) match
+                photoCheckResult.flatMap(_ => change(slots, current.placements)) match
                   case Left(reason)  => Result.Rejected(reason).pure[Db]
                   case Right(values) =>
                     covers.replace(album, placements = values).map[Result]:

@@ -60,13 +60,13 @@ object SqliteChapterRepository:
         case None => SourceResult.ChapterNotFound.pure[ConnectionIO]
 
     override def create(album: AlbumId, chapter: NewChapter, order: NonEmptyList[ChapterId]): ConnectionIO[CreateResult] =
-      val opening         = chapter.opening
-      val distinctSlotIds = opening.photoSlots.forall(_.id.value =!= opening.textSlot.id.value)
-      val isInitial       = opening.placements.isEmpty && opening.photoSlots.nonEmpty && distinctSlotIds
-      val initial         = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an empty chapter opening with photo slots"))
-      val write           =
+      val opening            = chapter.opening
+      val distinctSlotIds    = opening.photoSlots.forall(_.id.value =!= opening.textSlot.id.value)
+      val isInitial          = opening.placements.isEmpty && opening.photoSlots.nonEmpty && distinctSlotIds
+      val openingCheckResult = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an empty chapter opening with photo slots"))
+      val write              =
         for
-          _ <- initial.liftTo[ConnectionIO]
+          _ <- openingCheckResult.liftTo[ConnectionIO]
           _ <- validateOpening(opening)
           _ <- insertChapter(album, chapter)
           _ <- insertCountries(chapter.id, countries = chapter.countries)
@@ -116,11 +116,11 @@ object SqliteChapterRepository:
     private def loadCameraUse(chapter: ChapterId, camera: UUID, kind: String) =
       val lenses = sql"SELECT lens_id FROM chapter_camera_lens WHERE chapter_id = ${chapter.value} AND camera_id = $camera ORDER BY rowid"
       lenses.query[UUID].to[Vector].flatMap: ids =>
-        val use = (kind, NonEmptyVector.fromVector(ids.map(LensId(_)))) match
+        val cameraUseResult = (kind, NonEmptyVector.fromVector(ids.map(LensId(_)))) match
           case ("fixed_lens", None)                       => CameraUse.FixedLens.asRight[Throwable]
           case ("interchangeable_lenses", Some(selected)) => CameraUse.Interchangeable(lenses = selected).asRight[Throwable]
           case _                                          => new IllegalArgumentException("Invalid saved chapter gear").asLeft[CameraUse]
-        use.liftTo[ConnectionIO].map(CameraSelection(CameraId(camera), _))
+        cameraUseResult.liftTo[ConnectionIO].map(CameraSelection(CameraId(camera), _))
 
     private def replaceSelection(chapter: ChapterId, selection: GearSelection) =
       val remove = sql"DELETE FROM chapter_camera WHERE chapter_id = ${chapter.value}".update.run

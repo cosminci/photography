@@ -216,9 +216,9 @@ object ChapterApi:
       CanonicalId.unapply(value).map(CountryId(_)).toRight("Country IDs must be canonical UUIDs")
 
     private val countryDecoder = Decoder.decodeList[CountryId].emap: values =>
-      val distinct = values.map(_.value).distinct.size === values.size
-      val nonEmpty = NonEmptyList.fromList(values).toRight("Select at least one country")
-      Either.cond(distinct, right = (), "Select each country only once").flatMap(_ => nonEmpty)
+      val distinct                = values.map(_.value).distinct.size === values.size
+      val requiredCountriesResult = NonEmptyList.fromList(values).toRight("Select at least one country")
+      Either.cond(distinct, right = (), "Select each country only once").flatMap(_ => requiredCountriesResult)
 
     private val dateDecoder = Decoder.decodeString.emap: value =>
       val isCalendarDay = value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")
@@ -252,9 +252,9 @@ object ChapterApi:
         yield (name, countries, period, folder)
 
     private def decodeName(cursor: HCursor, isHome: Boolean) =
-      val raw = if isHome then "Home".asRight[DecodingFailure] else cursor.get[String]("name").map(_.trim)
-      raw.flatMap: name =>
-        val reservedName = !isHome && name === "Home"
-        val valid        =
+      val readNameResult = if isHome then "Home".asRight[DecodingFailure] else cursor.get[String]("name").map(_.trim)
+      readNameResult.flatMap: name =>
+        val reservedName         = !isHome && name === "Home"
+        val nameValidationResult =
           if reservedName then "Choose a vacation name other than Home".asLeft[DestinationName] else name.refineEither[Not[Empty] & Not[Blank]]
-        valid.leftMap(message => DecodingFailure(message, cursor.history))
+        nameValidationResult.leftMap(message => DecodingFailure(message, cursor.history))

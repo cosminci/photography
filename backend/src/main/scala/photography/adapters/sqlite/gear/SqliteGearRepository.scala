@@ -119,24 +119,24 @@ object SqliteGearRepository:
 
     private def decodeCamera(row: (UUID, String, String, String, Option[String], Option[String])) =
       val (id, code, name, kind, maybeMount, maybeSensor) = row
-      val decoded                                         =
+      val cameraDecodeResult                              =
         for
           validCode <- code.refineEither[Not[Empty]]
           validName <- name.refineEither[Not[Empty]]
           validKind <- decodeKind(kind = kind, maybeMount = maybeMount, maybeSensor = maybeSensor)
         yield Camera(CameraId(id), validCode, validName, validKind)
-      decoded.leftMap(new IllegalArgumentException(_))
+      cameraDecodeResult.leftMap(new IllegalArgumentException(_))
 
     private def decodeLens(row: (UUID, String, String, String, String)) =
       val (id, code, name, mount, coverage) = row
-      val decoded                           =
+      val lensDecodeResult                  =
         for
           validCode     <- code.refineEither[Not[Empty]]
           validName     <- name.refineEither[Not[Empty]]
           validMount    <- decodeMount(value = mount)
           validCoverage <- decodeFormat(value = coverage)
         yield Lens(LensId(id), validCode, validName, validMount, validCoverage)
-      decoded.leftMap(new IllegalArgumentException(_))
+      lensDecodeResult.leftMap(new IllegalArgumentException(_))
 
     private def decodeKind(kind: String, maybeMount: Option[String], maybeSensor: Option[String]) =
       (kind, maybeMount, maybeSensor) match

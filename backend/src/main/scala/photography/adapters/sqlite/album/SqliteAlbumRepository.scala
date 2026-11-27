@@ -65,12 +65,12 @@ object SqliteAlbumRepository:
       execute(query, ListResult.Failed(_))
 
     override def create(album: Album, cover: Cover): F[CreateResult] =
-      val opening   = album.opening
-      val isInitial = album.chapters.isEmpty && album.opening.placements.isEmpty && cover.album.value === album.id.value
-      val initial   = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an initial album and its cover"))
-      val query     =
+      val opening          = album.opening
+      val isInitial        = album.chapters.isEmpty && album.opening.placements.isEmpty && cover.album.value === album.id.value
+      val albumCheckResult = Either.cond(isInitial, right = (), new IllegalArgumentException("Expected an initial album and its cover"))
+      val query            =
         for
-          _ <- initial.liftTo[ConnectionIO]
+          _ <- albumCheckResult.liftTo[ConnectionIO]
           _ <- insertAlbum(album)
           _ <- insertInitialSpread(album.id, opening.id, opening.template, photos = opening.photoSlots, opening.textSlot)
           _ <- insertCover(cover)

@@ -132,7 +132,7 @@ object SqliteAlbumCompositionRepository:
 
     private def orderSlots(expected: List[(String, SlotBox)], stored: List[SlotRow]) =
       val duplicateIdentities = "Duplicate spread slot identities"
-      val matchedSlots        = expected.traverse { case (kind, box) =>
+      val slotMatchResult     = expected.traverse { case (kind, box) =>
         stored.find { slot =>
           val storedBox = slot.box
           kind === slot.kind && (box.x: Double, box.y: Double, box.width: Double, box.height: Double) ===
@@ -142,7 +142,7 @@ object SqliteAlbumCompositionRepository:
       for
         _     <- Either.cond(expected.nonEmpty && expected.size === stored.size, right = (), "Wrong spread slot count")
         _     <- Either.cond(stored.map(_.id).distinct.size === stored.size, right = (), duplicateIdentities)
-        slots <- matchedSlots
+        slots <- slotMatchResult
       yield slots
 
     private def loadSlot(row: SlotRow) =

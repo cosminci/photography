@@ -123,7 +123,7 @@ object AlbumApi:
 
     private object Page:
       def unapply(query: Query): Option[Int] =
-        query.pairs.collect { case ("page", value) => value } match
+        query.pairs.collect { case ("page", maybePageValue) => maybePageValue } match
           case Vector()            => 1.some
           case Vector(Some(value)) => QueryParamDecoder[Int].decode(QueryParameterValue(value)).toOption
           case _                   => None

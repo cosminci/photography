@@ -13,7 +13,7 @@ private[http] object JsonBody:
       explain: DecodingFailure => String
   ): F[Either[String, A]] =
     val json = CirceInstances.builder.withJsonDecodeError((_, failures) => InvalidMessageBodyFailure(explain(failures.head))).build
-    request.attemptAs[A](using json.jsonOf[F, A](using Concurrent[F], decoder)).value.map: result =>
-      result.leftMap:
+    request.attemptAs[A](using json.jsonOf[F, A](using Concurrent[F], decoder)).value.map: decodeResult =>
+      decodeResult.leftMap:
         case InvalidMessageBodyFailure(details, _) => details
         case _                                     => malformed

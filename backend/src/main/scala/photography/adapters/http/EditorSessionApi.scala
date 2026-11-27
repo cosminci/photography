@@ -73,8 +73,8 @@ object EditorSessionApi:
           withConnection(request) { connection =>
             sessions.readTarget(connection).flatMap {
               case ReadTargetResult.Current(revision, maybeLock) =>
-                maybeLock.traverse(encodeGrant).flatMap(lock =>
-                  Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> lock.getOrElse(Json.Null))))
+                maybeLock.traverse(encodeGrant).flatMap(maybeGrant =>
+                  Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> maybeGrant.getOrElse(Json.Null))))
                 )
               case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
