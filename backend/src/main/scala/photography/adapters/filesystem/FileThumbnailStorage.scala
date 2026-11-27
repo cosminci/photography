@@ -45,8 +45,8 @@ object FileThumbnailStorage:
         case None       => ReadResult.NotFound.pure[F]
         case Some(path) =>
           StreamFiles.forAsync[F].readAll(StreamPath.fromNioPath(path)).take(300001).compile.toVector.flatMap: bytes =>
-            val read = bytes.refineEither[ThumbnailBytesConstraint].leftMap(new IllegalStateException(_))
-            read.liftTo[F].flatMap: content =>
+            val sizeCheckResult = bytes.refineEither[ThumbnailBytesConstraint].leftMap(new IllegalStateException(_))
+            sizeCheckResult.liftTo[F].flatMap: content =>
               computeVersion(content.toArray).blocking[F].map: actualVersion =>
                 if (actualVersion: String) === (version: String) then ReadResult.Read(content) else ReadResult.NotFound
       read.recoverWith:

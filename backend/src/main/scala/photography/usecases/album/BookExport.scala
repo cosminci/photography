@@ -140,9 +140,9 @@ object BookExport:
       new IllegalStateException(message).raiseError[F, A]
 
     private def validate(book: SavedBook) =
-      val readiness  = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
-      val projection = readiness.flatMap(issues => BookExportJson.encode(book, warnings = issues).tupleLeft(issues))
-      projection.leftMap(new IllegalStateException(_)).liftTo[F].flatMap: (issues, json) =>
+      val readinessResult = (checkInterior(book), checkCover(book)).mapN(checkContent(book) ++ _ ++ _)
+      val encodeResult    = readinessResult.flatMap(issues => BookExportJson.encode(book, warnings = issues).tupleLeft(issues))
+      encodeResult.leftMap(new IllegalStateException(_)).liftTo[F].flatMap: (issues, json) =>
         if issues.exists(_.severity === Severity.Blocking) then Result.Blocked(issues).pure[F]
         else validateArtifact(json, book.album.year)
 

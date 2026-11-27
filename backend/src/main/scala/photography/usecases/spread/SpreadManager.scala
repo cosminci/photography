@@ -142,8 +142,8 @@ object SpreadManager:
               findSpread(album, spread).flatMap:
                 case None         => PlacementResult.SpreadNotFound.pure[Db]
                 case Some(target) =>
-                  checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: permission =>
-                    permission.flatMap(_ => change(target.spread)) match
+                  checkPlacementPhoto(album, maybeChapter = findPlacementChapter(target), request).flatMap: placementCheckResult =>
+                    placementCheckResult.flatMap(_ => change(target.spread)) match
                       case Left(reason)   => PlacementResult.Rejected(reason).pure[Db]
                       case Right(updated) =>
                         spreads.replacePlacements(updated.id, placements = updated.placements).as(PlacementResult.Saved(updated): PlacementResult)

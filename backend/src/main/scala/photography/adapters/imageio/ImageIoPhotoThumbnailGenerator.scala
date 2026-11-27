@@ -33,24 +33,24 @@ object ImageIoPhotoThumbnailGenerator:
 
     private def renderThumbnail(content: PhotoContent) =
       for
-        bytes       <- content.bytes.toArray.blocking[F]
-        orientation <- readOrientation(bytes = bytes).blocking[F]
-        decoded     <- decodeImage(bytes = bytes)
-        encoded     <- fitThumbnail(decoded, orientation = orientation, longestEdge = quality.longestEdge)
-      yield encoded
+        bytes          <- content.bytes.toArray.blocking[F]
+        orientation    <- readOrientation(bytes = bytes).blocking[F]
+        decoded        <- decodeImage(bytes = bytes)
+        maybeThumbnail <- fitThumbnail(decoded, orientation = orientation, longestEdge = quality.longestEdge)
+      yield maybeThumbnail
 
     private def fitThumbnail(original: BufferedImage, orientation: Int, longestEdge: Int) =
       Async[F].tailRecM(longestEdge): edge =>
         transformImage(original, orientation = orientation, longestEdge = edge).blocking[F].flatMap: image =>
           encodeAtQuality(image).map:
             case None if edge > 1 => math.max(1, edge * 4 / 5).asLeft[Option[EncodedThumbnail]]
-            case result           => result.asRight[Int]
+            case maybeThumbnail   => maybeThumbnail.asRight[Int]
 
     private def encodeAtQuality(image: BufferedImage) =
       Async[F].tailRecM(85): compression =>
         encodeImage(image, compression = compression).map:
           case None if compression > 65 => (compression - 5).asLeft[Option[EncodedThumbnail]]
-          case result                   => result.asRight[Int]
+          case maybeThumbnail           => maybeThumbnail.asRight[Int]
 
     private def readOrientation(bytes: Array[Byte]) =
       val metadata = JpegMetadataReader.readMetadata(new ByteArrayInputStream(bytes))
