@@ -1,3 +1,4 @@
+import hashlib
 import signal
 import sqlite3
 import stat
@@ -327,6 +328,26 @@ class LocalRunnerComponentTest(unittest.TestCase):
         self.assertEqual(result, 1)
         output.assert_called_once_with(f"Error: {failure}", file=local.sys.stderr)
 
+    def test_should_sigterm_stop_the_child_and_remove_the_seed(self):
+        process = mock.Mock()
+        process.wait.side_effect = lambda: signal.raise_signal(signal.SIGTERM)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            run = local.run_local_backend
+            with (
+                mock.patch.object(local, "run_local_backend", side_effect=lambda _: run(root, {})),
+                mock.patch.object(local, "check_prerequisites"),
+                mock.patch.object(local, "wait_for_readiness"),
+                mock.patch.object(local.subprocess, "Popen", return_value=process),
+                mock.patch.object(local, "stop_process_tree") as stop,
+                mock.patch("builtins.print"),
+            ):
+                with self.assertRaises(SystemExit) as terminated:
+                    local.main()
+            self.assertEqual(terminated.exception.code, 143)
+            stop.assert_called_once_with(process)
+            self.assertFalse(self.seed.call_args.args[0].exists())
+
     def test_should_interruption_stop_the_child_and_release_the_lock(self):
         process = mock.Mock()
         process.pid = 45
@@ -388,21 +409,24 @@ class NasSeedComponentTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             source = root / "source.sqlite"
+            location = "00000000-0000-0000-0000-000000000001"
             with sqlite3.connect(source) as database:
                 database.execute("CREATE TABLE album (name TEXT)")
                 database.execute("INSERT INTO album VALUES ('From NAS')")
+                database.execute("CREATE TABLE photo (thumbnail TEXT, thumbnail_version TEXT, thumbnail_bytes INTEGER)")
+                database.execute("INSERT INTO photo VALUES (?, ?, ?)", (location, hashlib.sha256(b"preview").hexdigest(), 7))
             thumbnail = root / "preview.jpg"
             thumbnail.write_bytes(b"preview")
             checkpoint = root / "checkpoint.tar.gz"
             with tarfile.open(checkpoint, "w:gz") as archive:
                 archive.add(source, arcname="/mnt/user/appdata/photography/data/photography.db")
-                archive.add(thumbnail, arcname="/mnt/user/appdata/photography/thumbnails/preview.jpg")
+                archive.add(thumbnail, arcname=f"/mnt/user/appdata/photography/thumbnails/{location}.jpg")
             destination = root / "run"
             destination.mkdir()
             local.restore_checkpoint(checkpoint, destination)
             with sqlite3.connect(destination / "photography.db") as database:
                 self.assertEqual(database.execute("SELECT name FROM album").fetchone(), ("From NAS",))
-            self.assertEqual((destination / "thumbnails" / "preview.jpg").read_bytes(), b"preview")
+            self.assertEqual((destination / "thumbnails" / f"{location}.jpg").read_bytes(), b"preview")
 
             truncated = root / "truncated.tar.gz"
             truncated.write_bytes(checkpoint.read_bytes()[:-4])
@@ -410,6 +434,22 @@ class NasSeedComponentTest(unittest.TestCase):
             destination.mkdir()
             with self.assertRaises(EOFError):
                 local.restore_checkpoint(truncated, destination)
+
+            for case in ("missing", "mismatched"):
+                with self.subTest(case=case):
+                    with tarfile.open(checkpoint, "w:gz") as archive:
+                        archive.add(source, arcname="mnt/user/appdata/photography/data/photography.db")
+                        directory = tarfile.TarInfo("mnt/user/appdata/photography/thumbnails")
+                        directory.type = tarfile.DIRTYPE
+                        archive.addfile(directory)
+                        if case == "mismatched":
+                            thumbnail.write_bytes(b"invalid")
+                            archive.add(thumbnail, arcname=f"mnt/user/appdata/photography/thumbnails/{location}.jpg")
+                    destination = root / case
+                    destination.mkdir()
+                    error = FileNotFoundError if case == "missing" else local.StartupError
+                    with self.assertRaises(error):
+                        local.restore_checkpoint(checkpoint, destination)
 
 
 if __name__ == "__main__":

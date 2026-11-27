@@ -281,8 +281,8 @@ describe("photo pane browser controls", () => {
 
   it.each([
     ["pending", "Processing photos…"],
-    ["queued", "Refresh photos"],
-    ["coalesced", "Refresh photos"],
+    ["queued", "Processing photos…"],
+    ["coalesced", "Processing photos…"],
     ["not-requested", "Refresh photos"],
   ] as const)("should keep routine %s receipts out of the photo explorer", (scheduling, description) => {
     render(() => (
@@ -305,7 +305,9 @@ describe("photo pane browser controls", () => {
       </PhotoPane>
     ));
 
-    expect(screen.getByRole("button", { name: "Refresh photos" }).getAttribute("aria-disabled")).toBe(scheduling === "pending" ? "true" : null);
+    expect(screen.getByRole("button", { name: "Refresh photos" }).getAttribute("aria-disabled")).toBe(
+      description === "Processing photos…" ? "true" : null,
+    );
     expect(screen.getByRole("button", { name: "Refresh photos" })).toHaveAccessibleDescription(description);
     expect(screen.getByRole("heading", { name: "Photos" })).toBeInTheDocument();
     expect(screen.getByText("0 unplaced / 1 total")).toBeInTheDocument();

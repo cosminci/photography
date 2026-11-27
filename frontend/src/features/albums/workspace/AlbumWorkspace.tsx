@@ -516,10 +516,12 @@ export function AlbumWorkspace(props: {
         ownershipLoading,
         () => props.session.targetPending(),
         navigationReason,
+        placement.saving,
       ],
-      ([revision, lossRevision, loading, pending, maybeNavigationReason]) => {
+      ([revision, lossRevision, loading, pending, maybeNavigationReason, savingPhotos]) => {
         const retainingTextDraft = textEdit() !== undefined && maybeNavigationReason === contentReason();
-        if (loading || pending || (maybeNavigationReason !== undefined && !retainingTextDraft)) return;
+        const retainingPhotoDraft = maybeNavigationReason === placement.navigationReason();
+        if (loading || pending || savingPhotos || (maybeNavigationReason !== undefined && !retainingTextDraft && !retainingPhotoDraft)) return;
         const ownerChanged = revision !== observedOwnershipRevision;
         const accessLost = lossRevision !== observedLossRevision;
         observedOwnershipRevision = revision;

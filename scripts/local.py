@@ -4,6 +4,7 @@ from contextlib import ExitStack, closing
 from dataclasses import dataclass
 import fcntl
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import time
 from typing import Callable, Mapping
 import urllib.error
 import urllib.request
+from uuid import UUID
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -103,6 +105,15 @@ def restore_checkpoint(checkpoint: Path, destination: Path) -> None:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise StartupError("NAS checkpoint failed SQLite integrity checks")
         connection.execute("SELECT 1 FROM album LIMIT 1").fetchone()
+        for location, version, byte_count in connection.execute("SELECT thumbnail, thumbnail_version, thumbnail_bytes FROM photo"):
+            try:
+                filename = f"{UUID(location)}.jpg"
+            except ValueError as error:
+                raise StartupError(f"Invalid thumbnail location in NAS checkpoint: {location!r}") from error
+            with (thumbnails / filename).open("rb") as thumbnail:
+                content = thumbnail.read(300001)
+            if len(content) != byte_count or hashlib.sha256(content).hexdigest() != version:
+                raise StartupError(f"NAS checkpoint thumbnail does not match the database: {filename}")
 
 
 def seed_from_nas(destination: Path, environment: Mapping[str, str]) -> None:
@@ -358,8 +369,13 @@ def run_local_backend(project_root: Path, environment: Mapping[str, str] | None 
                     lock_file.close()
 
 
+def terminate(_signum, _frame):
+    raise SystemExit(128 + signal.SIGTERM)
+
+
 def main() -> int:
     project_root = Path(__file__).resolve().parent.parent
+    previous = signal.signal(signal.SIGTERM, terminate)
     try:
         return run_local_backend(project_root)
     except (PreflightError, StartupError, OSError, subprocess.CalledProcessError) as error:
@@ -367,6 +383,8 @@ def main() -> int:
         return 1
     except KeyboardInterrupt:
         return 130
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

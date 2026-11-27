@@ -40,8 +40,10 @@ export function PhotoPane(props: {
   const inventoryNeedsRetry = (id: string) => props.liveStatus !== "live" || props.inventoryErrors[id] !== undefined;
   const refreshing = createMemo(() =>
     props.chapters.some(({ id }) => {
-      if (props.scheduling[id] === "pending") return true;
+      const request = props.scheduling[id];
+      if (request === "pending") return true;
       if (inventoryNeedsRetry(id)) return false;
+      if (request === "queued" || request === "coalesced") return true;
       const state = props.inventories[id]?.processing.state;
       return state === "queued" || state === "running";
     }),

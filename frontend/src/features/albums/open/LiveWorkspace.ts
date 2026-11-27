@@ -45,6 +45,11 @@ export function createLiveWorkspace(
       setInventoryErrors({});
       setScheduling({});
 
+      function settleReceipt(chapterId: string, receipt: Scheduling | "pending" | undefined) {
+        if (receipt !== "queued" && receipt !== "coalesced") return;
+        setScheduling((current) => (current[chapterId] === receipt ? { ...current, [chapterId]: "not-requested" } : current));
+      }
+
       function readAlbum(): Promise<Album> {
         if (metadataRead !== undefined) return metadataRead;
         const revision = metadataRevision;
@@ -81,6 +86,7 @@ export function createLiveWorkspace(
           do {
             readAgain = false;
             epoch++;
+            const receipts = scheduling();
             for (const chapter of chapters.values()) chapter.dirty = false;
             try {
               const revision = metadataRevision;
@@ -116,6 +122,7 @@ export function createLiveWorkspace(
               setWorkspace(snapshot);
               setInventoryErrors({});
               failure = undefined;
+              for (const [chapterId, receipt] of Object.entries(receipts)) settleReceipt(chapterId, receipt);
             } catch (cause) {
               failure = cause instanceof Error ? cause : new Error("Saved workspace could not be loaded");
               if (cause instanceof AcquisitionConflict && reconciliationAttempts < 2) {
@@ -129,6 +136,11 @@ export function createLiveWorkspace(
           setError(() => failure);
           setLoading(false);
           if (liveStatus() === "catching-up" && failure === undefined) setLiveStatus("live");
+          if (failure !== undefined)
+            for (const chapter of workspace()?.chapters ?? []) {
+              const receipt = scheduling()[chapter.id];
+              if (receipt === "queued" || receipt === "coalesced") invalidated.add(chapter.id);
+            }
           const pending = [...invalidated];
           invalidated.clear();
           for (const chapter of pending) retryChapter(chapter);
@@ -158,6 +170,7 @@ export function createLiveWorkspace(
           return;
         }
         const started = epoch;
+        const receipt = scheduling()[chapterId];
         state.running = true;
         void client
           .chapterPhotos(chapterId, controller.signal)
@@ -176,6 +189,7 @@ export function createLiveWorkspace(
           })
           .finally(() => {
             state.running = false;
+            if (active && started === epoch) settleReceipt(chapterId, receipt);
             if (active && state.dirty) {
               state.dirty = false;
               retryChapter(chapterId);
@@ -193,7 +207,9 @@ export function createLiveWorkspace(
             const command = client
               .refreshPhotos(chapterId)
               .then((result) => {
-                if (active) setScheduling((current) => ({ ...current, [chapterId]: result }));
+                if (!active) return;
+                setScheduling((current) => ({ ...current, [chapterId]: result }));
+                retryChapter(chapterId);
               })
               .catch(() => {
                 if (active) setScheduling((current) => ({ ...current, [chapterId]: "failed" }));

@@ -675,14 +675,60 @@ describe("live workspace application coordination", () => {
       expect(live.scheduling()["b"]).toBe("failed");
     });
     expect(live.scheduling()["a"]).toBe("pending");
+    const supersededInventory = pendingRead<PhotoInventory>();
+    const refreshedInventory = pendingRead<PhotoInventory>();
+    client.chapterPhotos.mockClear().mockReturnValueOnce(supersededInventory.promise).mockReturnValueOnce(refreshedInventory.promise);
     pending.resolve("queued");
     await Promise.all([refresh, duplicate]);
 
     expect(client.refreshPhotos.mock.calls).toEqual([["a"], ["b"]]);
     expect(live.scheduling()).toEqual({ a: "queued", b: "failed" });
     expect(live.workspace()?.photoInventories["a"]?.processing.state).toBe("idle");
+    const workspaceFailure = new Error("Metadata unavailable");
+    client.chapters.mockRejectedValueOnce(workspaceFailure);
+    await live.reload();
+    expect(live.error()).toBe(workspaceFailure);
+    supersededInventory.resolve(inventory);
+    await waitFor(() => {
+      expect(client.chapterPhotos).toHaveBeenCalledTimes(2);
+      expect(live.scheduling()["a"]).toBe("queued");
+    });
+    refreshedInventory.resolve(inventory);
+    await waitFor(() => {
+      expect(live.scheduling()["a"]).toBe("not-requested");
+    });
     await live.refresh(["b"]);
-    expect(live.scheduling()["b"]).toBe("coalesced");
+    await waitFor(() => {
+      expect(live.scheduling()["b"]).toBe("not-requested");
+    });
+    dispose();
+  });
+
+  it("does not clear a newer refresh request when an older inventory read settles", async () => {
+    const receive = vi.fn<(event: PhotoEvent) => void>();
+    const client = buildClient();
+    const { live, dispose } = createRoot((release) => ({
+      live: createLiveWorkspace(() => album.id, client, buildEvents(receive, vi.fn())),
+      dispose: release,
+    }));
+    receive({ kind: "subscribed" });
+    await waitFor(() => {
+      expect(live.workspace()).toEqual(workspace);
+    });
+    const olderRead = pendingRead<PhotoInventory>();
+    client.chapterPhotos.mockReturnValueOnce(olderRead.promise);
+    await live.refresh(["a"]);
+    receive({ kind: "interrupted" });
+    const newerRequest = pendingRead<"queued" | "coalesced">();
+    client.refreshPhotos.mockReturnValueOnce(newerRequest.promise);
+    const newerRefresh = live.refresh(["a"]);
+    olderRead.resolve({ ...inventory, processing: { ...inventory.processing, state: "running" } });
+    await waitFor(() => {
+      expect(live.workspace()?.photoInventories["a"]?.processing.state).toBe("running");
+    });
+    expect(live.scheduling()["a"]).toBe("pending");
+    newerRequest.resolve("queued");
+    await newerRefresh;
     dispose();
   });
 

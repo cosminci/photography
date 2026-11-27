@@ -1292,6 +1292,35 @@ describe("AlbumWorkspace", () => {
     expect(refs.client.saveSynopsis).not.toHaveBeenCalled();
   });
 
+  it("requests a replacement lock for retained photos without applying the adjustments", async () => {
+    const refs = buildRefs();
+    renderWorkspace(refs);
+    await settle();
+    refs.setPhotoError("Review retained adjustments.");
+    refs.setRetained(true);
+    refs.setNavigationReason("Unsaved photo adjustments. Finish or retry before leaving.");
+    refs.setPhotoSaving(true);
+    refs.setTargetReason("Editing ownership expired.");
+    refs.setLossRevision(1);
+    expect(refs.session.select).toHaveBeenCalledOnce();
+
+    const replacement = deferred<boolean>();
+    refs.session.select.mockReturnValueOnce(replacement.promise);
+    refs.setPhotoSaving(false);
+    expect(refs.session.select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, true);
+    const apply = screen.getByRole("button", { name: "Apply retained photo adjustments" });
+    expect(apply).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry photos" }));
+    expect(refs.placement.retry).toHaveBeenCalledOnce();
+    refs.setTargetReason(undefined);
+    replacement.resolve(true);
+    await settle();
+
+    expect(refs.placement.applyRetained).not.toHaveBeenCalled();
+    fireEvent.click(apply);
+    expect(refs.placement.applyRetained).toHaveBeenCalledOnce();
+  });
+
   it("should preserve native link and text-entry gestures instead of treating them as catalog departure or spread navigation", async () => {
     const refs = buildRefs();
     renderWorkspace(refs, chapter.id);
