@@ -94,14 +94,19 @@ object SpreadManager:
         templates.findTemplate(template).flatMap[ChangeTemplateResult]:
           case FindTemplateResult.Found(layout) =>
             buildReplacement(layout).flatMap: replace =>
-              val mismatch = ChangeTemplateResult.Rejected(Conflict.ContextMismatch)
+              val mismatch           = ChangeTemplateResult.Rejected(Conflict.ContextMismatch)
+              def prepareReplacement =
+                findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult).subflatMap: target =>
+                  replace(target.spread).toRight[ChangeTemplateResult](mismatch).flatMap: replacement =>
+                    requireConfirmation(
+                      target.spread.placements.size,
+                      confirmed = confirmPlacements
+                    )(ChangeTemplateResult.Occupied(_)).as(replacement)
               val mutation =
                 for
                   _ <- composition.hasAlbum(album).map(Either.cond(_, right = (), ChangeTemplateResult.AlbumNotFound: ChangeTemplateResult)).eitherT
-                  target <- findSpread(album, spread).orFail(ifEmpty = ChangeTemplateResult.SpreadNotFound: ChangeTemplateResult)
-                  fresh  <- replace(target.spread).orFail[Db, ChangeTemplateResult](ifEmpty = mismatch)
-                  _      <- requireConfirmation(target.spread.placements.size, confirmed = confirmPlacements)(ChangeTemplateResult.Occupied(_))
-                  _      <- spreads.replace(fresh).lift[ChangeTemplateResult]
+                  fresh <- prepareReplacement
+                  _     <- spreads.replace(fresh).lift[ChangeTemplateResult]
                 yield ChangeTemplateResult.Changed(spread, template): ChangeTemplateResult
               Transaction[Db, F].run(mutation.merge)
           case FindTemplateResult.NotFound  => (ChangeTemplateResult.Rejected(Conflict.UnknownTemplate): ChangeTemplateResult).pure[F]
@@ -112,14 +117,16 @@ object SpreadManager:
         spread: SpreadId,
         confirmPlacements: Boolean
     ): F[DeleteResult] =
+      def readDeletablePhoto =
+        findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult).subflatMap: target =>
+          findPhoto(target).toRight[DeleteResult](DeleteResult.Rejected(Conflict.OpeningDelete)).flatMap: found =>
+            requireConfirmation[DeleteResult](found.value.placements.size, confirmed = confirmPlacements)(DeleteResult.Occupied(_)).as(found)
       val mutation =
         for
-          _      <- composition.hasAlbum(album).map(Either.cond(_, right = (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
-          target <- findSpread(album, spread).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
-          photo  <- findPhoto(target).orFail[Db, DeleteResult](ifEmpty = DeleteResult.Rejected(Conflict.OpeningDelete))
-          _      <- requireConfirmation[DeleteResult](photo.value.placements.size, confirmed = confirmPlacements)(DeleteResult.Occupied(_))
-          order  <- composition.findChapterOrder(album, photo.chapter).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
-          _      <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = removeFromOrder(order = order, spread))).lift[DeleteResult]
+          _     <- composition.hasAlbum(album).map(Either.cond(_, right = (), DeleteResult.AlbumNotFound: DeleteResult)).eitherT
+          photo <- readDeletablePhoto
+          order <- composition.findChapterOrder(album, photo.chapter).orFail(ifEmpty = DeleteResult.SpreadNotFound: DeleteResult)
+          _     <- (spreads.remove(spread) >> spreads.reorder(photo.chapter, order = removeFromOrder(order = order, spread))).lift[DeleteResult]
         yield DeleteResult.Deleted: DeleteResult
       act[DeleteResult](DeleteResult.Failed):
         Transaction[Db, F].run(mutation.merge)
@@ -152,11 +159,13 @@ object SpreadManager:
           Transaction[Db, F].run(mutation)
 
     override def setBleed(album: AlbumId, spread: SpreadId, enabled: Boolean): F[SetBleedResult] =
+      def prepareBleedChange =
+        findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult).subflatMap: target =>
+          target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult)
       val mutation =
         for
           _       <- composition.hasAlbum(album).map(Either.cond(_, right = (), SetBleedResult.AlbumNotFound: SetBleedResult)).eitherT
-          target  <- findSpread(album, spread).orFail(ifEmpty = SetBleedResult.SpreadNotFound: SetBleedResult)
-          changed <- target.spread.withBleed(enabled).leftMap(_ => SetBleedResult.Rejected: SetBleedResult).eitherT[Db]
+          changed <- prepareBleedChange
           _       <- spreads.replaceBleed(changed.id, edges = changed.photos.map(slot => slot.id -> slot.bleed).toMap).lift[SetBleedResult]
         yield SetBleedResult.Saved(changed): SetBleedResult
       act(SetBleedResult.Failed)(Transaction[Db, F].run(mutation.merge))
@@ -323,7 +332,7 @@ object SpreadManager:
         slots.lift(position).map(slot => placement.copy(slot = slot.id, transform = untouched)).toList
 
     private def requireConfirmation[A](count: Int, confirmed: Boolean)(occupied: Int => A) =
-      Either.cond(confirmed || count === 0, right = (), occupied(count)).eitherT[Db]
+      Either.cond(confirmed || count === 0, right = (), occupied(count))
 
     private def buildPhotoSpread(layout: SpreadTemplate.PhotosOnly) =
       (IdGenerator[F].generateId, layout.photoSlots.traverse(buildPhotoSlot)).mapN: (id, slots) =>
