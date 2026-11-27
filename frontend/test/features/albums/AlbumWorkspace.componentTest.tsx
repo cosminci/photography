@@ -611,7 +611,6 @@ describe("AlbumWorkspace", () => {
     const pane = latest(PhotoPane);
 
     pane.onRefresh();
-    provided(pane.onRetryRefresh)(chapter.id);
     provided(pane.onRetryInventory)(chapter.id);
     provided(pane.onChoosePhoto)(photo.id);
     expect(screen.getByRole("status", { name: "" })).toHaveTextContent("Photo selected");
@@ -623,7 +622,7 @@ describe("AlbumWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Apply retained photo adjustments" }));
     fireEvent.click(screen.getByRole("button", { name: "Discard retained photo adjustments" }));
 
-    expect(refs.onPhotoRefresh.mock.calls).toEqual([[[chapter.id]], [[chapter.id]]]);
+    expect(refs.onPhotoRefresh).toHaveBeenCalledExactlyOnceWith([chapter.id]);
     expect(refs.onInventoryRetry).toHaveBeenCalledWith(chapter.id);
     expect(refs.placement.retry).toHaveBeenCalledOnce();
     expect(refs.placement.applyRetained).toHaveBeenCalledOnce();
@@ -663,14 +662,13 @@ describe("AlbumWorkspace", () => {
     expect(refs.onReady).toHaveBeenCalledOnce();
   });
 
-  it("should keep reader ownership separate from editing, request explicit acquisition and recover disconnected text", async () => {
+  it("should acquire ownership on open, release it in Reader and retain disconnected text", async () => {
     const refs = buildRefs();
     refs.setTargetReason("Read only");
     renderWorkspace(refs);
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Edit spread" }));
-    await settle();
-    expect(refs.session.select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, true);
+    expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    expect(refs.session.select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, false);
     provided(latest(FullscreenReader).onActive)(true);
     await settle();
     expect(refs.session.select).toHaveBeenLastCalledWith(null, false);
@@ -686,7 +684,8 @@ describe("AlbumWorkspace", () => {
     refs.setAvailable(true);
     refs.setTargetReason("Acquire editing ownership");
     expect(latest(TextEditor).ownership.maybeAuthority).toBeUndefined();
-    await provided(editor.ownership.recover)();
+    expect(latest(TextEditor).ownership.recoveryLabel).toBeUndefined();
+    await settle();
 
     expect(refs.session.reconnect).toHaveBeenCalledOnce();
     expect(refs.onRefresh).toHaveBeenCalled();
@@ -932,10 +931,11 @@ describe("AlbumWorkspace", () => {
     await settle();
     expect(refs.onRefresh).toHaveBeenCalledOnce();
     refs.setOwner("Other browser");
+    refs.setTargetReason("Other browser");
     refs.setOwnershipRevision(1);
     await settle();
     expect(refs.session.select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, true);
-    expect(screen.getByText("Other browser")).toBeInTheDocument();
+    expect(screen.queryByText("Other browser")).not.toBeInTheDocument();
     const acquisitions = refs.session.select.mock.calls.length;
     refs.setTargetPending(true);
     refs.setOwnershipRevision(2);
@@ -1209,7 +1209,8 @@ describe("AlbumWorkspace", () => {
     const refresh = deferred<undefined>();
     const acquisition = deferred<boolean>();
     refs.onRefresh.mockReturnValueOnce(refresh.promise);
-    fireEvent.click(screen.getByRole("button", { name: "Edit spread" }));
+    refs.setOwner("Other browser");
+    refs.setOwnershipRevision(1);
     await waitFor(() => {
       expect(refs.onRefresh).toHaveBeenCalledOnce();
     });
@@ -1224,6 +1225,71 @@ describe("AlbumWorkspace", () => {
     await settle();
 
     expect(latest(SpreadCanvas).editing?.unavailable).toBe("Other browser");
+  });
+
+  it("keeps cover and spreads read-only during acquisition without showing an edit button", async () => {
+    const refs = buildRefs();
+    renderWorkspace(refs);
+    await settle();
+
+    const coverGrant = deferred<boolean>();
+    refs.session.select.mockReturnValueOnce(coverGrant.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Cover" }));
+    expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    expect(latest(CoverCanvas).editing?.reader).toBe(true);
+    coverGrant.resolve(true);
+    await settle();
+    expect(latest(CoverCanvas).editing?.reader).toBe(false);
+
+    const spreadGrant = deferred<boolean>();
+    refs.session.select.mockReturnValueOnce(spreadGrant.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Spreads" }));
+    expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    expect(latest(SpreadCanvas).editing?.reader).toBe(true);
+    const albumPencil = screen.getByRole("button", { name: "Edit album name" });
+    expect(albumPencil).toBeDisabled();
+    expect(albumPencil).toHaveAccessibleDescription("Read only.");
+    fireEvent.click(albumPencil);
+    expect(TextEditor).not.toHaveBeenCalled();
+    spreadGrant.resolve(true);
+    await settle();
+    expect(latest(SpreadCanvas).editing?.reader).toBe(false);
+    expect(albumPencil).toBeEnabled();
+
+    const chapterGrant = deferred<boolean>();
+    refs.session.select.mockReturnValueOnce(chapterGrant.promise);
+    latest(ChapterOutline).onSelect(chapter.id);
+    expect(latest(ChapterMetadata).unavailable).toBe(latest(CompositionControls).unavailable);
+    expect(latest(ChapterMetadata).unavailable).toBeDefined();
+    chapterGrant.resolve(true);
+    await settle();
+    expect(latest(ChapterMetadata).unavailable).toBeUndefined();
+  });
+
+  it("requests a replacement lock while a text draft blocks navigation without saving the draft", async () => {
+    const refs = buildRefs();
+    renderWorkspace(refs);
+    await settle();
+    provided(latest(SpreadCanvas).editing?.onEditText)(refs.opener);
+    const editor = latest(TextEditor);
+    editor.onBlock("Finish the content edit before leaving.");
+
+    const replacement = deferred<boolean>();
+    refs.session.select.mockReturnValueOnce(replacement.promise);
+    refs.setTargetReason("Editing ownership expired.");
+    refs.setLossRevision(1);
+
+    expect(refs.session.select).toHaveBeenLastCalledWith({ kind: "spread", id: opening.id }, true);
+    expect(latest(SpreadCanvas).editing?.reader).toBe(true);
+    expect(screen.queryByRole("button", { name: "Edit spread" })).not.toBeInTheDocument();
+    expect(latest(TextEditor).ownership.maybeAuthority).toBeUndefined();
+
+    refs.setTargetReason(undefined);
+    replacement.resolve(true);
+    await settle();
+    expect(latest(SpreadCanvas).editing?.reader).toBe(false);
+    expect(latest(TextEditor).ownership.maybeAuthority).toBe(refs.session.authority());
+    expect(refs.client.saveSynopsis).not.toHaveBeenCalled();
   });
 
   it("should preserve native link and text-entry gestures instead of treating them as catalog departure or spread navigation", async () => {

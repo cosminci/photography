@@ -13,7 +13,13 @@ export function TextEditor(props: {
   onCompleted?: (before: string, after: string) => void;
   singleLine?: boolean;
   validate?: ((text: string) => string | undefined) | undefined;
-  ownership: { maybeAuthority: number | undefined; recoveryLabel: string; reason: string; pending: boolean; recover: () => Promise<void> };
+  ownership: {
+    maybeAuthority: number | undefined;
+    recoveryLabel: string | undefined;
+    reason: string;
+    pending: boolean;
+    recover: () => Promise<void>;
+  };
 }) {
   const feedback = createUniqueId();
   const [validation, setValidation] = createSignal<string>();
@@ -95,7 +101,7 @@ export function TextEditor(props: {
           void save.commit(true);
         }}
       >
-        <Show when={needsOwnership()}>
+        <Show when={needsOwnership() && props.ownership.recoveryLabel}>
           <button
             type="button"
             disabled={props.ownership.pending}

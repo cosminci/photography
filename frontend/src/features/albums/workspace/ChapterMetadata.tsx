@@ -69,7 +69,7 @@ export function ChapterMetadata(props: {
       </div>
       <Show when={props.unavailable}>
         {(reason) => (
-          <p id="metadata-feedback" class="control-help">
+          <p id="metadata-feedback" class="visually-hidden">
             {reason()}
           </p>
         )}

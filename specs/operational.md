@@ -2,16 +2,15 @@
 
 ## Run locally
 
-Install the [contributor toolchain](../CONTRIBUTING.md#setup). Before startup, choose an isolated SQLite path, a writable thumbnail directory and a read-only original-photo root; the launcher changes only the database default, not the two media paths.
-
-Run from the repository root, replacing the example paths with the approved locations:
+Install the [contributor toolchain](../CONTRIBUTING.md#setup) and configure noninteractive SSH access to the NAS. Run from the repository root:
 
 ```sh
-export PHOTOGRAPHY_SQLITE_PATH="$PWD/.local/photography.db"
-export PHOTOGRAPHY_THUMBNAIL_ROOT="$PWD/.local/thumbnails"
-export PHOTOGRAPHY_PHOTO_ROOT="/absolute/path/to/originals"
 python3 scripts/local.py
 ```
+
+Every launch copies the newest verified Album Layout Studio checkpoint into a new local database and thumbnail directory. Local edits are discarded when the launcher stops. If it cannot restore a checkpoint, it does not start the app. It never writes to the NAS or uses the live database.
+
+Set `PHOTOGRAPHY_NAS_HOST` to change the SSH destination, `PHOTOGRAPHY_NAS_BACKUPS` to change the NAS backup directory, or `PHOTOGRAPHY_PHOTO_ROOT` to change the original-photo mount. The defaults are `root@192.168.1.3`, `/mnt/user/cache-backup`, and `/Volumes/media/photos/Travel`. The launcher sets the SQLite and thumbnail paths to the restored copy.
 
 Wait for the launcher to report both ready URLs before opening the workspace. [The launcher](../scripts/local.py) owns default ports, its database location and readiness timeout; set `PHOTOGRAPHY_PORT` and `PHOTOGRAPHY_FRONTEND_PORT` before startup when another service occupies those ports.
 
@@ -72,7 +71,7 @@ Probe `GET /health` for HTTP readiness. This establishes startup completion and 
 
 The backend writes startup and failure diagnostics through SLF4J to process output. Capture stdout/stderr with the local terminal or NAS supervisor; retain application errors alongside migration and database-pool diagnostics when investigating failures.
 
-Chapter processing feedback identifies queued, progressing and failed work in the workspace. No metrics exporter, dashboard or alert rules are configured; arrange host checks for process availability, health responses and free space on the data/thumbnail volumes.
+The photo refresh icon shows when chapter processing is queued or running. The backend logs import failures. No metrics exporter, dashboard or alert rules are configured; arrange host checks for process availability, health responses and free space on the data/thumbnail volumes.
 
 ## Recovery and maintenance
 

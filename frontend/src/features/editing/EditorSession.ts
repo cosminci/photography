@@ -1,4 +1,4 @@
-import { createSignal, onCleanup, untrack } from "solid-js";
+import { batch, createSignal, onCleanup, untrack } from "solid-js";
 import { suggestBrowserAlias } from "./BrowserIdentity";
 
 export interface EditingTarget {
@@ -106,27 +106,32 @@ export function createEditorSession(
   let requests = new AbortController();
 
   function forgetAuthority(reason: string) {
-    setLossRevision((current) => current + 1);
-    requests.abort();
-    requests = new AbortController();
-    transition = Promise.resolve(true);
-    setTargetPending(false);
-    setConnection(undefined);
-    setGrant(undefined);
-    setMessage(reason);
-    setTargetMessage("Editing ownership is unconfirmed. Reconnect and review retained drafts before editing.");
-    setAuthority((current) => current + 1);
-    scheduleExpiry();
+    batch(() => {
+      setLossRevision((current) => current + 1);
+      requests.abort();
+      requests = new AbortController();
+      transition = Promise.resolve(true);
+      maybeLastTarget = undefined;
+      setTargetPending(false);
+      setConnection(undefined);
+      setGrant(undefined);
+      setMessage(reason);
+      setTargetMessage("Editing ownership is unconfirmed. Reconnect and review retained drafts before editing.");
+      setAuthority((current) => current + 1);
+      scheduleExpiry();
+    });
   }
 
   function loseGrant(reason: string) {
-    setLossRevision((current) => current + 1);
-    requests.abort();
-    requests = new AbortController();
-    setGrant(undefined);
-    setTargetMessage(reason);
-    setAuthority((current) => current + 1);
-    scheduleExpiry();
+    batch(() => {
+      setLossRevision((current) => current + 1);
+      requests.abort();
+      requests = new AbortController();
+      setGrant(undefined);
+      setTargetMessage(reason);
+      setAuthority((current) => current + 1);
+      scheduleExpiry();
+    });
   }
 
   function remember(editor: RememberedEditor) {
@@ -270,7 +275,7 @@ export function createEditorSession(
     setGrant(maybeSaved ?? undefined);
     if (maybeSaved !== null) setOtherOwner(undefined);
     targetDeadline = maybeSaved === null ? 0 : observedAt + maybeSaved.remainingMillis;
-    setTargetMessage(maybeSaved === null ? "View only. Choose Edit spread to acquire ownership." : undefined);
+    setTargetMessage(maybeSaved === null ? "View only." : undefined);
     if (maybePrevious !== maybeSaved?.grantId) setAuthority((current) => current + 1);
     scheduleExpiry();
   }
@@ -286,7 +291,7 @@ export function createEditorSession(
       throw new EditorSessionError("stale_session", "Editing is unavailable until the browser reconnects.");
     }
     const maybeSaved = grant();
-    if (maybeSaved !== undefined && Date.now() >= targetDeadline) loseGrant("Editing ownership expired. Review drafts and choose Edit spread.");
+    if (maybeSaved !== undefined && Date.now() >= targetDeadline) loseGrant("Editing ownership expired.");
     const maybeOwned = grant();
     return {
       "X-Editor-Session": maybeConnection.sessionId,
@@ -328,7 +333,7 @@ export function createEditorSession(
         publishGrant(null, observedAt);
       } else if (state.grant === null || !sameTarget(state.grant.target, target)) {
         if (!explicit && maybePreviousTarget !== undefined && maybePreviousTarget !== null && sameTarget(maybePreviousTarget, target)) {
-          setTargetMessage(maybePreviousMessage ?? "View only. Choose Edit spread to acquire ownership.");
+          setTargetMessage(maybePreviousMessage ?? "View only.");
           return false;
         }
         const selectedAt = Date.now();
@@ -418,7 +423,7 @@ export function createEditorSession(
     maybeExpiry = setTimeout(
       () => {
         if (Date.now() >= sessionDeadline) interrupt("The session expired without an accepted heartbeat. Reconnect before editing.");
-        else loseGrant("Editing ownership expired. Review drafts and choose Edit spread.");
+        else loseGrant("Editing ownership expired.");
       },
       Math.max(0, deadline - Date.now()),
     );

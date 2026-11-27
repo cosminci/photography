@@ -191,8 +191,8 @@ describe("placement compensating commands", () => {
 
   it("should stop before any command when ownership is unavailable", async () => {
     const built = build();
-    built.authorize.mockResolvedValue("Choose Edit spread.");
-    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked", message: "Choose Edit spread." });
+    built.authorize.mockResolvedValue("This spread is read-only.");
+    expect(await built.action.apply("undo")).toMatchObject({ kind: "blocked", message: "This spread is read-only." });
     expect(built.read).not.toHaveBeenCalled();
   });
 

@@ -43,9 +43,6 @@ button.bleed-toggle[aria-checked="true"] {
 button.bleed-toggle[aria-checked="true"] svg {
   fill: currentColor;
 }
-button.bleed-toggle:disabled {
-  opacity: 0.45;
-}
 .cover-owner-control {
   display: flex;
   align-items: center;

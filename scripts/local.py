@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 import fcntl
+import gzip
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 from typing import Callable, Mapping
 import urllib.error
@@ -38,7 +44,6 @@ class StartupError(RuntimeError):
 @dataclass(frozen=True)
 class LocalState:
     directory: Path
-    database: Path
     lock: Path
 
 
@@ -48,7 +53,6 @@ def make_local_state(project_root: Path) -> LocalState:
     os.chmod(directory, 0o700)
     return LocalState(
         directory=directory,
-        database=directory / "photography.db",
         lock=directory / "photography.lock",
     )
 
@@ -61,6 +65,79 @@ def acquire_instance_lock(lock_path: Path):
         lock_file.close()
         raise AlreadyRunning("Another local photography backend is already running") from error
     return lock_file
+
+
+def restore_checkpoint(checkpoint: Path, destination: Path) -> None:
+    thumbnails = destination / "thumbnails"
+    thumbnails.mkdir()
+    root = "mnt/user/appdata/photography/"
+    database = destination / "photography.db"
+    has_thumbnails = False
+    with gzip.open(checkpoint, "rb") as compressed, tarfile.open(fileobj=compressed, mode="r|") as archive:
+        for member in archive:
+            path = member.name.lstrip("/")
+            if not path.startswith(root):
+                continue
+            directory, _, filename = path[len(root) :].partition("/")
+            if directory == "thumbnails":
+                has_thumbnails = True
+                if not filename and member.isdir():
+                    continue
+                if filename in ("", ".", "..") or "/" in filename:
+                    raise StartupError(f"Unexpected NAS thumbnail path: {member.name!r}")
+                target = thumbnails / filename
+            elif directory == "data" and filename in ("photography.db", "photography.db-wal", "photography.db-shm"):
+                target = destination / filename
+            else:
+                continue
+            if not member.isfile() or target.exists():
+                raise StartupError(f"Invalid or duplicate NAS checkpoint entry: {member.name!r}")
+            with archive.extractfile(member) as source, target.open("xb") as output:
+                shutil.copyfileobj(source, output)
+        # Tar iteration ends before gzip checks the trailer.
+        while compressed.read(1024 * 1024):
+            pass
+    if not database.is_file() or not has_thumbnails:
+        raise StartupError("NAS checkpoint does not contain both the database and thumbnails")
+    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as connection:
+        if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise StartupError("NAS checkpoint failed SQLite integrity checks")
+        connection.execute("SELECT 1 FROM album LIMIT 1").fetchone()
+
+
+def seed_from_nas(destination: Path, environment: Mapping[str, str]) -> None:
+    host = environment.get("PHOTOGRAPHY_NAS_HOST", "root@192.168.1.3")
+    backup_root = shlex.quote(environment.get("PHOTOGRAPHY_NAS_BACKUPS", "/mnt/user/cache-backup"))
+    command = f"""cd {backup_root} || exit 1
+printf '%s\\n' ab_????????_?????? ab_????????_??????-failed | LC_ALL=C sort -r |
+while IFS= read -r backup; do
+    archive="$backup/album-layout-studio.tar.gz"
+    if test -f "$archive" && awk '
+        /\\[album-layout-studio\\] Stopping album-layout-studio\\.\\.\\..* done!/ {{ stopped = 1 }}
+        /\\[album-layout-studio\\] Verification ended without issues/ && stopped {{ verified = 1 }}
+        END {{ exit !verified }}
+    ' "$backup/backup.log" 2>/dev/null; then
+        printf 'Seeding from %s\\n' "$archive" >&2
+        exec cat -- "$archive"
+    fi
+done
+"""
+    checkpoint = destination / "checkpoint.tar.gz"
+    try:
+        with checkpoint.open("wb") as output:
+            subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, command],
+                stdout=output,
+                check=True,
+                timeout=300,
+            )
+        if checkpoint.stat().st_size == 0:
+            raise StartupError("No verified Album Layout Studio checkpoint found on the NAS")
+        restore_checkpoint(checkpoint, destination)
+    except (OSError, EOFError, subprocess.SubprocessError, tarfile.TarError, sqlite3.Error) as error:
+        raise StartupError(f"Could not restore NAS checkpoint: {error}") from error
+    finally:
+        checkpoint.unlink(missing_ok=True)
 
 
 def is_port_available(host: str, port: int) -> bool:
@@ -211,6 +288,7 @@ def run_local_backend(project_root: Path, environment: Mapping[str, str] | None 
     launch_environment = dict(os.environ if environment is None else environment)
     state = make_local_state(project_root)
     lock_file = acquire_instance_lock(state.lock)
+    seed_lifetime = ExitStack()
     process: subprocess.Popen[bytes] | None = None
     frontend_process: subprocess.Popen[bytes] | None = None
     try:
@@ -223,7 +301,11 @@ def run_local_backend(project_root: Path, environment: Mapping[str, str] | None 
         if has_frontend:
             subprocess.run(["npm", "ci"], cwd=frontend, env=launch_environment, check=True)
             subprocess.run(["npm", "run", "build"], cwd=frontend, env=launch_environment, check=True)
-        launch_environment.setdefault("PHOTOGRAPHY_SQLITE_PATH", str(state.database))
+        seed = Path(seed_lifetime.enter_context(tempfile.TemporaryDirectory(prefix="nas-seed-", dir=state.directory)))
+        seed_from_nas(seed, launch_environment)
+        launch_environment["PHOTOGRAPHY_SQLITE_PATH"] = str(seed / "photography.db")
+        launch_environment["PHOTOGRAPHY_THUMBNAIL_ROOT"] = str(seed / "thumbnails")
+        launch_environment.setdefault("PHOTOGRAPHY_PHOTO_ROOT", "/Volumes/media/photos/Travel")
         process = subprocess.Popen(
             ["sbt", "-batch", "run"],
             cwd=project_root / "backend",
@@ -270,7 +352,10 @@ def run_local_backend(project_root: Path, environment: Mapping[str, str] | None 
                 if process is not None:
                     stop_process_tree(process)
             finally:
-                lock_file.close()
+                try:
+                    seed_lifetime.close()
+                finally:
+                    lock_file.close()
 
 
 def main() -> int:
