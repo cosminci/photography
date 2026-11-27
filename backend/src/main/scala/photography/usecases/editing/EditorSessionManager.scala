@@ -41,18 +41,18 @@ object EditorSessionManager:
       extends EditorSessionManager[F]:
     override def ownershipChanges(connection: EditorConnection): Stream[F, OwnershipChangeResult] =
       val changes = state.discrete.map { current =>
-        findConnection(current, connection).map(_ =>
-          current.locks.map(lock =>
+        findConnection(current, connection).map { _ =>
+          current.locks.map { lock =>
             (lock.target, lock.grant, current.sessions.values.find(_.id.value === lock.session.value).map(_.alias))
-          )
-        )
+          }
+        }
       }.changes(using Eq.fromUniversalEquals).map[OwnershipChangeResult] {
         case Right(_)      => OwnershipChangeResult.Changed
         case Left(failure) => OwnershipChangeResult.Rejected(failure)
       }
-      val expiry = Stream.awakeEvery[F](1.second).evalMap(_ =>
+      val expiry = Stream.awakeEvery[F](1.second).evalMap { _ =>
         summon[Mutex[F]].lock.surround(Clock[F].monotonic.flatMap(expire))
-      ).void
+      }.void
       changes.concurrently(expiry).takeThrough {
         case OwnershipChangeResult.Changed     => true
         case _: OwnershipChangeResult.Rejected => false

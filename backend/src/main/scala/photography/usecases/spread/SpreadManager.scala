@@ -128,9 +128,11 @@ object SpreadManager:
       val read = composition.hasAlbum(album).flatMap:
         case false => PlacementReadResult.AlbumNotFound.pure[Db]
         case true  =>
-          findSpread(album, spread).map(_.fold[PlacementReadResult](PlacementReadResult.SpreadNotFound)(value =>
-            PlacementReadResult.Found(value.spread)
-          ))
+          findSpread(album, spread).map {
+            _.fold[PlacementReadResult](PlacementReadResult.SpreadNotFound) { value =>
+              PlacementReadResult.Found(value.spread)
+            }
+          }
       act(PlacementReadResult.Failed)(Transaction[Db, F].run(read))
 
     override def editPlacements(album: AlbumId, spread: SpreadId, request: Edit): F[PlacementResult] =
@@ -196,9 +198,9 @@ object SpreadManager:
           change
       case Edit.Remove(id) =>
         val change: PlacementChange = spread =>
-          findPlacement(values = spread.placements, id).map(_ =>
+          findPlacement(values = spread.placements, id).map { _ =>
             replacePlacements(spread, values = spread.placements.filterNot(_.id.value === id.value))
-          )
+          }
         change.pure[F]
       case Edit.Adjust(id, transform) =>
         val change: PlacementChange = spread =>

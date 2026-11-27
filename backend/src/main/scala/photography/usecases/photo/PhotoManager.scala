@@ -54,10 +54,12 @@ object PhotoManager:
     override def refresh(chapter: ChapterId, source: PhotoSource): F[RefreshResult] =
       photoStorage.discoverOriginals(source).flatMap:
         case PhotoStorage.DiscoveryResult.Failed(cause) =>
-          Logger[F].error(cause)(s"Photo discovery failed for chapter ${chapter.value} at $source").as(RefreshResult(
-            unsupportedCount = 0,
-            issues = Vector(Issue.Discovery)
-          ))
+          Logger[F].error(cause)(s"Photo discovery failed for chapter ${chapter.value} at $source").as {
+            RefreshResult(
+              unsupportedCount = 0,
+              issues = Vector(Issue.Discovery)
+            )
+          }
         case PhotoStorage.DiscoveryResult.Complete(originals, unsupported) =>
           reconcile(chapter, originals = originals).map(issues => RefreshResult(unsupportedCount = unsupported, issues = issues))
       .handleErrorWith: error =>
@@ -85,9 +87,9 @@ object PhotoManager:
         case PhotoStorage.ReadResult.Unstable      => Vector(Issue.Unstable(original.filename)).pure[F]
         case PhotoStorage.ReadResult.Failed(cause) =>
           Logger[F].error(cause)(s"Photo read failed for chapter ${chapter.value}: ${original.filename}").as(Vector(Issue.Read(original.filename)))
-      refresh.handleErrorWith(error =>
+      refresh.handleErrorWith { error =>
         Logger[F].error(error)(s"Photo reconciliation failed for chapter ${chapter.value}: ${original.filename}").as(Vector(Issue.Unexpected))
-      )
+      }
 
     private def generateThumbnail(
         chapter: ChapterId,

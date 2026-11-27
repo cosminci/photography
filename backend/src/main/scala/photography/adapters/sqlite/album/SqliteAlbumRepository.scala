@@ -140,8 +140,9 @@ object SqliteAlbumRepository:
 
     private def insertAlbum(album: Album) =
       val authors = encodeAuthors(album.authors)
-      insert(sql"""INSERT INTO album (id, year, title, synopsis, authors, created_at_ms)
-            VALUES (${album.id.value}, ${album.year}, ${album.title}, ${album.synopsis}, $authors, ${album.createdAt})""")
+      val row     = sql"""INSERT INTO album (id, year, title, synopsis, authors, created_at_ms)
+            VALUES (${album.id.value}, ${album.year}, ${album.title}, ${album.synopsis}, $authors, ${album.createdAt})"""
+      insert(row)
 
     private def encodeAuthors(authors: AlbumAuthors) =
       authors.foldLeft(0)((encoded, author) => encoded | (1 << author.ordinal))

@@ -73,9 +73,9 @@ object EditorSessionApi:
           withConnection(request) { connection =>
             sessions.readTarget(connection).flatMap {
               case ReadTargetResult.Current(revision, maybeLock) =>
-                maybeLock.traverse(encodeGrant).flatMap(maybeGrant =>
+                maybeLock.traverse(encodeGrant).flatMap { maybeGrant =>
                   Ok(encodeRevision(revision).deepMerge(Json.obj("grant" -> maybeGrant.getOrElse(Json.Null))))
-                )
+                }
               case ReadTargetResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
             }
           }
@@ -87,14 +87,15 @@ object EditorSessionApi:
                 case SelectResult.Owned(lock, current) =>
                   encodeGrant(lock).flatMap(grant => Ok(encodeRevision(current).deepMerge(Json.obj("grant" -> grant))))
                 case SelectResult.Blocked(owner, alias, expiresAt, current) =>
-                  remaining(expiresAt).flatMap(millis =>
-                    Conflict(encodeRevision(current).deepMerge(Json.obj(
+                  remaining(expiresAt).flatMap { millis =>
+                    val blocked = Json.obj(
                       "code"            -> Json.fromString("target_locked"),
                       "ownerId"         -> Json.fromString(owner.value.toString),
                       "alias"           -> Json.fromString(alias),
                       "remainingMillis" -> Json.fromLong(millis)
-                    )))
-                  )
+                    )
+                    Conflict(encodeRevision(current).deepMerge(blocked))
+                  }
                 case SelectResult.Rejected(reason) => Conflict(code(encodeFailure(reason)))
               }
             }
@@ -149,10 +150,10 @@ object EditorSessionApi:
         case Right(body) => run(body)
       }
 
-    private val revision = Decoder.decodeString.emap(value =>
+    private val revision = Decoder.decodeString.emap { value =>
       Either.catchOnly[NumberFormatException](BigInt(value)).toOption.flatMap(TargetRevision.from)
         .filter(_.value.toString === value).toRight("Invalid target revision")
-    )
+    }
 
     private val target = Decoder.forProduct2("kind", "id")((kind: String, id: String) => (kind, id)).emap { case (kind, id) =>
       parseId(id).flatMap { parsed =>
@@ -163,9 +164,12 @@ object EditorSessionApi:
       }
     }.validate(_.keys.exists(_.toSet === Set("kind", "id")), "Invalid target")
 
-    private val selection = Decoder.forProduct2("revision", "target")((current: TargetRevision, destination: EditingTarget) =>
-      (current, destination)
-    )(using revision, target).validate(_.keys.exists(_.toSet === Set("revision", "target")), "Invalid selection")
+    private val selection =
+      Decoder.forProduct2("revision", "target")((current: TargetRevision, destination: EditingTarget) => (current, destination))(using
+        revision,
+        target
+      )
+        .validate(_.keys.exists(_.toSet === Set("revision", "target")), "Invalid selection")
 
     private val releaseRevision = Decoder.forProduct1("revision")((current: TargetRevision) => current)(using revision)
       .validate(_.keys.exists(_.toSet === Set("revision")), "Invalid release")
@@ -176,13 +180,13 @@ object EditorSessionApi:
       val (kind, id) = lock.target match
         case EditingTarget.Spread(spread) => ("spread", spread.value)
         case EditingTarget.Cover(album)   => ("cover", album.value)
-      remaining(lock.expiresAt).map(millis =>
+      remaining(lock.expiresAt).map { millis =>
         Json.obj(
           "target"          -> Json.obj("kind" -> Json.fromString(kind), "id" -> Json.fromString(id.toString)),
           "grantId"         -> Json.fromString(lock.grant.value.toString),
           "remainingMillis" -> Json.fromLong(millis)
         )
-      )
+      }
 
     private def remaining(expiresAt: FiniteDuration) =
       Clock[F].monotonic.map(now => (expiresAt - now).toMillis.max(0L))

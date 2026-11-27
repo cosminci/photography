@@ -132,8 +132,9 @@ object SqliteChapterRepository:
         case CameraUse.Interchangeable(values) => ("interchangeable_lenses", values.toVector)
       val insert       = sql"INSERT INTO chapter_camera (chapter_id, camera_id, use_kind) VALUES (${chapter.value}, ${entry.camera.value}, $kind)"
       val insertLenses = lenses.traverse_ { lens =>
-        persistRow(sql"""INSERT INTO chapter_camera_lens (chapter_id, camera_id, lens_id)
-          VALUES (${chapter.value}, ${entry.camera.value}, ${lens.value})""")
+        val row = sql"""INSERT INTO chapter_camera_lens (chapter_id, camera_id, lens_id)
+          VALUES (${chapter.value}, ${entry.camera.value}, ${lens.value})"""
+        persistRow(row)
       }
       persistRow(insert) >> insertLenses
 

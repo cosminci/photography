@@ -23,18 +23,15 @@ object ChapterCompositionApi:
     }
 
     private def replace(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      Route(
-        Routes.Access.Editor(Protection.ActiveTab),
-        decode(request),
-        (order: Order) =>
-          spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed).flatMap:
-            case SpreadManager.ReplacementResult.Saved     => NoContent()
-            case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
-            case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
-            case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
-            case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
-            case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
-      )
+      val save = (order: Order) =>
+        spreads.replaceChapterOrder(album, chapter, order.expected, order.proposed).flatMap:
+          case SpreadManager.ReplacementResult.Saved     => NoContent()
+          case SpreadManager.ReplacementResult.Invalid   => BadRequest(Map("message" -> "Retain the opening and every spread exactly once"))
+          case SpreadManager.ReplacementResult.NotFound  => NotFound(Map("code" -> "chapter_not_found"))
+          case SpreadManager.ReplacementResult.Stale     => Conflict(Map("code" -> "composition_changed"))
+          case SpreadManager.ReplacementResult.Failed    => InternalServerError(Map("code" -> "service_failure"))
+          case SpreadManager.ReplacementResult.Uncertain => InternalServerError(Map("code" -> "write_uncertain"))
+      Route(Routes.Access.Editor(Protection.ActiveTab), decode(request), save)
 
     private def decode(request: Request[F]) =
       JsonBody.decode(request, Decoder[Order], malformed = "Supply a valid composition")(_.message)
