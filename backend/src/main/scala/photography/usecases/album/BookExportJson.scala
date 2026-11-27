@@ -10,6 +10,8 @@ import photography.usecases.album.BookExport.{Code, Issue, SavedBook, Severity, 
 private[album] object BookExportJson:
   def encode(book: SavedBook, warnings: Vector[Issue]): Either[String, Json] =
     book.album.collectSpreads.toList.traverse(encodeSpread).map: spreads =>
+      val cameras = book.gear.cameras.map(camera => Json.obj("id" -> text(camera.id.value.toString), "name" -> text(camera.friendlyName)))
+      val lenses  = book.gear.lenses.map(lens => Json.obj("id" -> text(lens.id.value.toString), "name" -> text(lens.friendlyName)))
       Json.obj(
         "formatVersion" -> Json.fromInt(1),
         "album"         -> Json.obj(
@@ -29,10 +31,8 @@ private[album] object BookExportJson:
         "chapters" -> Json.fromValues(book.album.chapters.map(encodeChapter)),
         "cover"    -> encodeCover(book),
         "gear"     -> Json.obj(
-          "cameras" ->
-            Json.fromValues(book.gear.cameras.map(camera => Json.obj("id" -> text(camera.id.value.toString), "name" -> text(camera.friendlyName)))),
-          "lenses" ->
-            Json.fromValues(book.gear.lenses.map(lens => Json.obj("id" -> text(lens.id.value.toString), "name" -> text(lens.friendlyName))))
+          "cameras" -> Json.fromValues(cameras),
+          "lenses"  -> Json.fromValues(lenses)
         ),
         "warnings" -> Json.fromValues(warnings.map(encodeIssue))
       )
@@ -61,19 +61,19 @@ private[album] object BookExportJson:
         )
       }
     }.map: slots =>
+      val placements = spread.placements.map: placement =>
+        Json.obj(
+          "slot"          -> text(placement.slot.value.toString),
+          "photo"         -> text(placement.photo.value.toString),
+          "transform"     -> encodeTransform(placement.transform),
+          "captionCorner" -> encodeCorner(placement.captionCorner)
+        )
       Json.obj(
         "id"         -> text(spread.id.value.toString),
         "kind"       -> text(kind),
         "textFrame"  -> maybeTextBox.fold(Json.Null)(slot => encodeFrame(InteriorDimensions.contentFrame(slot.box))),
         "slots"      -> Json.fromValues(slots),
-        "placements" -> Json.fromValues(spread.placements.map(placement =>
-          Json.obj(
-            "slot"          -> text(placement.slot.value.toString),
-            "photo"         -> text(placement.photo.value.toString),
-            "transform"     -> encodeTransform(placement.transform),
-            "captionCorner" -> encodeCorner(placement.captionCorner)
-          )
-        ))
+        "placements" -> Json.fromValues(placements)
       )
 
   private def encodeFrame(frame: PrintFrame) = Json.obj(
@@ -90,55 +90,57 @@ private[album] object BookExportJson:
     "mirrored" -> Json.fromBoolean(transform.mirrored)
   )
 
-  private def encodeChapter(chapter: Chapter) = Json.obj(
-    "id"          -> text(chapter.id.value.toString),
-    "name"        -> text(chapter.destination.name),
-    "description" -> text(chapter.description),
-    "opening"     -> text(chapter.opening.id.value.toString),
-    "firstDay"    -> text(chapter.period.firstDay.toString),
-    "days"        -> Json.fromLong(chapter.period.days),
-    "countries"   -> Json.fromValues(chapter.destination.countries.toList.map(country =>
+  private def encodeChapter(chapter: Chapter) =
+    val countries = chapter.destination.countries.toList.map: country =>
       Json.obj(
         "code" -> text(country.code),
         "name" -> text(country.name),
         "flag" -> text(country.flag.value.toString)
       )
-    )),
-    "gear" -> Json.fromValues(chapter.gear.map(selection =>
+    val gear = chapter.gear.map: selection =>
+      val lenses = selection.use match
+        case CameraUse.FixedLens               => Vector.empty[LensId]
+        case CameraUse.Interchangeable(lenses) => lenses.toVector
       Json.obj(
         "cameraId" -> text(selection.camera.value.toString),
-        "lensIds"  -> Json.fromValues((selection.use match
-          case CameraUse.FixedLens               => Vector.empty[LensId]
-          case CameraUse.Interchangeable(lenses) => lenses.toVector
-        ).map(id => text(id.value.toString)))
+        "lensIds"  -> Json.fromValues(lenses.map(id => text(id.value.toString)))
       )
-    ))
-  )
+    Json.obj(
+      "id"          -> text(chapter.id.value.toString),
+      "name"        -> text(chapter.destination.name),
+      "description" -> text(chapter.description),
+      "opening"     -> text(chapter.opening.id.value.toString),
+      "firstDay"    -> text(chapter.period.firstDay.toString),
+      "days"        -> Json.fromLong(chapter.period.days),
+      "countries"   -> Json.fromValues(countries),
+      "gear"        -> Json.fromValues(gear)
+    )
 
   private def encodeCover(book: SavedBook) =
     val composition = book.cover
     val dimensions  = composition.dimensions
     val front       = dimensions.frontFrame(composition.cover.spineOwner)
     val back        = dimensions.backFrame(composition.cover.spineOwner)
+    val spineOwner  = composition.cover.spineOwner match
+      case SpineOwner.Front => "front"
+      case SpineOwner.Back  => "back"
+    val placements = composition.placements.map: placement =>
+      Json.obj(
+        "slot"      -> text(placement.slot.value.toString),
+        "photo"     -> text(placement.photo.value.toString),
+        "transform" -> encodeTransform(placement.transform)
+      )
     Json.obj(
       "widthPt"      -> number(dimensions.width),
       "heightPt"     -> number(dimensions.height),
       "spineStartPt" -> number(dimensions.spineStart),
       "spineWidthPt" -> number(dimensions.spineWidth),
-      "spineOwner"   -> text(composition.cover.spineOwner match
-        case SpineOwner.Front => "front"
-        case SpineOwner.Back  => "back"),
-      "frontSlot"  -> text(composition.cover.front.id.value.toString),
-      "backSlot"   -> text(composition.cover.back.id.value.toString),
-      "frontFrame" -> encodeFrame(PrintFrame(front.x, y = 0.0, front.width, front.height)),
-      "backFrame"  -> encodeFrame(PrintFrame(back.x, y = 0.0, back.width, back.height)),
-      "placements" -> Json.fromValues(composition.placements.map(placement =>
-        Json.obj(
-          "slot"      -> text(placement.slot.value.toString),
-          "photo"     -> text(placement.photo.value.toString),
-          "transform" -> encodeTransform(placement.transform)
-        )
-      ))
+      "spineOwner"   -> text(spineOwner),
+      "frontSlot"    -> text(composition.cover.front.id.value.toString),
+      "backSlot"     -> text(composition.cover.back.id.value.toString),
+      "frontFrame"   -> encodeFrame(PrintFrame(front.x, y = 0.0, front.width, front.height)),
+      "backFrame"    -> encodeFrame(PrintFrame(back.x, y = 0.0, back.width, back.height)),
+      "placements"   -> Json.fromValues(placements)
     )
 
   def encodeIssue(issue: Issue): Json =
@@ -159,16 +161,19 @@ private[album] object BookExportJson:
       case Code.LowResolution    => "low_resolution"
     Json.obj("code" -> text(code), "severity" -> text(severity), "target" -> scope, "message" -> text(issue.message))
 
-  private def encodeAuthor(author: Author) = text(author match
-    case Author.Cosmin => "Cosmin"
-    case Author.Mara   => "Mara"
-    case Author.Iacob  => "Iacob")
+  private def encodeAuthor(author: Author) = text:
+    author match
+      case Author.Cosmin => "Cosmin"
+      case Author.Mara   => "Mara"
+      case Author.Iacob  => "Iacob"
 
-  private def encodeCorner(corner: CaptionCorner) = text(corner match
-    case CaptionCorner.TopLeft     => "top_left"
-    case CaptionCorner.TopRight    => "top_right"
-    case CaptionCorner.BottomLeft  => "bottom_left"
-    case CaptionCorner.BottomRight => "bottom_right")
+  private def encodeCorner(corner: CaptionCorner) = text {
+    corner match
+      case CaptionCorner.TopLeft     => "top_left"
+      case CaptionCorner.TopRight    => "top_right"
+      case CaptionCorner.BottomLeft  => "bottom_left"
+      case CaptionCorner.BottomRight => "bottom_right"
+  }
 
   private def text(value: String)   = Json.fromString(value)
   private def number(value: Double) = Json.fromBigDecimal(BigDecimal(value))

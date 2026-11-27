@@ -35,10 +35,10 @@ object PhotoPlacementApi:
         editSpread(AlbumId(album), SpreadId(spread), request, spreadPlaceDecoder)
       case DELETE ->
           Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
-        Route.write(Protection.OwnSpread(EditingTarget.Spread(SpreadId(spread))))(
+        Route.write(Protection.OwnSpread(EditingTarget.Spread(SpreadId(spread)))) {
           spreads.editPlacements(AlbumId(album), SpreadId(spread), SpreadManager.Edit.Remove(SpreadPlacementId(placement)))
             .flatMap(respondToSpreadEdit)
-        )
+        }
       case request @ PATCH ->
           Root / "api" / "albums" / CanonicalId(album) / "spreads" / CanonicalId(spread) / "placements" / CanonicalId(placement) =>
         editSpread(AlbumId(album), SpreadId(spread), request, spreadUpdateDecoder(placement))
@@ -77,16 +77,14 @@ object PhotoPlacementApi:
       Route(
         Routes.Access.Editor(Protection.OwnSpread(EditingTarget.Spread(spread))),
         decode(request, decoder),
-        (edit: SpreadManager.Edit) =>
-          spreads.editPlacements(album, spread, edit).flatMap(respondToSpreadEdit)
+        (edit: SpreadManager.Edit) => spreads.editPlacements(album, spread, edit).flatMap(respondToSpreadEdit)
       )
 
     private def editCover(album: AlbumId, request: Request[F], decoder: Decoder[CoverManager.Edit]) =
       Route(
         Routes.Access.Editor(Protection.OwnSpread(EditingTarget.Cover(album))),
         decode(request, decoder),
-        (edit: CoverManager.Edit) =>
-          covers.edit(album, edit).flatMap(respondToCoverEdit)
+        (edit: CoverManager.Edit) => covers.edit(album, edit).flatMap(respondToCoverEdit)
       )
 
     private def respondToSpreadEdit(result: SpreadManager.PlacementResult) = result match
@@ -153,13 +151,13 @@ object PhotoPlacementApi:
       if cursor.keys.exists(_.toSet === Set("slotId")) then
         decodeId(cursor, field = "slotId").map(slot => SpreadManager.Edit.Move(SpreadPlacementId(id), PhotoSpreadSlotId(slot)))
       else if cursor.keys.exists(_.toSet === Set("transform")) then
-        cursor.get[PhotoTransform]("transform")(using buildTransformDecoder).map(transform =>
+        cursor.get[PhotoTransform]("transform")(using buildTransformDecoder).map { transform =>
           SpreadManager.Edit.Adjust(SpreadPlacementId(id), transform)
-        )
+        }
       else if cursor.keys.exists(_.toSet === Set("captionCorner")) then
-        cursor.get[CaptionCorner](k = "captionCorner")(using cornerDecoder).map(corner =>
+        cursor.get[CaptionCorner](k = "captionCorner")(using cornerDecoder).map { corner =>
           SpreadManager.Edit.SetCaptionCorner(SpreadPlacementId(id), corner)
-        )
+        }
       else DecodingFailure("Supply either slotId, transform or captionCorner", cursor.history).asLeft
 
     private val cornerDecoder = Decoder.decodeString.emap[CaptionCorner] {
@@ -179,9 +177,9 @@ object PhotoPlacementApi:
       if cursor.keys.exists(_.toSet === Set("slotId")) then
         decodeId(cursor, field = "slotId").map(slot => CoverManager.Edit.Move(CoverPlacementId(id), CoverSlotId(slot)))
       else if cursor.keys.exists(_.toSet === Set("transform")) then
-        cursor.get[PhotoTransform]("transform")(using buildTransformDecoder).map(transform =>
+        cursor.get[PhotoTransform]("transform")(using buildTransformDecoder).map { transform =>
           CoverManager.Edit.Adjust(CoverPlacementId(id), transform)
-        )
+        }
       else DecodingFailure("Supply either slotId or transform", cursor.history).asLeft
 
     private def validateCreation(cursor: HCursor) =
@@ -232,11 +230,13 @@ object PhotoPlacementApi:
       for
         content <- slot.contentBox
         visible <- slot.visibleBox
-      yield encodeSlot(slot.id.value, kind = "photo", slot.box).deepMerge(Json.obj(
-        "bleed"      -> Json.arr(SpreadEdge.values.toVector.filter(slot.bleed.contains).map(edge => Json.fromString(encodeEdge(edge)))*),
-        "contentBox" -> encodeBox(content),
-        "visibleBox" -> encodeBox(visible)
-      ))
+      yield encodeSlot(slot.id.value, kind = "photo", slot.box).deepMerge {
+        Json.obj(
+          "bleed"      -> Json.arr(SpreadEdge.values.toVector.filter(slot.bleed.contains).map(edge => Json.fromString(encodeEdge(edge)))*),
+          "contentBox" -> encodeBox(content),
+          "visibleBox" -> encodeBox(visible)
+        )
+      }
 
     private def encodeSlot(id: UUID, kind: String, box: SlotBox) =
       encodeBox(box).deepMerge(Json.obj("id" -> Json.fromString(id.toString), "kind" -> Json.fromString(kind)))

@@ -57,11 +57,13 @@ object Routes:
                     case EditingAccess.Result.Failed() =>
                       Response[F](Status.InternalServerError).withEntity(Map("code" -> "service_failure"))
                     case EditingAccess.Result.Blocked(owner, alias) =>
-                      Response[F](Status.Conflict).withEntity(Map[String, String](
-                        "code"    -> "target_locked",
-                        "ownerId" -> owner.value.toString,
-                        "alias"   -> alias
-                      ))
+                      Response[F](Status.Conflict).withEntity {
+                        Map[String, String](
+                          "code"    -> "target_locked",
+                          "ownerId" -> owner.value.toString,
+                          "alias"   -> alias
+                        )
+                      }
     val routes: HttpRoutes[F] = Kleisli(request => OptionT(definitions.routes.lift(request).traverse(route => serve(request, route))))
     val uncached              = preventCaching(routes)
     Kleisli(request => if request.pathInfo.segments.headOption.exists(_.decoded() === "api") then uncached(request) else routes(request))

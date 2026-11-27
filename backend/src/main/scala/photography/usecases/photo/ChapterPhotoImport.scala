@@ -59,9 +59,8 @@ object ChapterPhotoImport:
                 val register = state.update: current =>
                   current.updatedWith(request.chapter): maybeEntry =>
                     maybeEntry.map: feedback =>
-                      feedback.copy(maybeEntry =
-                        feedback.maybeEntry.map(_.copy(maybeWorker = worker.some, previous = Vector.empty[Fiber[F, Throwable, Unit]]))
-                      )
+                      val maybeEntry = feedback.maybeEntry.map(_.copy(maybeWorker = worker.some, previous = Vector.empty[Fiber[F, Throwable, Unit]]))
+                      feedback.copy(maybeEntry = maybeEntry)
                 register.as((Scheduling.Queued, entry.previous))
             case _ => (Scheduling.Coalesced, Vector.empty[Fiber[F, Throwable, Unit]]).pure[F]
       Async[F].uncancelable: _ =>

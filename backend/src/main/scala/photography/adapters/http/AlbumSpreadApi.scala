@@ -32,18 +32,15 @@ object AlbumSpreadApi:
     }
 
     private def add(album: AlbumId, chapter: ChapterId, request: Request[F]) =
-      Route(
-        Routes.Access.Editor(Protection.ActiveTab),
-        decode(request, afterDecoder),
-        (after: SpreadId) =>
-          spreads.add(album, chapter, after).flatMap:
-            case AddResult.Added(id)          => Created(Map("id" -> id.value.toString))
-            case AddResult.Rejected(conflict) => BadRequest(Map("message" -> explain(conflict)))
-            case AddResult.AlbumNotFound      => albumNotFound
-            case AddResult.ChapterNotFound    => notFound("chapter_not_found")
-            case AddResult.SpreadNotFound     => notFound("spread_not_found")
-            case AddResult.Failed             => serviceFailure
-      )
+      val addSpread = (after: SpreadId) =>
+        spreads.add(album, chapter, after).flatMap:
+          case AddResult.Added(id)          => Created(Map("id" -> id.value.toString))
+          case AddResult.Rejected(conflict) => BadRequest(Map("message" -> explain(conflict)))
+          case AddResult.AlbumNotFound      => albumNotFound
+          case AddResult.ChapterNotFound    => notFound("chapter_not_found")
+          case AddResult.SpreadNotFound     => notFound("spread_not_found")
+          case AddResult.Failed             => serviceFailure
+      Route(Routes.Access.Editor(Protection.ActiveTab), decode(request, afterDecoder), addSpread)
 
     private def changeTemplate(album: AlbumId, spread: SpreadId, maybeConfirm: Option[String], request: Request[F]) =
       val parsed = decode(request, templateDecoder).flatMap:
@@ -73,18 +70,15 @@ object AlbumSpreadApi:
         message => BadRequest(Map("message" -> message)).map(_.asLeft[Boolean]),
         _.asRight[Response[F]].pure[F]
       )
-      Route(
-        Routes.Access.Editor(Protection.ChangeSpreads(Set(EditingTarget.Spread(spread)))),
-        parsed,
-        (confirm: Boolean) =>
-          spreads.delete(album, spread, confirmPlacements = confirm).flatMap:
-            case DeleteResult.Deleted              => NoContent()
-            case DeleteResult.Occupied(placements) => Conflict(encodeOccupied(placements))
-            case DeleteResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
-            case DeleteResult.AlbumNotFound        => albumNotFound
-            case DeleteResult.SpreadNotFound       => notFound("spread_not_found")
-            case DeleteResult.Failed               => serviceFailure
-      )
+      val deleteSpread = (confirm: Boolean) =>
+        spreads.delete(album, spread, confirmPlacements = confirm).flatMap:
+          case DeleteResult.Deleted              => NoContent()
+          case DeleteResult.Occupied(placements) => Conflict(encodeOccupied(placements))
+          case DeleteResult.Rejected(conflict)   => BadRequest(Map("message" -> explain(conflict)))
+          case DeleteResult.AlbumNotFound        => albumNotFound
+          case DeleteResult.SpreadNotFound       => notFound("spread_not_found")
+          case DeleteResult.Failed               => serviceFailure
+      Route(Routes.Access.Editor(Protection.ChangeSpreads(Set(EditingTarget.Spread(spread)))), parsed, deleteSpread)
 
     private def parseConfirmation(maybeValue: Option[String]) =
       maybeValue.traverse {

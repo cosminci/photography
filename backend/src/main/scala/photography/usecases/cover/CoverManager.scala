@@ -70,9 +70,9 @@ object CoverManager:
       case Edit.Place(slot, photo) =>
         IdGenerator[F].generateId.map: id =>
           val change: Change = (slots, values) =>
-            requireSlot(slots = slots, slot).map(_ =>
+            requireSlot(slots = slots, slot).map { _ =>
               values.filterNot(_.slot.value === slot.value) :+ CoverPlacement(CoverPlacementId(id), slot, photo, initial)
-            )
+            }
           change
       case Edit.Remove(id) =>
         val change: Change = (_, values) => findPlacement(values = values, id).map(_ => values.filterNot(_.id.value === id.value))

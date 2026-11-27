@@ -30,13 +30,11 @@ final case class ThumbnailsConfig(root: Path, quality: ThumbnailQuality)
 object ThumbnailsConfig:
   // $COVERAGE-OFF$
   given ConfigReader[ThumbnailsConfig] =
-    ConfigReader.forProduct2("root", "quality")(ThumbnailsConfig.apply)(using
-      ConfigReader[Path].ensure(
-        root => root.isAbsolute && root.normalize().toString === root.toString,
-        _ => "Expected an absolute normalized thumbnail root"
-      ),
-      deriveEnumerationReader[ThumbnailQuality]
+    val rootReader = ConfigReader[Path].ensure(
+      root => root.isAbsolute && root.normalize().toString === root.toString,
+      _ => "Expected an absolute normalized thumbnail root"
     )
+    ConfigReader.forProduct2("root", "quality")(ThumbnailsConfig.apply)(using rootReader, deriveEnumerationReader[ThumbnailQuality])
   // $COVERAGE-ON$
 
 final case class HttpServerConfig(host: Host, port: Port) derives ConfigReader

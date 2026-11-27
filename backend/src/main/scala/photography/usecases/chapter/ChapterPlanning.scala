@@ -47,9 +47,9 @@ object ChapterPlanning:
       val maybeConflict =
         if InteriorSpreadCapacity.isReached(album.spreadCount) then ChapterConflict.AtCapacity.some
         else findMetadataConflict(album.year, chapters = album.chapters, name, resolved, folder)
-      maybeConflict.fold(buildChapter(name, countries, resolved, folder, chapters = album.chapters))(reason =>
+      maybeConflict.fold(buildChapter(name, countries, resolved, folder, chapters = album.chapters)) { reason =>
         CreationResult.Rejected(reason).pure[F]
-      )
+      }
 
     override def planUpdate(
         album: PlanningSnapshot,

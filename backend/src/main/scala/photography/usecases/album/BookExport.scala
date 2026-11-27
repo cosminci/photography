@@ -158,15 +158,15 @@ object BookExport:
         Issue(Code.EmptySynopsis, Severity.Blocking, Target.Album, "Album synopsis is empty.")
       ).toList.toVector
       val descriptions = book.album.chapters.filter(_.description.isBlank)
-        .map(chapter =>
+        .map { chapter =>
           Issue(Code.EmptyDescription, Severity.Blocking, Target.Chapter(chapter.id), s"${chapter.destination.name}: chapter description is empty.")
-        )
+        }
       synopsis ++ descriptions
 
     private def checkInterior(book: SavedBook) =
-      val spreads = Vector("Album opening" -> book.album.opening) ++ book.album.chapters.flatMap(chapter =>
+      val spreads = Vector("Album opening" -> book.album.opening) ++ book.album.chapters.flatMap { chapter =>
         (chapter.opening +: chapter.spreads).map(spread => chapter.destination.name -> spread)
-      )
+      }
       spreads.zipWithIndex.flatTraverse { case ((name, spread), spreadIndex) =>
         spread.photos.zipWithIndex.flatTraverse { case (slot, slotIndex) =>
           val target   = Target.Slot(spread.id, slot.id)
@@ -195,9 +195,9 @@ object BookExport:
         book.cover.placements.find(_.slot.value === slot.value) match
           case None            => Vector(Issue(Code.EmptyPhotoSlot, Severity.Blocking, target, s"$location: no photograph placed.")).asRight[String]
           case Some(placement) =>
-            book.photos.find(_.id.value === placement.photo.value).toRight(s"Photo ${placement.photo.value} unavailable").map(photo =>
+            book.photos.find(_.id.value === placement.photo.value).toRight(s"Photo ${placement.photo.value} unavailable").map { photo =>
               resolutionWarning(photo, placement.transform, frame.width, frame.height, target, location)
-            )
+            }
       }
 
     private def resolutionWarning(photo: Photo, transform: PhotoTransform, width: Double, height: Double, target: Target, location: String) =
