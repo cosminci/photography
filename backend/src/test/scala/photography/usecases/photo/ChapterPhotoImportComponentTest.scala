@@ -31,9 +31,9 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
     val secondChapter             = ChapterId(new UUID(0L, 2L))
     val suspendedChapter          = ChapterId(new UUID(0L, 3L))
     val secondSource: PhotoSource = "/photos/b"
-    (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (mutex, entered, release) =>
-      val pending = entered.complete(()).void >>
-        release.get.as(PhotoManager.RefreshResult(unsupportedCount = 0, Vector(PhotoManager.Issue.Discovery)))
+    val firstResult               = PhotoManager.RefreshResult(unsupportedCount = 0, Vector(PhotoManager.Issue.Discovery))
+    (Mutex[IO], Deferred[IO, Unit], Deferred[IO, Unit], Deferred[IO, Unit]).tupled.flatMap { case (mutex, entered, release, observe) =>
+      val pending = entered.complete(()).void >> release.get.as(firstResult)
       val replies = Ref.unsafe[IO, Vector[IO[PhotoManager.RefreshResult]]](Vector(pending, finished.pure[IO]))
       val refresh = replies.getAndUpdate(_.drop(1)).flatMap(_.headOption.liftTo[IO](new AssertionError("Unarranged reconciliation"))).flatten
       val program = buildImport(refs, refresh)(using mutex).use { imports =>
@@ -48,18 +48,22 @@ final class ChapterPhotoImportComponentTest extends CatsEffectSuite:
           suspended <- imports.prepare(album, suspendedChapter, secondSource)
           _         <- imports.launch(suspended)
           _         <- imports.suspend(suspendedChapter)
-          _         <- release.get
-          _         <- awaitFinished(imports, chapter)
-          _         <- awaitFinished(imports, secondChapter)
+          _         <- observe.get
+          firstDone <- imports.status(chapter)
+          nextDone  <- imports.status(secondChapter)
           retained  <- imports.status(suspendedChapter)
-          _         <- IO(assertEquals(retained, ExecutionOutcome(Status.Uncertain, Vector.empty)))
-        yield ()
+        yield
+          assertEquals(firstDone, ExecutionOutcome(Status.Finished(firstResult), Vector.empty))
+          assertEquals(nextDone, ExecutionOutcome(Status.Finished(finished), Vector.empty))
+          assertEquals(retained, ExecutionOutcome(Status.Uncertain, Vector.empty))
       }
       for
         control <- TestControl.execute(program)
         _       <- control.tick
         before  <- refs.refreshes.get
         _       <- release.complete(())
+        _       <- control.tick
+        _       <- observe.complete(())
         _       <- control.tick
         after   <- refs.refreshes.get
         result  <- control.results
